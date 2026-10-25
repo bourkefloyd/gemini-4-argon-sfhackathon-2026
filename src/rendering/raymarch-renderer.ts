@@ -625,15 +625,180 @@ export function createRaymarchRenderer(
     }
   }
 
+  let offscreenCanvas: HTMLCanvasElement | null = null;
+
   function renderCpuFallback(targetCanvas: HTMLCanvasElement, frame: RenderFrameInput) {
     const ctx2d = targetCanvas.getContext('2d');
     if (!ctx2d) return;
     const w = targetCanvas.width;
     const h = targetCanvas.height;
-    ctx2d.fillStyle = '#060c1a';
-    ctx2d.fillRect(0, 0, w, h);
-    void fallbackEvaluator;
-    void frame;
+    const rw = Math.min(320, Math.max(160, Math.floor(w * 0.32)));
+    const rh = Math.min(200, Math.max(100, Math.floor(h * 0.32)));
+
+    if (!offscreenCanvas && typeof document !== 'undefined') {
+      offscreenCanvas = document.createElement('canvas');
+    }
+    if (!offscreenCanvas) return;
+    if (offscreenCanvas.width !== rw || offscreenCanvas.height !== rh) {
+      offscreenCanvas.width = rw;
+      offscreenCanvas.height = rh;
+    }
+    const octx = offscreenCanvas.getContext('2d');
+    if (!octx) return;
+
+    const imgData = octx.createImageData(rw, rh);
+    const data = imgData.data;
+    const { camera, marble, renderPosition, time, course } = frame;
+    const theme = course.theme;
+    const sunLen = Math.hypot(theme.sunDirection[0], theme.sunDirection[1], theme.sunDirection[2]) || 1;
+    const sunDir: readonly [number, number, number] = [
+      theme.sunDirection[0] / sunLen,
+      theme.sunDirection[1] / sunLen,
+      theme.sunDirection[2] / sunLen,
+    ];
+    const tanHalfFov = Math.tan((camera.fovDeg * Math.PI) / 360);
+    const aspect = rw / Math.max(1, rh);
+    const preset =
+      MARBLE_VISUAL_PRESETS[marble.marblePresetIndex % MARBLE_VISUAL_PRESETS.length] ??
+      MARBLE_VISUAL_PRESETS[0];
+
+    let ptr = 0;
+    for (let py = 0; py < rh; py++) {
+      const ndcY = 1.0 - ((py + 0.5) / rh) * 2.0;
+      for (let px = 0; px < rw; px++) {
+        const ndcX = (((px + 0.5) / rw) * 2.0 - 1.0) * aspect;
+        let rdx =
+          camera.forward[0] +
+          camera.right[0] * ndcX * tanHalfFov +
+          camera.up[0] * ndcY * tanHalfFov;
+        let rdy =
+          camera.forward[1] +
+          camera.right[1] * ndcX * tanHalfFov +
+          camera.up[1] * ndcY * tanHalfFov;
+        let rdz =
+          camera.forward[2] +
+          camera.right[2] * ndcX * tanHalfFov +
+          camera.up[2] * ndcY * tanHalfFov;
+        const invLen = 1.0 / Math.hypot(rdx, rdy, rdz);
+        rdx *= invLen;
+        rdy *= invLen;
+        rdz *= invLen;
+
+        // Analytic ray-sphere test for the player marble
+        const ocX = camera.position[0] - renderPosition[0];
+        const ocY = camera.position[1] - renderPosition[1];
+        const ocZ = camera.position[2] - renderPosition[2];
+        const b = ocX * rdx + ocY * rdy + ocZ * rdz;
+        const c = ocX * ocX + ocY * ocY + ocZ * ocZ - marble.radius * marble.radius;
+        const disc = b * b - c;
+        const marbleT = disc > 0 ? -b - Math.sqrt(disc) : -1;
+
+        // Raymarch course SDF
+        let t = 0.2;
+        let hit = false;
+        let mat: string = 'standard';
+        for (let step = 0; step < 44; step++) {
+          const sx = camera.position[0] + rdx * t;
+          const sy = camera.position[1] + rdy * t;
+          const sz = camera.position[2] + rdz * t;
+          const s = fallbackEvaluator.sample([sx, sy, sz], time);
+          if (s.distance < 0.035) {
+            hit = true;
+            mat = s.material;
+            break;
+          }
+          t += Math.max(0.05, s.distance * 0.92);
+          if (t > 85.0) break;
+        }
+
+        let r = 0;
+        let g = 0;
+        let bCol = 0;
+
+        if (marbleT > 0.1 && (!hit || marbleT < t)) {
+          const hx = camera.position[0] + rdx * marbleT;
+          const hy = camera.position[1] + rdy * marbleT;
+          const hz = camera.position[2] + rdz * marbleT;
+          const nx = (hx - renderPosition[0]) / marble.radius;
+          const ny = (hy - renderPosition[1]) / marble.radius;
+          const nz = (hz - renderPosition[2]) / marble.radius;
+          const diff = Math.max(0.18, nx * sunDir[0] + ny * sunDir[1] + nz * sunDir[2]);
+          const fres = Math.pow(1.0 - Math.max(0, -(nx * rdx + ny * rdy + nz * rdz)), 2.5);
+          r = preset.baseColor[0] * diff + preset.coreGlowColor[0] * fres * 0.75 + 0.22 * Math.pow(diff, 6);
+          g = preset.baseColor[1] * diff + preset.coreGlowColor[1] * fres * 0.75 + 0.22 * Math.pow(diff, 6);
+          bCol = preset.baseColor[2] * diff + preset.coreGlowColor[2] * fres * 0.75 + 0.22 * Math.pow(diff, 6);
+        } else if (hit) {
+          const hx = camera.position[0] + rdx * t;
+          const hy = camera.position[1] + rdy * t;
+          const hz = camera.position[2] + rdz * t;
+          const n = fallbackEvaluator.normal([hx, hy, hz], time);
+          const diff = Math.max(0.22, n[0] * sunDir[0] + n[1] * sunDir[1] + n[2] * sunDir[2]);
+
+          let baseR = theme.trackPrimary[0];
+          let baseG = theme.trackPrimary[1];
+          let baseB = theme.trackPrimary[2];
+          const checker = (Math.floor(hx * 0.85) + Math.floor(hz * 0.85)) & 1;
+          if (checker) {
+            baseR = theme.trackSecondary[0];
+            baseG = theme.trackSecondary[1];
+            baseB = theme.trackSecondary[2];
+          }
+          if (mat === 'conveyor') {
+            const stripe = Math.sin(hz * 3.5 + time * 8.0) > 0 ? 1.25 : 0.85;
+            baseR = Math.min(1, baseR * 0.6 + 0.12 * stripe);
+            baseG = Math.min(1, baseG * 0.8 + 0.48 * stripe);
+            baseB = Math.min(1, baseB * 0.9 + 0.56 * stripe);
+          } else if (mat === 'bounce') {
+            baseR = 0.98;
+            baseG = 0.32;
+            baseB = 0.76;
+          } else if (mat === 'bumper') {
+            baseR = 1.0;
+            baseG = 0.26;
+            baseB = 0.22;
+          } else if (mat === 'sticky') {
+            baseR = 0.92;
+            baseG = 0.66;
+            baseB = 0.16;
+          } else if (mat === 'goal') {
+            baseR = checker ? 0.98 : 0.15;
+            baseG = checker ? 0.86 : 0.95;
+            baseB = checker ? 0.22 : 0.58;
+          } else if (mat === 'start') {
+            baseR = 0.22;
+            baseG = 0.88;
+            baseB = 0.62;
+          }
+
+          const gx = Math.abs(hx - Math.round(hx));
+          const gz = Math.abs(hz - Math.round(hz));
+          const gridMask = gx < 0.045 || gz < 0.045 ? 0.45 : 0.0;
+
+          r = baseR * diff * (1 - gridMask) + theme.gridLineColor[0] * gridMask;
+          g = baseG * diff * (1 - gridMask) + theme.gridLineColor[1] * gridMask;
+          bCol = baseB * diff * (1 - gridMask) + theme.gridLineColor[2] * gridMask;
+
+          const fog = Math.min(0.78, t / 75.0);
+          r = r * (1 - fog) + theme.abyssFogColor[0] * fog;
+          g = g * (1 - fog) + theme.abyssFogColor[1] * fog;
+          bCol = bCol * (1 - fog) + theme.abyssFogColor[2] * fog;
+        } else {
+          const skyT = Math.max(0, Math.min(1, rdy * 0.65 + 0.35));
+          r = theme.skyHorizon[0] * (1 - skyT) + theme.skyZenith[0] * skyT;
+          g = theme.skyHorizon[1] * (1 - skyT) + theme.skyZenith[1] * skyT;
+          bCol = theme.skyHorizon[2] * (1 - skyT) + theme.skyZenith[2] * skyT;
+        }
+
+        data[ptr++] = Math.min(255, Math.max(0, Math.round(Math.pow(r, 0.85) * 255)));
+        data[ptr++] = Math.min(255, Math.max(0, Math.round(Math.pow(g, 0.85) * 255)));
+        data[ptr++] = Math.min(255, Math.max(0, Math.round(Math.pow(bCol, 0.85) * 255)));
+        data[ptr++] = 255;
+      }
+    }
+
+    octx.putImageData(imgData, 0, 0);
+    ctx2d.imageSmoothingEnabled = true;
+    ctx2d.drawImage(offscreenCanvas, 0, 0, w, h);
   }
 
   function getCompiledShaders() {

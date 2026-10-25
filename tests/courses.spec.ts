@@ -14,6 +14,9 @@ import {
   COURSE_4_AERIAL_CATWALKS,
   COURSE_5_SILLY_RACE,
   COURSE_6_ULTIMATE_ARGON_CORE,
+  COURSE_8_RIPTIDE_SURF,
+  COURSE_9_NEON_OBBY,
+  COURSE_10_SAHARA_DUNES,
 } from '../src/courses';
 import { runHeadlessBotRollout } from '../src/bot';
 import { createMarbleSimulation } from '../src/physics';
@@ -109,10 +112,10 @@ function driveMarbleAlongWaypoints(
   };
 }
 
-describe('Classic 6-Course Campaign — SDF Integrity, Shaders & 120 Hz Physical Solvability', () => {
-  it('registers all 6 classic courses with exact par times, bonus times, and signature mechanics', () => {
-    expect(BUILT_IN_COURSES).toHaveLength(6);
-    expect(CLASSIC_COURSES).toEqual(BUILT_IN_COURSES);
+describe('Classic & Expansion Campaign Courses — SDF Integrity, Shaders & 120 Hz Physical Solvability', () => {
+  it('registers all 6 classic courses plus Riptide Surf Break, Neon Sky Obby, and Sahara Dune Surge with signature mechanics', () => {
+    expect(CLASSIC_COURSES).toHaveLength(6);
+    expect(BUILT_IN_COURSES).toHaveLength(9);
 
     // Course 1: Marble Ramp Gauntlet — 4-Stage Progressive Mechanics Ramp Track (parTimeSec: 60)
     expect(COURSE_1_PRACTICE_RACE.index).toBe(1);
@@ -176,6 +179,30 @@ describe('Classic 6-Course Campaign — SDF Integrity, Shaders & 120 Hz Physical
     expect(COURSE_6_ULTIMATE_ARGON_CORE.hazards.some((h) => h.kinematic?.kind === 'bridge')).toBe(true);
     expect(COURSE_6_ULTIMATE_ARGON_CORE.nodes.some((n) => n.material === 'ice')).toBe(true);
     expect(COURSE_6_ULTIMATE_ARGON_CORE.nodes.some((n) => n.material === 'acid')).toBe(true);
+
+    // Course 8: Riptide Surf Break — All-Waves Beach Shorebreak & Outer Reef Surf Gauntlet
+    expect(COURSE_8_RIPTIDE_SURF.index).toBe(8);
+    expect(COURSE_8_RIPTIDE_SURF.id).toBe('riptide-surf-break');
+    expect(COURSE_8_RIPTIDE_SURF.nodes.filter((n) => n.kind === 'waveFloor').length).toBeGreaterThanOrEqual(4);
+    expect(COURSE_8_RIPTIDE_SURF.nodes.some((n) => n.id === 'riptide-zone2-undertow-current')).toBe(true);
+    expect(COURSE_8_RIPTIDE_SURF.nodes.some((n) => n.id === 'riptide-zone2-west-rip-channel')).toBe(true);
+    expect(COURSE_8_RIPTIDE_SURF.nodes.some((n) => n.material === 'bounce')).toBe(true);
+    expect(COURSE_8_RIPTIDE_SURF.portals?.length).toBeGreaterThanOrEqual(1);
+
+    // Course 9: Neon Sky Obby — Roblox Obby-Style Precision Parkour Course
+    expect(COURSE_9_NEON_OBBY.index).toBe(9);
+    expect(COURSE_9_NEON_OBBY.id).toBe('neon-sky-obby');
+    expect(COURSE_9_NEON_OBBY.checkpoints?.length).toBe(3);
+    expect(COURSE_9_NEON_OBBY.hazards.some((h) => h.kinematic?.kind === 'bridge')).toBe(true);
+    expect(COURSE_9_NEON_OBBY.nodes.filter((n) => n.material === 'bounce').length).toBeGreaterThanOrEqual(3);
+    expect(COURSE_9_NEON_OBBY.nodes.some((n) => n.kind === 'waveFloor')).toBe(true);
+
+    // Course 10: Sahara Dune Surge — Desert Sand Dunes Surf Variant
+    expect(COURSE_10_SAHARA_DUNES.index).toBe(10);
+    expect(COURSE_10_SAHARA_DUNES.id).toBe('sahara-dune-surge');
+    expect(COURSE_10_SAHARA_DUNES.nodes.filter((n) => n.kind === 'waveFloor').length).toBeGreaterThanOrEqual(4);
+    expect(COURSE_10_SAHARA_DUNES.nodes.some((n) => n.material === 'sticky')).toBe(true);
+    expect(COURSE_10_SAHARA_DUNES.nodes.some((n) => n.id === 'sahara-zone2-west-tradewind-jetstream')).toBe(true);
   });
 
   it.each(BUILT_IN_COURSES.map((c) => [c.index, c.name, c] as const))(
@@ -397,6 +424,61 @@ describe('Classic 6-Course Campaign — SDF Integrity, Shaders & 120 Hz Physical
     );
     expect(run6.reachedGoal).toBe(true);
     expect(run6.finalState.status).toBe('goal');
+
+    // Course 8: Riptide Surf Break (Beach Boardwalk -> Ankle-Biter Swells -> West Rip Channel -> Pier Pilings -> Outer Reef Bomb -> Lighthouse Goal)
+    const run8 = driveMarbleAlongWaypoints(
+      COURSE_8_RIPTIDE_SURF,
+      COURSE_8_RIPTIDE_SURF.startPos,
+      [
+        { target: [0, 6.8, -5.8], captureRadius: 2.2 },
+        { target: [-1.4, 6.15, -11.5], captureRadius: 2.2 },
+        { target: [-3.6, 6.15, -16.8], captureRadius: 2.0 },
+        { target: [-3.6, 6.15, -28.6], captureRadius: 2.2 },
+        { target: [0, 6.15, -32.2], captureRadius: 2.2 },
+        { target: [0, 6.15, -40.4], captureRadius: 2.2 },
+        { target: [0, 6.15, -49.2], captureRadius: 2.2 },
+        { target: COURSE_8_RIPTIDE_SURF.goalPos, captureRadius: 2.2 },
+      ],
+      3000,
+    );
+    expect(run8.reachedGoal).toBe(true);
+    expect(run8.finalState.status).toBe('goal');
+
+    // Course 9: Neon Sky Obby (Start -> Rainbow Stepping Stones -> Spinner Bridge -> Trampoline Staircase -> Crosswind Wave Beam -> Obby Winner Podium)
+    const run9 = driveMarbleAlongWaypoints(
+      COURSE_9_NEON_OBBY,
+      COURSE_9_NEON_OBBY.startPos,
+      [
+        { target: [0, 10.55, -16.5], captureRadius: 2.2 },
+        { target: [1.2, 10.55, -21.8], captureRadius: 2.2 },
+        { target: [-1.2, 10.55, -27.2], captureRadius: 2.2 },
+        { target: [-0.6, 10.55, -32.8], captureRadius: 2.2 },
+        { target: [-0.6, 13.55, -48.5], captureRadius: 2.4 },
+        { target: COURSE_9_NEON_OBBY.goalPos, captureRadius: 2.2 },
+      ],
+      3000,
+    );
+    expect(run9.reachedGoal).toBe(true);
+    expect(run9.finalState.status).toBe('goal');
+
+    // Course 10: Sahara Dune Surge (Caravan Outpost -> Barchan Sand Ripples -> Trade-Wind Jetstream -> Sandstone Hoodoos -> Mega-Dune Oasis Goal)
+    const run10 = driveMarbleAlongWaypoints(
+      COURSE_10_SAHARA_DUNES,
+      COURSE_10_SAHARA_DUNES.startPos,
+      [
+        { target: [0, 6.8, -5.8], captureRadius: 2.2 },
+        { target: [-1.4, 6.15, -11.5], captureRadius: 2.2 },
+        { target: [-3.6, 6.15, -16.8], captureRadius: 2.0 },
+        { target: [-3.6, 6.15, -28.6], captureRadius: 2.2 },
+        { target: [0, 6.15, -32.2], captureRadius: 2.2 },
+        { target: [0, 6.15, -40.4], captureRadius: 2.2 },
+        { target: [0, 6.15, -49.2], captureRadius: 2.2 },
+        { target: COURSE_10_SAHARA_DUNES.goalPos, captureRadius: 2.2 },
+      ],
+      3000,
+    );
+    expect(run10.reachedGoal).toBe(true);
+    expect(run10.finalState.status).toBe('goal');
   });
 
   it('verifies risk/reward speedrun shortcuts and split paths across the campaign', () => {
