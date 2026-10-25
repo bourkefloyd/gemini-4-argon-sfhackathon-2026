@@ -87,6 +87,13 @@ export interface RendererProfilerMetrics {
   readonly renderResolution: readonly [number, number];
 }
 
+export interface OtherMarbleRenderInput {
+  readonly position: readonly [number, number, number];
+  readonly radius: number;
+  readonly color: readonly [number, number, number];
+  readonly slotIndex?: number;
+}
+
 export interface GridTileViewInput {
   readonly tileIndex: number;
   readonly viewport: {
@@ -99,6 +106,8 @@ export interface GridTileViewInput {
   readonly marble: MarbleState;
   readonly renderPosition: readonly [number, number, number];
   readonly renderOrientation: readonly [number, number, number, number];
+  readonly marbleColor?: readonly [number, number, number];
+  readonly otherMarbles?: readonly OtherMarbleRenderInput[];
   readonly ghostActive?: boolean;
   readonly ghostPos?: readonly [number, number, number];
   readonly ghostQuat?: readonly [number, number, number, number];
@@ -110,6 +119,8 @@ export interface RenderFrameInput {
   readonly marble: MarbleState;
   readonly renderPosition: readonly [number, number, number];
   readonly renderOrientation: readonly [number, number, number, number];
+  readonly marbleColor?: readonly [number, number, number];
+  readonly otherMarbles?: readonly OtherMarbleRenderInput[];
   readonly camera: CameraState;
   readonly time: number;
   readonly glassStress?: number;
@@ -186,6 +197,9 @@ interface UniformLocations {
   uGhostPos: WebGLUniformLocation | null;
   uGhostQuat: WebGLUniformLocation | null;
   uGhostColor: WebGLUniformLocation | null;
+  uOtherMarbleCount: WebGLUniformLocation | null;
+  uOtherMarblePosRad: WebGLUniformLocation | null;
+  uOtherMarbleColor: WebGLUniformLocation | null;
   uShatterShards: WebGLUniformLocation | null;
   uShatterShardCount: WebGLUniformLocation | null;
   uShockwaveRings: WebGLUniformLocation | null;
@@ -334,6 +348,9 @@ export function createRaymarchRenderer(
       uGhostPos: u('uGhostPos'),
       uGhostQuat: u('uGhostQuat'),
       uGhostColor: u('uGhostColor'),
+      uOtherMarbleCount: u('uOtherMarbleCount'),
+      uOtherMarblePosRad: u('uOtherMarblePosRad[0]'),
+      uOtherMarbleColor: u('uOtherMarbleColor[0]'),
       uShatterShards: u('uShatterShards'),
       uShatterShardCount: u('uShatterShardCount'),
       uShockwaveRings: u('uShockwaveRings'),
@@ -504,9 +521,18 @@ export function createRaymarchRenderer(
     gl.uniform1i(locations.uMarbleStatus, STATUS_TO_INT[marble.status] ?? 0);
     gl.uniform1f(locations.uMarbleStatusTimer, marble.statusTimer);
 
-    gl.uniform3f(locations.uMarbleBaseColor, preset.baseColor[0], preset.baseColor[1], preset.baseColor[2]);
-    gl.uniform3f(locations.uMarbleVeinColor, preset.veinColor[0], preset.veinColor[1], preset.veinColor[2]);
-    gl.uniform3f(locations.uMarbleGlowColor, preset.coreGlowColor[0], preset.coreGlowColor[1], preset.coreGlowColor[2]);
+    const fBaseCol = frame.marbleColor ?? preset.baseColor;
+    const fVeinCol = frame.marbleColor
+      ? [
+          Math.min(1, fBaseCol[0] * 0.55 + 0.45),
+          Math.min(1, fBaseCol[1] * 0.55 + 0.45),
+          Math.min(1, fBaseCol[2] * 0.55 + 0.45),
+        ]
+      : preset.veinColor;
+    const fGlowCol = frame.marbleColor ?? preset.coreGlowColor;
+    gl.uniform3f(locations.uMarbleBaseColor, fBaseCol[0], fBaseCol[1], fBaseCol[2]);
+    gl.uniform3f(locations.uMarbleVeinColor, fVeinCol[0], fVeinCol[1], fVeinCol[2]);
+    gl.uniform3f(locations.uMarbleGlowColor, fGlowCol[0], fGlowCol[1], fGlowCol[2]);
     gl.uniform1f(locations.uMarbleIridescence, preset.iridescence);
 
     gl.uniform3f(locations.uGoalPos, course.goalPos[0], course.goalPos[1], course.goalPos[2]);
@@ -536,6 +562,33 @@ export function createRaymarchRenderer(
     gl.uniform3f(locations.uGhostPos, gPos[0], gPos[1], gPos[2]);
     gl.uniform4f(locations.uGhostQuat, gQuat[0], gQuat[1], gQuat[2], gQuat[3]);
     gl.uniform3f(locations.uGhostColor, gCol[0], gCol[1], gCol[2]);
+
+    const uploadOtherMarbles = (others: readonly OtherMarbleRenderInput[] | undefined) => {
+      const list = others ?? [];
+      const count = Math.min(6, list.length);
+      const posRadData = new Float32Array(6 * 4);
+      const colData = new Float32Array(6 * 4);
+      for (let i = 0; i < count; i++) {
+        const om = list[i];
+        const base = i * 4;
+        posRadData[base + 0] = om.position[0];
+        posRadData[base + 1] = om.position[1];
+        posRadData[base + 2] = om.position[2];
+        posRadData[base + 3] = om.radius;
+        colData[base + 0] = om.color[0];
+        colData[base + 1] = om.color[1];
+        colData[base + 2] = om.color[2];
+        colData[base + 3] = om.slotIndex ?? i;
+      }
+      gl.uniform1i(locations!.uOtherMarbleCount, count);
+      if (locations!.uOtherMarblePosRad) {
+        gl.uniform4fv(locations!.uOtherMarblePosRad, posRadData);
+      }
+      if (locations!.uOtherMarbleColor) {
+        gl.uniform4fv(locations!.uOtherMarbleColor, colData);
+      }
+    };
+    uploadOtherMarbles(frame.otherMarbles);
 
     gl.uniform1i(locations.uShatterShardCount, frame.shatterShardCount ?? 0);
     if (frame.shatterShards && locations.uShatterShards) {
@@ -698,9 +751,18 @@ export function createRaymarchRenderer(
         gl.uniform1i(locations.uMarbleStatus, STATUS_TO_INT[tileMarble.status] ?? 0);
         gl.uniform1f(locations.uMarbleStatusTimer, tileMarble.statusTimer);
 
-        gl.uniform3f(locations.uMarbleBaseColor, tilePreset.baseColor[0], tilePreset.baseColor[1], tilePreset.baseColor[2]);
-        gl.uniform3f(locations.uMarbleVeinColor, tilePreset.veinColor[0], tilePreset.veinColor[1], tilePreset.veinColor[2]);
-        gl.uniform3f(locations.uMarbleGlowColor, tilePreset.coreGlowColor[0], tilePreset.coreGlowColor[1], tilePreset.coreGlowColor[2]);
+        const tBaseCol = tile.marbleColor ?? tilePreset.baseColor;
+        const tVeinCol = tile.marbleColor
+          ? [
+              Math.min(1, tBaseCol[0] * 0.55 + 0.45),
+              Math.min(1, tBaseCol[1] * 0.55 + 0.45),
+              Math.min(1, tBaseCol[2] * 0.55 + 0.45),
+            ]
+          : tilePreset.veinColor;
+        const tGlowCol = tile.marbleColor ?? tilePreset.coreGlowColor;
+        gl.uniform3f(locations.uMarbleBaseColor, tBaseCol[0], tBaseCol[1], tBaseCol[2]);
+        gl.uniform3f(locations.uMarbleVeinColor, tVeinCol[0], tVeinCol[1], tVeinCol[2]);
+        gl.uniform3f(locations.uMarbleGlowColor, tGlowCol[0], tGlowCol[1], tGlowCol[2]);
         gl.uniform1f(locations.uMarbleIridescence, tilePreset.iridescence);
 
         const tGhostActive = tile.ghostActive ?? frame.ghostActive ?? false;
@@ -711,6 +773,8 @@ export function createRaymarchRenderer(
         gl.uniform3f(locations.uGhostPos, tGhostPos[0], tGhostPos[1], tGhostPos[2]);
         gl.uniform4f(locations.uGhostQuat, tGhostQuat[0], tGhostQuat[1], tGhostQuat[2], tGhostQuat[3]);
         gl.uniform3f(locations.uGhostColor, tGhostCol[0], tGhostCol[1], tGhostCol[2]);
+
+        uploadOtherMarbles(tile.otherMarbles ?? frame.otherMarbles);
 
         gl.drawArrays(gl.TRIANGLES, 0, 3);
       }

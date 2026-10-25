@@ -428,6 +428,11 @@ uniform vec3 uGhostPos;
 uniform vec4 uGhostQuat;
 uniform vec4 uGhostColor;
 
+// Other Multiplayer Marbles in the 3D Scene (up to 6 active players)
+uniform int uOtherMarbleCount;
+uniform vec4 uOtherMarblePosRad[6]; // xyz = position, w = radius
+uniform vec4 uOtherMarbleColor[6];  // rgb = color, w = slotIndex
+
 uniform vec3 uGoalPos;
 uniform float uGoalRadius;
 uniform float uOcclusionStrength;
@@ -841,6 +846,34 @@ vec2 evalSceneSdf(vec3 p) {
       if (dGhost < res.x) {
         res = vec2(dGhost, 103.0);
       }
+    }
+  }
+
+  // Other Active Multiplayer Marbles SDF (material ID = 110.0 .. 115.0)
+  if (uOtherMarbleCount > 0) {
+    if (uOtherMarblePosRad[0].w > 0.05) {
+      float d0 = length(p - uOtherMarblePosRad[0].xyz) - uOtherMarblePosRad[0].w;
+      if (d0 < res.x) res = vec2(d0, 110.0);
+    }
+    if (uOtherMarbleCount > 1 && uOtherMarblePosRad[1].w > 0.05) {
+      float d1 = length(p - uOtherMarblePosRad[1].xyz) - uOtherMarblePosRad[1].w;
+      if (d1 < res.x) res = vec2(d1, 111.0);
+    }
+    if (uOtherMarbleCount > 2 && uOtherMarblePosRad[2].w > 0.05) {
+      float d2 = length(p - uOtherMarblePosRad[2].xyz) - uOtherMarblePosRad[2].w;
+      if (d2 < res.x) res = vec2(d2, 112.0);
+    }
+    if (uOtherMarbleCount > 3 && uOtherMarblePosRad[3].w > 0.05) {
+      float d3 = length(p - uOtherMarblePosRad[3].xyz) - uOtherMarblePosRad[3].w;
+      if (d3 < res.x) res = vec2(d3, 113.0);
+    }
+    if (uOtherMarbleCount > 4 && uOtherMarblePosRad[4].w > 0.05) {
+      float d4 = length(p - uOtherMarblePosRad[4].xyz) - uOtherMarblePosRad[4].w;
+      if (d4 < res.x) res = vec2(d4, 114.0);
+    }
+    if (uOtherMarbleCount > 5 && uOtherMarblePosRad[5].w > 0.05) {
+      float d5 = length(p - uOtherMarblePosRad[5].xyz) - uOtherMarblePosRad[5].w;
+      if (d5 < res.x) res = vec2(d5, 115.0);
     }
   }
 
@@ -1260,6 +1293,41 @@ vec3 shadeGhostMarble(vec3 p, vec3 n, vec3 V, vec3 ro) {
   return mix(bgCol, holoLit, alpha);
 }
 
+/**
+ * Shades other active multiplayer glass marbles (P1..P6) with their distinct PLAYER_MARBLE_PALETTE color,
+ * internal cat's-eye swirl, Fresnel rim glow, and dual-coat specular highlight.
+ */
+vec3 shadeOtherPlayerMarble(vec3 p, vec3 n, vec3 V, int idx) {
+  vec4 posRad = idx == 0 ? uOtherMarblePosRad[0]
+              : idx == 1 ? uOtherMarblePosRad[1]
+              : idx == 2 ? uOtherMarblePosRad[2]
+              : idx == 3 ? uOtherMarblePosRad[3]
+              : idx == 4 ? uOtherMarblePosRad[4]
+              : uOtherMarblePosRad[5];
+  vec4 colVec = idx == 0 ? uOtherMarbleColor[0]
+              : idx == 1 ? uOtherMarbleColor[1]
+              : idx == 2 ? uOtherMarbleColor[2]
+              : idx == 3 ? uOtherMarbleColor[3]
+              : idx == 4 ? uOtherMarbleColor[4]
+              : uOtherMarbleColor[5];
+  vec3 mCenter = posRad.xyz;
+  float mRad = max(posRad.w, 0.05);
+  vec3 baseCol = colVec.rgb;
+  vec3 localP = (p - mCenter) / mRad;
+
+  float swirl = 0.5 + 0.5 * sin(localP.x * 6.5 + cos(localP.z * 6.5 + uTime * 2.5) * 1.8);
+  float equator = exp(-abs(localP.y) * 5.0);
+  vec3 L = normalize(uSunDir);
+  vec3 H = normalize(L + V);
+  float ndotl = max(dot(n, L), 0.0);
+  float ndotv = clamp(dot(n, V), 0.0, 1.0);
+  float fresnel = pow(1.0 - ndotv, 3.0);
+  float spec = pow(max(dot(n, H), 0.0), 128.0) * 1.45;
+
+  vec3 core = mix(baseCol * 0.65, mix(baseCol, vec3(1.0), 0.38), clamp(swirl * 0.6 + equator * 0.4, 0.0, 1.0));
+  return core * (0.42 + 0.78 * ndotl) + baseCol * fresnel * 0.85 + vec3(1.0, 0.99, 0.96) * spec;
+}
+
 vec3 renderSkyAndAbyss(vec3 ro, vec3 rd) {
   float horizon = clamp(0.5 + 0.5 * rd.y, 0.0, 1.0);
   vec3 sky = mix(uSkyHorizon, uSkyZenith, pow(horizon, 0.75));
@@ -1429,7 +1497,10 @@ void main() {
     normal = calcWorldNormal(hitPos);
     vec3 V = -rd;
 
-    if (hit.y > 105.5) {
+    if (hit.y > 109.5) {
+      int omIdx = clamp(int(round(hit.y - 110.0)), 0, 5);
+      color = shadeOtherPlayerMarble(hitPos, normal, V, omIdx);
+    } else if (hit.y > 105.5) {
       // Live 3D Aim Ring / Trajectory Preview (106.0)
       vec3 aimBase = uPortalAimNormal.w > 1.5 ? vec3(0.0, 0.847, 1.0) : vec3(1.0, 0.482, 0.0);
       float dash = 0.5 + 0.5 * sin((hitPos.x + hitPos.y + hitPos.z) * 10.0 - uTime * 12.0);

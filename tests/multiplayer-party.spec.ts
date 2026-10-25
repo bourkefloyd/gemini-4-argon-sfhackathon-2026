@@ -21,8 +21,10 @@ import {
   createPartyRoomClient,
   createPartyRoomEngine,
   detectBrowserTunnelOrigin,
+  MAX_PLAYERS,
   parsePartyUrlQuery,
   partyJoinUrlForViewer,
+  PLAYER_MARBLE_PALETTE,
   renderQrSvg,
   resolvePartyApiBase,
   resolveMarbleCollisions,
@@ -165,12 +167,58 @@ describe('QR Party Multiplayer Module — QR SVG, In-Memory Room, Tunnel & Bumpe
     expect(detectPublicTunnelUrl({})).toBeNull();
   });
 
-  it('automatically overflows players into ARGON-1, ARGON-2, ARGON-3 when reaching maxMarblesPerRoom (default 4)', () => {
+  it('assigns up to 6 players into one server-owned room with distinct marble colors and replaces AI bots when a human joins', () => {
+    const defaultRoom = createPartyRoomEngine({
+      roomCode: 'ARGON',
+      lanIp: '192.168.1.50',
+      port: 5173,
+    });
+
+    expect(MAX_PLAYERS).toBe(6);
+    expect(PLAYER_MARBLE_PALETTE.map((c) => c.hex)).toEqual([
+      '#00d8ff',
+      '#10b981',
+      '#f59e0b',
+      '#ec4899',
+      '#8b5cf6',
+      '#ef4444',
+    ]);
+    expect(defaultRoom.getSnapshot().maxMarblesPerRoom).toBe(6);
+
+    // Fill all 6 slots with AI bots via 1-click Fill Open Slots
+    const simSnap = defaultRoom.spawnSimulatedCrowdPhones(6);
+    expect(simSnap.players.length).toBe(6);
+    expect(simSnap.players.every((p) => p.isSimulated)).toBe(true);
+    expect(simSnap.players.map((p) => p.racerSlot)).toEqual([0, 1, 2, 3, 4, 5]);
+    expect(simSnap.players.map((p) => p.colorHex)).toEqual([
+      '#00d8ff',
+      '#10b981',
+      '#f59e0b',
+      '#ec4899',
+      '#8b5cf6',
+      '#ef4444',
+    ]);
+
+    // When a human scans the QR code on a full 6-bot room, they immediately replace an AI bot slot
+    const humanJoin = defaultRoom.joinPlayer({
+      playerId: 'human_phone_1',
+      handle: 'bourke',
+    });
+    expect(humanJoin.player.role).toBe('racer');
+    expect(humanJoin.player.racerSlot).not.toBeNull();
+    expect(humanJoin.player.racerSlot!).toBeGreaterThanOrEqual(0);
+    expect(humanJoin.player.racerSlot!).toBeLessThan(6);
+    expect(humanJoin.player.colorHex).toBe(PLAYER_MARBLE_PALETTE[humanJoin.player.racerSlot!].hex);
+    expect(defaultRoom.getSnapshot().players.filter((p) => !p.isSimulated).length).toBe(1);
+    expect(defaultRoom.getSnapshot().players.length).toBe(6);
+
+    // Explicit multi-room overflow still works when configured with maxMarblesPerRoom: 4, autoOverflow: true
     const room = createPartyRoomEngine({
       roomCode: 'ARGON',
       lanIp: '192.168.1.50',
       port: 5173,
-      // Default maxMarblesPerRoom is 4 (for a 2x2 split-screen room grid)
+      maxMarblesPerRoom: 4,
+      autoOverflow: true,
     });
 
     expect(room.getSnapshot().maxMarblesPerRoom).toBe(4);

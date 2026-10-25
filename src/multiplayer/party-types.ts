@@ -11,10 +11,11 @@
 
 import type { Quat, SurfaceMaterial, Vec3 } from '../contracts';
 
-export const DEFAULT_MAX_MARBLES_PER_ROOM = 4;
-export const MIN_MARBLES_PER_ROOM = 4;
+export const MAX_PLAYERS = 6;
+export const DEFAULT_MAX_MARBLES_PER_ROOM = MAX_PLAYERS;
+export const MIN_MARBLES_PER_ROOM = 2;
 export const MAX_MARBLES_PER_ROOM = 8;
-export const MAX_ARENA_RACERS = 8;
+export const MAX_ARENA_RACERS = MAX_PLAYERS;
 export const CROWD_ACTION_COOLDOWN_MS = 4000;
 export const IDLE_PLAYER_TIMEOUT_MS = 60_000;
 export const PHONE_INPUT_THROTTLE_MS = 66; // ~15 Hz
@@ -105,21 +106,72 @@ export const CROWD_MUTATOR_CATALOG: readonly CrowdMutatorDefinition[] = [
 
 export interface PartyMarblePalette {
   readonly slotIndex: number;
+  readonly slotId: string;
+  readonly slotLabel: string;
   readonly name: string;
+  readonly marbleTitle: string;
   readonly hex: string;
   readonly rgb: Vec3;
 }
 
-export const PARTY_MARBLE_PALETTES: readonly PartyMarblePalette[] = [
-  { slotIndex: 0, name: 'Cobalt Arcade', hex: '#2563eb', rgb: [0.15, 0.39, 0.92] },
-  { slotIndex: 1, name: 'Crimson Flare', hex: '#e11d48', rgb: [0.88, 0.11, 0.28] },
-  { slotIndex: 2, name: 'Jade Matrix', hex: '#10b981', rgb: [0.06, 0.73, 0.51] },
-  { slotIndex: 3, name: 'Hyper Gold', hex: '#f59e0b', rgb: [0.96, 0.62, 0.04] },
-  { slotIndex: 4, name: 'Amethyst Nova', hex: '#9333ea', rgb: [0.58, 0.2, 0.92] },
-  { slotIndex: 5, name: 'Cyber Cyan', hex: '#06b6d4', rgb: [0.02, 0.71, 0.83] },
-  { slotIndex: 6, name: 'Solar Magenta', hex: '#ec4899', rgb: [0.93, 0.28, 0.6] },
-  { slotIndex: 7, name: 'Titanium Pearl', hex: '#e2e8f0', rgb: [0.89, 0.91, 0.94] },
+export const PLAYER_MARBLE_PALETTE: readonly PartyMarblePalette[] = [
+  {
+    slotIndex: 0,
+    slotId: 'P1',
+    slotLabel: 'P1',
+    name: 'Cobalt Cyan',
+    marbleTitle: 'COBALT MARBLE',
+    hex: '#00d8ff',
+    rgb: [0.0, 0.847, 1.0],
+  },
+  {
+    slotIndex: 1,
+    slotId: 'P2',
+    slotLabel: 'P2',
+    name: 'Emerald Green',
+    marbleTitle: 'EMERALD MARBLE',
+    hex: '#10b981',
+    rgb: [0.063, 0.725, 0.506],
+  },
+  {
+    slotIndex: 2,
+    slotId: 'P3',
+    slotLabel: 'P3',
+    name: 'Solar Gold',
+    marbleTitle: 'SOLAR GOLD MARBLE',
+    hex: '#f59e0b',
+    rgb: [0.961, 0.62, 0.043],
+  },
+  {
+    slotIndex: 3,
+    slotId: 'P4',
+    slotLabel: 'P4',
+    name: 'Neon Magenta',
+    marbleTitle: 'NEON MAGENTA MARBLE',
+    hex: '#ec4899',
+    rgb: [0.925, 0.282, 0.6],
+  },
+  {
+    slotIndex: 4,
+    slotId: 'P5',
+    slotLabel: 'P5',
+    name: 'Hyper Violet',
+    marbleTitle: 'HYPER VIOLET MARBLE',
+    hex: '#8b5cf6',
+    rgb: [0.545, 0.361, 0.965],
+  },
+  {
+    slotIndex: 5,
+    slotId: 'P6',
+    slotLabel: 'P6',
+    name: 'Coral Red',
+    marbleTitle: 'CORAL RED MARBLE',
+    hex: '#ef4444',
+    rgb: [0.937, 0.267, 0.267],
+  },
 ];
+
+export const PARTY_MARBLE_PALETTES: readonly PartyMarblePalette[] = PLAYER_MARBLE_PALETTE;
 
 export interface PartyPlayerInputState {
   /** Trackball roll input vector in screen/world coordinates `[-1..1, -1..1]` */
@@ -146,6 +198,8 @@ export interface PartyRoomSummary {
   /** Handle of the current top-scoring or first player in this room */
   readonly leaderName: string | null;
 }
+
+export type PartyPlayerState = PartyPlayerRecord;
 
 export interface PartyPlayerRecord {
   readonly playerId: string;
@@ -265,6 +319,8 @@ export interface JoinPartyRequest {
   readonly playerSecret?: string;
   readonly handle: string;
   readonly preferredRole?: PartyPlayerRole;
+  readonly preferredSlot?: number;
+  readonly isSimulated?: boolean;
 }
 
 export interface JoinPartyResponse {
