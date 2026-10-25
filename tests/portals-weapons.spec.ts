@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { PortalPair } from '../src/contracts';
+import { MATERIAL_PROPERTIES, type PortalPair } from '../src/contracts';
 import {
   BUILT_IN_COURSES,
   COURSE_1_PRACTICE_RACE,
@@ -234,21 +234,53 @@ describe('Stage 2 Worker 2 — Raymarched SDF Portals & Realtime CSG Level-Mutat
     expect(rampRes.marbleState.velocity[1]).toBeGreaterThan(11.0);
     expect(wState.mutations.some((m) => m.kind === 'unionRamp')).toBe(true);
 
-    // 4. [N] Cryo Freeze Pulse (materialOverride sphere: lethal acid -> fast ice)
+    // 4. [X] Cryo Freeze Pulse (materialOverride sphere: ANY surface except goal -> fast slippery ice + 1.3x glide boost)
+    expect(MATERIAL_PROPERTIES.ice.friction).toBe(0.08);
+    expect(MATERIAL_PROPERTIES.ice.rollingDrag).toBe(0.015);
+    expect(MATERIAL_PROPERTIES.ice.speedMultiplier).toBe(1.45);
+
     const eval2 = createCpuWorldEvaluator(COURSE_2_INTERMEDIATE_MADNESS);
     const acidPoint = [21.0, 0.65, -32.2] as const;
     expect(eval2.sample(acidPoint, 0).material).toBe('acid');
 
+    const rollingState = {
+      ...sim1.getState(),
+      velocity: [0, 0, -6.0] as const,
+      surfaceMaterial: 'standard' as const,
+    };
     const cryoRes = triggerWeaponAbility(
       'cryoFreeze',
       createInitialWeaponState(),
-      sim1.getState(),
+      rollingState,
       [0, 0, -1],
       4.0,
-      { targetPosition: acidPoint, radius: 5.5 },
+      { targetPosition: acidPoint },
     );
+    expect(cryoRes.spawnedMutation.radius).toBeGreaterThanOrEqual(4.5);
+    expect(cryoRes.marbleState.surfaceMaterial).toBe('ice');
+    expect(Math.hypot(cryoRes.marbleState.velocity[0], cryoRes.marbleState.velocity[2])).toBeCloseTo(
+      6.0 * 1.3,
+      3,
+    );
+
     eval2.setFieldMutations?.(cryoRes.weaponState.mutations);
     expect(eval2.sample(acidPoint, 4.0).material).toBe('ice');
+    expect(eval2.queryContact([acidPoint[0], acidPoint[1] + 0.35, acidPoint[2]], 0.45, 4.0).material).toBe('ice');
+
+    // Also verify standard track surface is converted to ice within 4.5m radius (while goal is preserved)
+    const stdPoint = COURSE_1_PRACTICE_RACE.startPos;
+    const evalStd = createCpuWorldEvaluator(COURSE_1_PRACTICE_RACE);
+    const cryoStd = triggerWeaponAbility(
+      'cryoFreeze',
+      createInitialWeaponState(),
+      rollingState,
+      [0, 0, -1],
+      4.0,
+      { targetPosition: stdPoint },
+    );
+    evalStd.setFieldMutations?.(cryoStd.weaponState.mutations);
+    expect(evalStd.sample(stdPoint, 4.0).material).toBe('ice');
+    expect(evalStd.queryContact(stdPoint, 0.45, 4.0).material).toBe('ice');
 
     // Verify ring buffer caps at MAX_FIELD_MUTATIONS = 16
     let ring: ReturnType<typeof appendFieldMutation> = [];

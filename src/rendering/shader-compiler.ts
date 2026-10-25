@@ -471,13 +471,13 @@ vec2 applyFieldMutations(vec2 world, vec3 p) {
     if (i < uMutationCount) {
       vec4 pa = uMutationsPosA[i];
       vec3 dp = p - pa.xyz;
-      float radius = pa.w;
+      vec4 meta = uMutationsMeta[i];
+      int kind = int(round(meta.x));
+      float radius = kind == 4 ? max(pa.w, 4.5) : pa.w;
       float boundR = radius + 2.4;
       float distSq = dot(dp, dp);
       if (distSq <= boundR * boundR) {
-        vec4 meta = uMutationsMeta[i];
         vec4 pb = uMutationsPosB[i];
-        int kind = int(round(meta.x));
         float matId = meta.y;
         float blendK = max(pb.w, 1e-4);
 
@@ -491,7 +491,10 @@ vec2 applyFieldMutations(vec2 world, vec3 p) {
           float dRamp = sdTectonicRamp(p, pa.xyz, pb.xyz, radius);
           world = opSmoothUnion(world, vec2(dRamp, matId), blendK);
         } else if (kind == 4 && distSq <= radius * radius) {
-          world.y = matId;
+          // Convert ANY surface inside radius (standard, acid, sticky, conveyor, bounce — except goal 5.0) into ice (1.0)
+          if (abs(world.y - 5.0) > 0.2) {
+            world.y = 1.0;
+          }
         }
       }
     }
@@ -880,6 +883,15 @@ vec3 shadeCourseSurface(vec3 p, vec3 n, vec3 V, float matId) {
           float ferroGlow = 1.0 - smoothstep(-0.15, 0.25, dBridge);
           float pulse = 0.5 + 0.5 * sin(p.x * 4.0 + p.z * 4.0 - uTime * 5.0);
           surfaceCol = mix(surfaceCol, mix(vec3(0.18, 0.85, 1.0), vec3(0.68, 0.35, 1.0), pulse), ferroGlow * 0.48);
+        }
+      } else if (kind == 4) {
+        float cryoR = max(pa.w, 4.5);
+        float dCryo = length(p - pa.xyz) - cryoR;
+        if (dCryo <= 0.35) {
+          float frostRim = 1.0 - smoothstep(0.0, 0.38, abs(dCryo));
+          float frostFill = 1.0 - smoothstep(-cryoR, 0.0, dCryo);
+          surfaceCol = mix(surfaceCol, vec3(0.76, 0.96, 1.0), frostFill * 0.32 + frostRim * 0.65);
+          roughness = min(roughness, 0.05);
         }
       }
     }
@@ -1619,9 +1631,10 @@ fn applyFieldMutations(worldIn: vec2<f32>, p: vec3<f32>) -> vec2<f32> {
       let dRamp = sdTectonicRamp(p, pa.xyz, pb.xyz, radius);
       world = opSmoothUnion(world, vec2<f32>(dRamp, matId), blendK);
     } else if (kind == 4) {
-      let dOverride = length(p - pa.xyz) - radius;
-      if (dOverride <= 0.0) {
-        world.y = matId;
+      let cryoR = max(radius, 4.5);
+      let dOverride = length(p - pa.xyz) - cryoR;
+      if (dOverride <= 0.0 && abs(world.y - 5.0) > 0.2) {
+        world.y = 1.0;
       }
     }
   }

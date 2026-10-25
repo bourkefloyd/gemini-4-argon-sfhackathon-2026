@@ -219,11 +219,12 @@ export function applyFieldMutationsToSample(
       }
       d = nextD;
     } else if (m.kind === 'materialOverride') {
+      const overrideRadius = Math.max(4.5, m.radius);
       const dOverride =
-        Math.hypot(p[0] - m.posA[0], p[1] - m.posA[1], p[2] - m.posA[2]) - m.radius;
-      if (dOverride <= 0.0) {
-        material = m.material;
-        materialId = MATERIAL_IDS[m.material];
+        Math.hypot(p[0] - m.posA[0], p[1] - m.posA[1], p[2] - m.posA[2]) - overrideRadius;
+      if (dOverride <= 0.0 && material !== 'goal') {
+        material = 'ice';
+        materialId = MATERIAL_IDS.ice;
       }
     }
   }
@@ -241,6 +242,7 @@ export function applyFieldMutationsToSample(
     distance: d,
     material,
     materialId,
+    conveyorVelocity: material === 'ice' ? [0, 0, 0] : baseSample.conveyorVelocity,
   };
 }
 
@@ -403,12 +405,12 @@ export function triggerWeaponAbility(
   }
 
   // ability === 'cryoFreeze'
-  const cryoRadius = options?.radius ?? 5.6;
+  const cryoRadius = Math.max(4.5, options?.radius ?? 4.5);
   const cryoCenter: Vec3 =
     options?.targetPosition ?? [
-      marbleState.position[0] + heading[0] * 1.8,
+      marbleState.position[0] + heading[0] * 1.2,
       marbleState.position[1] - marbleState.radius,
-      marbleState.position[2] + heading[2] * 1.8,
+      marbleState.position[2] + heading[2] * 1.2,
     ];
   const mutation: FieldMutation = {
     id: mutId,
@@ -422,6 +424,21 @@ export function triggerWeaponAbility(
     ttl: 45.0,
   };
 
+  // Immediate 1.3x horizontal velocity glide boost when [X] Cryo Freeze is triggered while rolling
+  const horizSpeed = Math.hypot(marbleState.velocity[0], marbleState.velocity[2]);
+  const boostedVel: Vec3 =
+    horizSpeed > 0.05
+      ? [
+          marbleState.velocity[0] * 1.3,
+          marbleState.velocity[1],
+          marbleState.velocity[2] * 1.3,
+        ]
+      : [
+          marbleState.velocity[0] + heading[0] * 3.5,
+          marbleState.velocity[1],
+          marbleState.velocity[2] + heading[2] * 3.5,
+        ];
+
   return {
     weaponState: {
       ...weaponState,
@@ -430,7 +447,11 @@ export function triggerWeaponAbility(
       lastActivatedTime: simTime,
       nextMutationCounter: weaponState.nextMutationCounter + 1,
     },
-    marbleState,
+    marbleState: {
+      ...marbleState,
+      velocity: boostedVel,
+      surfaceMaterial: marbleState.surfaceMaterial === 'goal' ? 'goal' : 'ice',
+    },
     spawnedMutation: mutation,
   };
 }

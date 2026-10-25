@@ -72,6 +72,8 @@ export interface SurfaceMaterialProps {
   readonly name: SurfaceMaterial;
   readonly restitution: number;
   readonly friction: number;
+  readonly rollingDrag?: number;
+  readonly speedMultiplier?: number;
   readonly slopeMultiplier: number;
   readonly bumperImpulse: number;
   readonly conveyorSpeed: number;
@@ -93,7 +95,9 @@ export const MATERIAL_PROPERTIES: Record<SurfaceMaterial, SurfaceMaterialProps> 
     id: 1,
     name: 'ice',
     restitution: 0.3,
-    friction: 0.12,
+    friction: 0.08,
+    rollingDrag: 0.015,
+    speedMultiplier: 1.45,
     slopeMultiplier: 1.45,
     bumperImpulse: 0,
     conveyorSpeed: 0,

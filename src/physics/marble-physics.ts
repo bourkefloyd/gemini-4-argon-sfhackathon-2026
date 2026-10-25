@@ -237,9 +237,10 @@ export function createMarbleSimulation(
     // 1. Gravity
     vy -= config.gravity * dt;
 
-    // 2. Grounded vs. Airborne forces (with Snappy Launch, Backspin Brake & Lateral Carve)
+    // 2. Grounded vs. Airborne forces (with Snappy Launch, Backspin Brake, Lateral Carve & Slippery Ice Drift)
     const [inX, inZ] = input.moveXZ;
     const inMag = Math.hypot(inX, inZ);
+    const isIce = state.surfaceMaterial === 'ice';
     if (state.contact.grounded) {
       const surfVx = state.contact.surfaceVelocity[0];
       const surfVz = state.contact.surfaceVelocity[2];
@@ -263,21 +264,37 @@ export function createMarbleSimulation(
           const inDirZ = inZ / inMag;
           const alignment = velDirX * inDirX + velDirZ * inDirZ;
 
-          // Grip factor scales with surface friction so standard/sticky grip hard while ice still slides
-          const gripFactor = Math.min(1.6, Math.max(0.22, matProps.friction / 1.85));
+          // Grip factor scales with surface friction; on ice, scale steering/carving assist
+          // and backspin braking grip by 0.18 so the marble drifts wide on turns and skids when braking
+          const gripFactor = isIce
+            ? 0.18
+            : Math.min(1.6, Math.max(0.18, matProps.friction / 1.85));
 
           if (alignment < -0.1) {
-            // HARD BACKSPIN BRAKE: reverse counter-spin catches the marble at ledge lips
-            const brakeMult = 1.0 + (-alignment) * 1.45 * gripFactor;
+            // HARD BACKSPIN BRAKE: reverse counter-spin catches the marble at ledge lips (skids on ice with 0.18 grip)
+            const brakeMult =
+              isIce && relSpeed < 12.5
+                ? 0.18 + (1.0 - (-alignment)) * 0.65
+                : 1.0 + (-alignment) * 1.45 * gripFactor;
             accelX *= brakeMult;
             accelZ *= brakeMult;
           } else {
-            // LATERAL CARVE ASSIST: perpendicular steering tightens cornering lines
+            // LATERAL CARVE ASSIST: perpendicular steering tightens cornering lines (0.18 on ice -> wide drift)
             const lateralFraction = Math.sqrt(Math.max(0, 1.0 - alignment * alignment));
             const lateralComponent = -velDirZ * inDirX + velDirX * inDirZ;
-            const carveBoost = lateralFraction * 0.45 * gripFactor * config.rollAcceleration * inMag;
+            const carveBoost =
+              lateralFraction * 0.45 * gripFactor * config.rollAcceleration * inMag;
             accelX += -velDirZ * Math.sign(lateralComponent) * carveBoost;
             accelZ += velDirX * Math.sign(lateralComponent) * carveBoost;
+            if (isIce && lateralFraction > 0.2 && relSpeed < 12.5) {
+              // Scale perpendicular steering acceleration on ice by 0.18 so the marble genuinely drifts wide on turns
+              const longComp = accelX * velDirX + accelZ * velDirZ;
+              const latX = accelX - longComp * velDirX;
+              const latZ = accelZ - longComp * velDirZ;
+              const iceLatScale = 0.18 + 0.42 * Math.max(0, alignment);
+              accelX = longComp * velDirX + latX * iceLatScale;
+              accelZ = longComp * velDirZ + latZ * iceLatScale;
+            }
           }
         }
       }
@@ -285,25 +302,37 @@ export function createMarbleSimulation(
       vx += accelX * dt;
       vz += accelZ * dt;
 
-      // Downhill slope boost
+      // Downhill slope boost (boosted by 1.4x+ on ice)
       const nx = state.contact.normal[0];
       const nz = state.contact.normal[2];
       const slopeMag = Math.hypot(nx, nz);
       if (slopeMag > 0.02) {
-        const boost = config.slopeBoost * matProps.slopeMultiplier;
+        const slopeMult = isIce
+          ? Math.max(1.4, matProps.slopeMultiplier)
+          : matProps.slopeMultiplier;
+        const boost = config.slopeBoost * slopeMult;
         vx += nx * boost * dt;
         vz += nz * boost * dt;
       }
 
-      // Conveyor & kinematic surface velocity coupling
+      // Conveyor & kinematic surface velocity coupling (low friction 0.08 / rollingDrag 0.015 on ice)
       const updatedRelVx = vx - surfVx;
       const updatedRelVz = vz - surfVz;
-      const damp = 1.0 / (1.0 + matProps.friction * dt);
+      const effectiveDrag =
+        isIce && inMag < 0.05
+          ? (matProps.rollingDrag ?? matProps.friction)
+          : matProps.friction;
+      const damp = 1.0 / (1.0 + effectiveDrag * dt);
       vx = surfVx + updatedRelVx * damp;
       vz = surfVz + updatedRelVz * damp;
 
-      // Sleep tiny creep when no input and flat ground
-      if (inMag < 0.01 && slopeMag < 0.025 && Math.hypot(vx - surfVx, vz - surfVz) < 0.12) {
+      // Sleep tiny creep when no input and flat ground (disabled on ice so marble coasts effortlessly)
+      if (
+        !isIce &&
+        inMag < 0.01 &&
+        slopeMag < 0.025 &&
+        Math.hypot(vx - surfVx, vz - surfVz) < 0.12
+      ) {
         vx = surfVx;
         vz = surfVz;
       }
@@ -322,9 +351,9 @@ export function createMarbleSimulation(
       jumpCooldown = 0.26;
     }
 
-    // 4. Clamp horizontal speed
+    // 4. Clamp horizontal speed (boosted by speedMultiplier on ice)
     const horizSpeed = Math.hypot(vx, vz);
-    const maxSpeed = config.maxHorizontalSpeed;
+    const maxSpeed = config.maxHorizontalSpeed * (matProps.speedMultiplier ?? 1.0);
     if (horizSpeed > maxSpeed) {
       const scale = maxSpeed / horizSpeed;
       vx *= scale;

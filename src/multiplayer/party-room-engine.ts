@@ -694,10 +694,10 @@ export function createPartyRoomEngine(options: PartyRoomEngineOptions = {}): Par
         break;
       case 'cryoFreeze':
         material = 'ice';
-        radius = 3.2;
+        radius = 4.5;
         blendK = 0.2;
         secondaryPos = targetPos;
-        actionVerb = 'froze the Acid into Ice!';
+        actionVerb = 'froze the Track into Ice!';
         pointsAwarded = 220;
         break;
       case 'waveSurge':

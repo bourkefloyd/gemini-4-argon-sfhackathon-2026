@@ -649,6 +649,43 @@ function tetrahedralNormalFromFn(
 }
 
 /**
+ * Apply active `FieldMutation`s (`subtractSphere`, `unionCapsule`, `unionRamp`, and
+ * `materialOverride` `[X]` Cryo Freeze) to a CPU `SdfSample`.
+ * When `materialOverride` is within `radius` (at least `4.5m`) of `p`, overrides
+ * `material` to `'ice'` on all track surfaces (`standard`, `acid`, `sticky`,
+ * `conveyor`, `bounce`, etc. — except `goal`).
+ */
+export function evaluateWithMutations(
+  baseSample: SdfSample,
+  p: Vec3,
+  mutations: readonly FieldMutation[],
+  time: number,
+): SdfSample {
+  if (mutations.length === 0) {
+    return baseSample;
+  }
+  let s = applyFieldMutationsToSample(baseSample, p, mutations, time);
+  if (s.material !== 'goal') {
+    for (let i = 0; i < mutations.length; i++) {
+      const m = mutations[i];
+      if (m.kind === 'materialOverride' && time <= m.spawnTime + m.ttl) {
+        const overrideR = Math.max(4.5, m.radius);
+        const d = Math.hypot(p[0] - m.posA[0], p[1] - m.posA[1], p[2] - m.posA[2]);
+        if (d <= overrideR) {
+          s = {
+            ...s,
+            material: 'ice',
+            materialId: MATERIAL_IDS.ice,
+            conveyorVelocity: ZERO_VEC3,
+          };
+        }
+      }
+    }
+  }
+  return s;
+}
+
+/**
  * Create the canonical CPU World Evaluator (`CpuWorldEvaluator`) for a `CourseSpec`.
  */
 export function createCpuWorldEvaluator(course: CourseSpec): CpuWorldEvaluator {
@@ -660,7 +697,7 @@ export function createCpuWorldEvaluator(course: CourseSpec): CpuWorldEvaluator {
   function sample(p: Vec3, time: number): SdfSample {
     let s = evaluateSdfTree(rootTree, p, time);
     if (fieldMutations.length > 0) {
-      s = applyFieldMutationsToSample(s, p, fieldMutations, time);
+      s = evaluateWithMutations(s, p, fieldMutations, time);
     }
     if (portals.length > 0) {
       const carved = applyPortalThroatCarveToDistance(s.distance, p, portals);
@@ -766,7 +803,33 @@ export function createCpuWorldEvaluator(course: CourseSpec): CpuWorldEvaluator {
       center[1] - n[1] * Math.min(radius, Math.max(0, centerSample.distance)),
       center[2] - n[2] * Math.min(radius, Math.max(0, centerSample.distance)),
     ];
-    const contactSample = sample(contactPoint, time);
+    let contactSample = sample(contactPoint, time);
+    if (fieldMutations.length > 0 && contactSample.material !== 'goal') {
+      for (let i = 0; i < fieldMutations.length; i++) {
+        const m = fieldMutations[i];
+        if (m.kind === 'materialOverride' && time <= m.spawnTime + m.ttl) {
+          const overrideR = Math.max(4.5, m.radius);
+          const dContact = Math.hypot(
+            contactPoint[0] - m.posA[0],
+            contactPoint[1] - m.posA[1],
+            contactPoint[2] - m.posA[2],
+          );
+          const dCenter = Math.hypot(
+            center[0] - m.posA[0],
+            center[1] - m.posA[1],
+            center[2] - m.posA[2],
+          );
+          if (dContact <= overrideR || dCenter <= overrideR) {
+            contactSample = {
+              ...contactSample,
+              material: 'ice',
+              materialId: MATERIAL_IDS.ice,
+              conveyorVelocity: ZERO_VEC3,
+            };
+          }
+        }
+      }
+    }
     let surfaceVelocity = vec3Add(
       contactSample.kinematicVelocity,
       contactSample.conveyorVelocity,

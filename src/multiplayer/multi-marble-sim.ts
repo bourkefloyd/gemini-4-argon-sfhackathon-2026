@@ -189,8 +189,19 @@ export function applyCrowdMutationsToCourse(
 
   const mapPrimitive = (node: SdfPrimitiveNode): SdfPrimitiveNode => {
     let updated = node;
-    if (hasCryoFreeze && updated.material === 'acid') {
-      updated = { ...updated, material: 'ice' };
+    if (hasCryoFreeze && updated.material !== 'goal') {
+      const withinCryo = mutations.some(
+        (m) =>
+          m.kind === 'cryoFreeze' &&
+          Math.hypot(
+            updated.center[0] - m.position[0],
+            updated.center[1] - m.position[1],
+            updated.center[2] - m.position[2],
+          ) <= Math.max(4.5, m.radius) + 6.0,
+      );
+      if (withinCryo || updated.material === 'acid' || updated.material === 'sticky') {
+        updated = { ...updated, material: 'ice' };
+      }
     }
     if (hasWaveSurge && updated.kind === 'waveFloor') {
       updated = {
