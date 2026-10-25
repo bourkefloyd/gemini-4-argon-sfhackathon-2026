@@ -1,12 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import {
+  ANTIGRAVITY_AGENT_ID,
   ARGON_SYNTHESIS_PRESETS,
   COURSE_ADAPTIVE_COACH_REMIX,
   COURSE_FERROFLUID_WAVE_GAUNTLET,
   COURSE_PORTAL_FLING_CITADEL,
   applyRealtimeCsgMutationToCourse,
+  buildAntigravityInteractionsPayload,
+  buildArchitectureDiagramHtml,
   buildDefaultTelemetryForCourse,
+  composeArcadeCallout,
   createLiveTelemetryTracker,
+  dispatchAntigravitySandboxOnServer,
   inferPresetFromPrompt,
   mutateCourseFromTelemetry,
   packArgon1MContext,
@@ -18,7 +23,7 @@ import {
   COURSE_1_PRACTICE_RACE,
   COURSE_2_INTERMEDIATE_MADNESS,
 } from '../src/courses';
-import { executeServerArgonSwarm } from '../server/argon-proxy';
+import { executeServerArgonSwarm, synthesizeArcadeSpeech } from '../server/argon-proxy';
 
 describe('Stage 2 Workstream 4 — Gemini 4 Argon 1M-Token Live Course Architect & Multi-Agent Swarm', () => {
   it('packs the 1M-token context bundle with exact section token telemetry and 95% implicit caching', () => {
@@ -161,6 +166,10 @@ describe('Stage 2 Workstream 4 — Gemini 4 Argon 1M-Token Live Course Architect
     expect(presetProposal.swarmAgents[1].modelOrEngine).toBe('gemini-3.8-flash');
     expect(presetProposal.swarmAgents[2].modelOrEngine).toBe('cpu-sdf-120hz-gate');
     expect(presetProposal.solvability.passed).toBe(true);
+    expect(presetProposal.antigravitySandbox.agent).toBe('antigravity-preview-09-2026');
+    expect(presetProposal.antigravitySandbox.environment).toBe('remote');
+    expect(presetProposal.antigravitySandbox.background).toBe(true);
+    expect(presetProposal.antigravitySandbox.verdict).toBe('PASS');
 
     // 2. Telemetry-Driven Course Mutation ("Analyze My Last Run & Mutate Course")
     const mutated = mutateCourseFromTelemetry(COURSE_1_PRACTICE_RACE, telemetry);
@@ -294,5 +303,79 @@ describe('Stage 2 Workstream 4 — Gemini 4 Argon 1M-Token Live Course Architect
     // Verify the merged live course passes Agent 3 Solvability Gate
     const liveGate = verifyCourseSpecSolvability(serverRes.course!);
     expect(liveGate.passed).toBe(true);
+  });
+
+  it('dispatches the Antigravity managed agent, speaks a one-line callout, and draws the 1M diagram', async () => {
+    const telemetry = buildDefaultTelemetryForCourse(COURSE_1_PRACTICE_RACE);
+    const gate = verifyCourseSpecSolvability(COURSE_PORTAL_FLING_CITADEL);
+    const payload = buildAntigravityInteractionsPayload({
+      prompt: 'Verify Portal Fling Citadel',
+      course: COURSE_PORTAL_FLING_CITADEL,
+      solvability: gate,
+      previousInteractionId: 'int_prev_agy',
+    });
+    expect(payload.agent).toBe(ANTIGRAVITY_AGENT_ID);
+    expect(payload.background).toBe(true);
+    expect(JSON.stringify(payload)).toContain('"environment":"remote"');
+    expect(JSON.stringify(payload)).not.toContain('temperature');
+    expect(JSON.stringify(payload)).not.toContain('thinking_budget');
+
+    const posted: string[] = [];
+    const certificate = await dispatchAntigravitySandboxOnServer({
+      prompt: 'Verify Portal Fling Citadel',
+      course: COURSE_PORTAL_FLING_CITADEL,
+      solvability: gate,
+      apiKey: 'stage-key',
+      fetchFn: async (_url, init) => {
+        posted.push(String(init?.body ?? ''));
+        return new Response(
+          JSON.stringify({ id: 'agy_job_7', status: 'queued', output_text: '' }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
+      },
+    });
+    expect(certificate.source).toBe('live-managed-agent');
+    expect(certificate.status).toBe('queued');
+    expect(certificate.model).toBe('gemini-4-argon');
+    expect(posted[0]).toContain('antigravity-preview-09-2026');
+
+    const callout = composeArcadeCallout({
+      event: 'analyze-run',
+      courseName: 'PRACTICE RACE',
+      peakSpeed: telemetry.peakSpeed,
+    });
+    expect(callout.split(/[.!?]/).filter((part) => part.trim()).length).toBe(1);
+    expect(callout.length).toBeLessThan(220);
+
+    const tts = await synthesizeArcadeSpeech('High roller!', 'stage-key', async () => {
+      return new Response(
+        JSON.stringify({
+          candidates: [
+            {
+              content: {
+                parts: [{ inlineData: { mimeType: 'audio/wav', data: 'UklGRg==' } }],
+              },
+            },
+          ],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    });
+    expect(tts.ok).toBe(true);
+    expect(tts.source).toBe('gemini-3.8-flash-tts');
+    expect(tts.mimeType).toBe('audio/wav');
+
+    const html = buildArchitectureDiagramHtml({
+      totalTokens: 164820,
+      cachedTokens: 148400,
+      dynamicTokens: 16420,
+      courseName: 'PRACTICE RACE',
+    });
+    expect(html).toContain('gemini-4-argon');
+    expect(html).toContain('gemini-3.8-flash');
+    expect(html).toContain('antigravity-preview-09-2026');
+    expect(html).toContain('.msdf RPN');
+    expect(html).toContain('120 Hz');
+    expect(html).toContain('<script>');
   });
 });

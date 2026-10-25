@@ -15,6 +15,11 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Plugin } from 'vite';
 import type { CourseSpec, SdfPrimitiveNode } from '../src/contracts';
+import {
+  dispatchAntigravitySandboxOnServer,
+  type AntigravitySandboxCertificate,
+} from '../src/argon/antigravity-sandbox';
+import type { CourseSolvabilityReport } from '../src/argon/solvability-gate';
 
 export interface ArgonServerSynthesizeRequest {
   readonly prompt: string;
@@ -48,6 +53,71 @@ export const GEMINI_ARGON_GENERATE_ENDPOINT =
   'https://generativelanguage.googleapis.com/v1beta/models/gemini-4-argon:generateContent';
 export const GEMINI_FLASH_GENERATE_ENDPOINT =
   'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent';
+export const GEMINI_TTS_ENDPOINT =
+  'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash-tts:generateContent';
+
+export interface ArcadeTtsResult {
+  readonly ok: boolean;
+  readonly source: 'gemini-3.8-flash-tts' | 'unavailable';
+  readonly text: string;
+  readonly audioBase64?: string;
+  readonly mimeType?: string;
+}
+
+/**
+ * `gemini-3.8-flash-tts` via generateContent. No temperature / top_p / top_k.
+ * The browser falls back to speechSynthesis when this returns unavailable.
+ */
+export async function synthesizeArcadeSpeech(
+  text: string,
+  apiKey?: string,
+  fetchFn: typeof fetch = fetch,
+): Promise<ArcadeTtsResult> {
+  const key = apiKey?.trim() || process.env.GEMINI_API_KEY?.trim() || '';
+  const spoken = text.trim().slice(0, 280);
+  if (!key) {
+    return { ok: false, source: 'unavailable', text: spoken };
+  }
+  const body = {
+    contents: [{ role: 'user', parts: [{ text: spoken }] }],
+    generationConfig: {
+      responseModalities: ['AUDIO'],
+      speechConfig: {
+        voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } },
+      },
+    },
+  };
+  try {
+    const res = await fetchFn(`${GEMINI_TTS_ENDPOINT}?key=${encodeURIComponent(key)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      return { ok: false, source: 'unavailable', text: spoken };
+    }
+    const data = (await res.json()) as {
+      candidates?: Array<{
+        content?: {
+          parts?: Array<{ inlineData?: { mimeType?: string; data?: string } }>;
+        };
+      }>;
+    };
+    const inline = data.candidates?.[0]?.content?.parts?.find((part) => part.inlineData?.data);
+    if (!inline?.inlineData?.data) {
+      return { ok: false, source: 'unavailable', text: spoken };
+    }
+    return {
+      ok: true,
+      source: 'gemini-3.8-flash-tts',
+      text: spoken,
+      audioBase64: inline.inlineData.data,
+      mimeType: inline.inlineData.mimeType || 'audio/wav',
+    };
+  } catch {
+    return { ok: false, source: 'unavailable', text: spoken };
+  }
+}
 
 /**
  * Extracts a JSON object from raw model text (handles optional markdown code fences).
@@ -371,6 +441,75 @@ function attachArgonMiddleware(
           implicitCacheDiscount: 0.95,
         }),
       );
+      return;
+    }
+
+    if (req.method === 'POST' && url.startsWith('/antigravity')) {
+      try {
+        const rawBody = await readRequestBody(req);
+        const parsed = JSON.parse(rawBody) as {
+          prompt?: string;
+          course?: CourseSpec;
+          solvability?: CourseSolvabilityReport;
+          previousInteractionId?: string | null;
+          apiKey?: string;
+        };
+        const headerKey = req.headers['x-gemini-api-key'];
+        const apiKeyFromHeader = Array.isArray(headerKey) ? headerKey[0] : headerKey;
+        if (!parsed.course || !parsed.solvability) {
+          throw new Error('Antigravity sandbox needs course and solvability.');
+        }
+        const certificate: AntigravitySandboxCertificate =
+          await dispatchAntigravitySandboxOnServer({
+            prompt: parsed.prompt ?? '',
+            course: parsed.course,
+            solvability: {
+              ...parsed.solvability,
+              verifiedCourse: parsed.course,
+            },
+            previousInteractionId: parsed.previousInteractionId,
+            apiKey: parsed.apiKey || apiKeyFromHeader,
+            fetchFn: fetch,
+          });
+        res.statusCode = 200;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify(certificate));
+      } catch (err) {
+        res.statusCode = 400;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(
+          JSON.stringify({
+            ok: false,
+            error: err instanceof Error ? err.message : String(err),
+          }),
+        );
+      }
+      return;
+    }
+
+    if (req.method === 'POST' && url.startsWith('/tts')) {
+      try {
+        const rawBody = await readRequestBody(req);
+        const parsed = JSON.parse(rawBody) as { text?: string; apiKey?: string };
+        const headerKey = req.headers['x-gemini-api-key'];
+        const apiKeyFromHeader = Array.isArray(headerKey) ? headerKey[0] : headerKey;
+        const speech = await synthesizeArcadeSpeech(
+          parsed.text ?? '',
+          parsed.apiKey || apiKeyFromHeader,
+        );
+        res.statusCode = 200;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify(speech));
+      } catch (err) {
+        res.statusCode = 400;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(
+          JSON.stringify({
+            ok: false,
+            error: err instanceof Error ? err.message : String(err),
+          }),
+        );
+      }
       return;
     }
 
