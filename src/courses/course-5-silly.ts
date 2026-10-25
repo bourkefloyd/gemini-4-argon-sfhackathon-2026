@@ -51,6 +51,21 @@ export const COURSE_5_SILLY_RACE: CourseSpec = {
       radius: 4.5,
     },
   ],
+  portals: [
+    {
+      id: 'silly-uphill-express-portal',
+      posA: [3.2, 5.45, -22.2],
+      normalA: [0.0, 0.34, 0.9404],
+      upA: [0.0, 0.9404, -0.34],
+      posB: [3.2, 9.35, -38.5],
+      normalB: [-0.28, 0.65, -0.7065],
+      upB: [-0.28, 0.7065, 0.65],
+      radius: 1.55,
+      activeA: true,
+      activeB: true,
+      flingBoost: 1.25,
+    },
+  ],
   hazardManifest: [
     {
       id: 'uphill-conveyor-escalators',

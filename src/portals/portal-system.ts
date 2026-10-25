@@ -2,17 +2,20 @@
  * Non-Euclidean Raymarched SDF Portals & 120 Hz Momentum-Preserving Physics (`src/portals/portal-system.ts`)
  *
  * Implements:
- * 1. Orthonormal Portal Coordinate Frames (right, up, normal)
- * 2. Exact Non-Euclidean Point, Velocity, Spin & Quaternion Transforms:
+ * 1. Pre-Placed, Always-On Landmark Portals on Every Course (`getDefaultCoursePortals(course)`)
+ * 2. 1-Key "Smart Portal Bridge" (`placeSmartPortalBridge`) + Targeted Cursor Raycast Aim (`raycastPortalAimPreview`, `raycastAndPlacePortal`)
+ * 3. Orthonormal Portal Coordinate Frames (`right`, `up`, `normal`)
+ * 4. Exact Non-Euclidean Point, Velocity, Spin & Quaternion Transforms:
  *      p' = T_B * R_pi * T_A^-1 * p
- *      v' = (R_B * R_pi * R_A^-1) * v   (100% scalar speed ||v|| preservation + optional flingBoost)
+ *      v' = (R_B * R_pi * R_A^-1) * v
  *      w' = (R_B * R_pi * R_A^-1) * w
- * 3. Lockstep CSG Throat Cylinder Subtraction behind active portals so the marble
+ * 5. Generous Magnetic Capture Funnel (within 2.5 * R) & Guaranteed Minimum Fling Speed (`minExitSpeed = 14.5 u/s` + `1.25x` momentum boost)
+ * 6. Lockstep CSG Throat Cylinder Subtraction behind active portals so the marble
  *    rolls/falls smoothly into the aperture plane without bouncing off the host wall/floor
- * 4. Interactive Portal Gun SDF Raycaster (`[Q]` Blue Portal / `[E]` or Right-Click Orange Portal)
  */
 
 import type {
+  CourseSpec,
   CpuWorldEvaluator,
   MarbleState,
   PortalPair,
@@ -22,10 +25,25 @@ import type {
 
 export type PortalEnd = 'blue' | 'orange';
 
+export const DEFAULT_PORTAL_RADIUS = 1.55;
+export const DEFAULT_PORTAL_FLING_BOOST = 1.25;
+export const DEFAULT_PORTAL_MIN_EXIT_SPEED = 14.5;
+export const DEFAULT_PORTAL_COOLDOWN_SEC = 0.35;
+export const PORTAL_MAGNETIC_FUNNEL_RADIUS_MULT = 2.5;
+
 export interface PortalBasis {
   readonly right: Vec3;
   readonly up: Vec3;
   readonly normal: Vec3;
+}
+
+export interface PortalAimPreview {
+  readonly active: boolean;
+  readonly end: PortalEnd;
+  readonly position: Vec3;
+  readonly normal: Vec3;
+  readonly up: Vec3;
+  readonly radius: number;
 }
 
 export interface PortalCrossingEvent {
@@ -88,6 +106,173 @@ export function computePortalBasis(normalInput: Vec3, upHint: Vec3 = [0, 1, 0]):
   const up = vNorm(upProj, [0, 1, 0]);
   const right = vNorm(vCross(up, normal), [1, 0, 0]);
   return { right, up, normal };
+}
+
+/**
+ * Pre-placed, always-on landmark portal pairs for every course (`getDefaultCoursePortals(course)`).
+ *
+ * Ensures every course (Course 1–6 plus custom/architect courses) spawns with a high-visibility
+ * Linked Blue + Orange Portal Pair right on the track with generous `radius = 1.55` and
+ * `flingBoost = 1.25` that flings the marble across gaps toward the next terrace or goal.
+ */
+export function getDefaultCoursePortals(course: CourseSpec): readonly PortalPair[] {
+  if (course.portals && course.portals.length > 0) {
+    return course.portals.map((pair) => ({
+      ...pair,
+      radius: Math.max(DEFAULT_PORTAL_RADIUS, pair.radius ?? DEFAULT_PORTAL_RADIUS),
+      activeA: pair.activeA ?? true,
+      activeB: pair.activeB ?? true,
+      flingBoost: pair.flingBoost && pair.flingBoost > 1.0 ? pair.flingBoost : DEFAULT_PORTAL_FLING_BOOST,
+    }));
+  }
+
+  switch (course.id) {
+    case 'practice-race':
+      return [
+        {
+          id: 'practice-chute-fling-portal',
+          posA: [0.4, 5.42, -19.35],
+          normalA: [0.0, 0.22, 0.9755],
+          upA: [0.0, 0.9755, -0.22],
+          posB: [27.05, 1.7, -19.85],
+          normalB: [0.0, 0.36, -0.933],
+          upB: [0.0, 0.933, 0.36],
+          radius: DEFAULT_PORTAL_RADIUS,
+          activeA: true,
+          activeB: true,
+          flingBoost: DEFAULT_PORTAL_FLING_BOOST,
+        },
+      ];
+
+    case 'beginner-chutes':
+      return [
+        {
+          id: 'beginner-acid-vault-portal',
+          posA: [2.8, 6.2, -18.5],
+          normalA: [0.0, 0.34, 0.9404],
+          upA: [0.0, 0.9404, -0.34],
+          posB: [2.5, 6.55, -31.8],
+          normalB: [-0.15, 0.691, -0.7071],
+          upB: [-0.15, 0.7071, 0.691],
+          radius: DEFAULT_PORTAL_RADIUS,
+          activeA: true,
+          activeB: true,
+          flingBoost: DEFAULT_PORTAL_FLING_BOOST,
+        },
+      ];
+
+    case 'intermediate-madness':
+      return [
+        {
+          id: 'intermediate-acid-vault-portal',
+          posA: [-2.4, 7.55, -18.55],
+          normalA: [0.0, 0.25, 0.968],
+          upA: [0.0, 0.968, -0.25],
+          posB: [20.2, 4.65, -28.6],
+          normalB: [0.14, 0.52, -0.842],
+          upB: [0.0, 0.85, 0.52],
+          radius: DEFAULT_PORTAL_RADIUS,
+          activeA: true,
+          activeB: true,
+          flingBoost: DEFAULT_PORTAL_FLING_BOOST,
+        },
+      ];
+
+    case 'aerial-catwalks':
+      return [
+        {
+          id: 'aerial-chasm-fling-portal',
+          posA: [-2.4, 10.65, -24.8],
+          normalA: [0.0, 0.32, 0.9474],
+          upA: [0.0, 0.9474, -0.32],
+          posB: [6.2, 7.65, -39.2],
+          normalB: [0.7071, 0.7071, 0.0],
+          upB: [-0.7071, 0.7071, 0.0],
+          radius: DEFAULT_PORTAL_RADIUS,
+          activeA: true,
+          activeB: true,
+          flingBoost: DEFAULT_PORTAL_FLING_BOOST,
+        },
+      ];
+
+    case 'silly-race':
+      return [
+        {
+          id: 'silly-uphill-express-portal',
+          posA: [3.2, 5.45, -22.2],
+          normalA: [0.0, 0.34, 0.9404],
+          upA: [0.0, 0.9404, -0.34],
+          posB: [3.2, 9.35, -38.5],
+          normalB: [-0.28, 0.65, -0.7065],
+          upB: [-0.28, 0.7065, 0.65],
+          radius: DEFAULT_PORTAL_RADIUS,
+          activeA: true,
+          activeB: true,
+          flingBoost: DEFAULT_PORTAL_FLING_BOOST,
+        },
+      ];
+
+    case 'ultimate-argon-core':
+      return [
+        {
+          id: 'ultimate-reactor-fling-portal',
+          posA: [0.0, 10.85, -24.2],
+          normalA: [0.0, 0.32, 0.9474],
+          upA: [0.0, 0.9474, -0.32],
+          posB: [0.0, 7.05, -43.5],
+          normalB: [0.0, 0.7071, -0.7071],
+          upB: [0.0, 0.7071, 0.7071],
+          radius: DEFAULT_PORTAL_RADIUS,
+          activeA: true,
+          activeB: true,
+          flingBoost: DEFAULT_PORTAL_FLING_BOOST,
+        },
+      ];
+
+    default: {
+      // Fallback landmark portal pair for custom/architect courses (e.g. Ramp Track / Spiral Citadel)
+      const toGoal = vSub(course.goalPos, course.startPos);
+      const horizDir = vNorm([toGoal[0], 0, toGoal[2]], [0, 0, -1]);
+      const entryPos: Vec3 = [
+        course.startPos[0] + horizDir[0] * 4.5,
+        course.startPos[1] - 0.15,
+        course.startPos[2] + horizDir[2] * 4.5,
+      ];
+      const entryNormal = vNorm([-horizDir[0] * 0.92, 0.38, -horizDir[2] * 0.92], [0, 0.38, 0.92]);
+      const entryBasis = computePortalBasis(entryNormal, [0, 1, 0]);
+
+      const nextTerraceTarget =
+        course.checkpoints && course.checkpoints.length > 0
+          ? course.checkpoints[course.checkpoints.length - 1].position
+          : vAdd(course.startPos, vScale(toGoal, 0.65));
+      const toGoalFromExit = vNorm(
+        [course.goalPos[0] - nextTerraceTarget[0], 0, course.goalPos[2] - nextTerraceTarget[2]],
+        horizDir,
+      );
+      const invSqrt2 = Math.SQRT1_2;
+      const exitNormal = vNorm(
+        [toGoalFromExit[0] * invSqrt2, invSqrt2, toGoalFromExit[2] * invSqrt2],
+        [0, invSqrt2, -invSqrt2],
+      );
+      const exitBasis = computePortalBasis(exitNormal, [0, 1, 0]);
+
+      return [
+        {
+          id: `${course.id}-landmark-portal`,
+          posA: entryPos,
+          normalA: entryBasis.normal,
+          upA: entryBasis.up,
+          posB: [nextTerraceTarget[0], nextTerraceTarget[1] + 0.85, nextTerraceTarget[2]],
+          normalB: exitBasis.normal,
+          upB: exitBasis.up,
+          radius: DEFAULT_PORTAL_RADIUS,
+          activeA: true,
+          activeB: true,
+          flingBoost: DEFAULT_PORTAL_FLING_BOOST,
+        },
+      ];
+    }
+  }
 }
 
 /**
@@ -288,7 +473,7 @@ export function tracePortalRayCpu(
 
   for (let step = 0; step < 128; step++) {
     const p = vAdd(ro, vScale(rd, t));
-    let worldDist = evaluator.distance(p, time);
+    const worldDist = evaluator.distance(p, time);
 
     let bestApertureDist = Infinity;
     let bestPairIdx = -1;
@@ -373,22 +558,24 @@ export function tracePortalRayCpu(
 }
 
 /**
- * 120 Hz Momentum-Preserving Portal Crossing Solver ("Speedy marble goes in, speedy marble comes out").
- *
- * Checks if the marble center crossed an active portal aperture plane within `radius`.
- * When triggered, teleports position, rotates linear velocity `v` and angular velocity `omega`
- * by `R_B * R_pi * R_A^-1`, and preserves 100% of scalar speed `||v||` (scaled by optional `flingBoost`).
+ * 120 Hz Momentum-Preserving Portal Crossing Solver ("Speedy marble goes in, speedy marble comes out")
+ * with Generous Magnetic Capture Funnel (`2.5 * R`) and Guaranteed Minimum Fling Speed (`14.5 u/s` + `1.25x` boost).
  */
 export function stepPortalCrossing(
   prevPos: Vec3,
   state: MarbleState,
   portals: readonly PortalPair[],
   dt: number,
+  options?: {
+    readonly minExitSpeed?: number;
+    readonly defaultFlingBoost?: number;
+    readonly cooldownSec?: number;
+  },
 ): {
   readonly state: MarbleState;
   readonly crossed: PortalCrossingEvent | null;
 } {
-  let cooldown = Math.max(0, (state.portalCooldown ?? 0) - dt);
+  const cooldown = Math.max(0, (state.portalCooldown ?? 0) - dt);
   if (portals.length === 0 || state.status !== 'racing') {
     return {
       state: cooldown !== (state.portalCooldown ?? 0)
@@ -399,6 +586,8 @@ export function stepPortalCrossing(
   }
 
   let nextVel = state.velocity;
+  const minExitSpeed = options?.minExitSpeed ?? DEFAULT_PORTAL_MIN_EXIT_SPEED;
+  const cooldownSec = options?.cooldownSec ?? DEFAULT_PORTAL_COOLDOWN_SEC;
 
   for (let i = 0; i < portals.length; i++) {
     const pair = portals[i];
@@ -406,6 +595,7 @@ export function stepPortalCrossing(
     const activeB = pair.activeB ?? true;
     if (!activeA || !activeB) continue;
 
+    const portalRadius = Math.max(0.5, pair.radius || DEFAULT_PORTAL_RADIUS);
     const basisA = computePortalBasis(pair.normalA, pair.upA);
     const basisB = computePortalBasis(pair.normalB, pair.upB);
 
@@ -438,6 +628,7 @@ export function stepPortalCrossing(
     for (const side of sides) {
       const dpPrev = vSub(prevPos, side.inPos);
       const dpCurr = vSub(state.position, side.inPos);
+      const dist3d = vLen(dpCurr);
 
       const prevZ = vDot(dpPrev, side.inBasis.normal);
       const currX = vDot(dpCurr, side.inBasis.right);
@@ -445,34 +636,69 @@ export function stepPortalCrossing(
       const currZ = vDot(dpCurr, side.inBasis.normal);
       const rPlanar = Math.hypot(currX, currY);
 
-      // Gentle funnel capture when rolling into a floor/upward portal throat
-      if (
-        cooldown <= 0 &&
-        rPlanar <= pair.radius * 0.92 &&
-        currZ > 0.02 &&
-        currZ <= state.radius + 0.25 &&
-        side.inBasis.normal[1] > 0.5
-      ) {
-        nextVel = vSub(nextVel, vScale(side.inBasis.normal, 42.0 * dt));
+      // Generous Magnetic Capture Funnel within 2.5 * R of the entry aperture:
+      // Gently pulls the marble's trajectory toward the portal center when rolling toward it
+      // so the player never clips the torus rim and bounces off!
+      const funnelRange = portalRadius * PORTAL_MAGNETIC_FUNNEL_RADIUS_MULT;
+      if (cooldown <= 0 && dist3d <= funnelRange && currZ > -0.25 && currZ <= funnelRange) {
+        const toCenter = vScale(dpCurr, -1 / Math.max(dist3d, 1e-4));
+        const speed = vLen(nextVel);
+        const approachingScore = speed > 0.15 ? vDot(vScale(nextVel, 1 / speed), toCenter) : 0.35;
+
+        if (approachingScore > -0.05) {
+          const proximity = 1.0 - dist3d / funnelRange;
+          const lateralPullStrength = (22.0 + 26.0 * proximity) * Math.max(0.25, approachingScore);
+          // Radial pull toward aperture center axis (lx -> 0, ly -> 0) and gentle intake pull into aperture
+          const radialOffset = vAdd(
+            vScale(side.inBasis.right, currX),
+            vScale(side.inBasis.up, currY),
+          );
+          const radialLen = vLen(radialOffset);
+          if (radialLen > 0.02) {
+            const radialInward = vScale(radialOffset, -1 / radialLen);
+            nextVel = vAdd(
+              nextVel,
+              vScale(radialInward, lateralPullStrength * Math.min(1.0, radialLen / portalRadius) * dt),
+            );
+          }
+          // Gentle axial suction into the aperture throat when close in front
+          if (rPlanar <= portalRadius * 1.15 && currZ > 0.0 && currZ <= state.radius + 1.2) {
+            nextVel = vSub(nextVel, vScale(side.inBasis.normal, (28.0 + 20.0 * proximity) * dt));
+          }
+        }
       }
 
       if (cooldown > 0) continue;
 
       const vn = vDot(nextVel, side.inBasis.normal);
       const crossedPlane =
-        rPlanar <= pair.radius &&
-        vn < -0.02 &&
-        prevZ > -0.35 &&
-        currZ <= 0.12 &&
-        prevZ >= currZ;
+        rPlanar <= portalRadius * 1.05 &&
+        (vn < 0.15 || prevZ > currZ) &&
+        prevZ > -0.45 &&
+        currZ <= state.radius * 0.55 &&
+        prevZ >= currZ - 0.02;
 
       if (crossedPlane) {
         const entrySpeed = vLen(state.velocity);
-        const flingBoost = pair.flingBoost ?? 1.0;
+        const flingBoost = pair.flingBoost ?? options?.defaultFlingBoost ?? DEFAULT_PORTAL_FLING_BOOST;
 
         // Rotate velocity by R_B * R_pi * R_A^-1, preserving 100% of scalar speed (times flingBoost)
         const rotatedVel = transformVectorAcrossPortal(state.velocity, side.inBasis, side.outBasis);
-        const exitVel = vScale(rotatedVel, flingBoost);
+        const boostedVel = vScale(rotatedVel, flingBoost);
+        const boostedSpeed = vLen(boostedVel);
+
+        // Guaranteed Minimum Fling Speed (`minExitSpeed = 14.5 u/s` + `1.25x` momentum boost):
+        // Even if the marble rolls into a portal slowly, shoot out of the exit portal with a
+        // satisfying 14.5+ u/s launch arc along the exit normal + tangent direction!
+        const targetExitSpeed = Math.max(minExitSpeed, boostedSpeed, entrySpeed * flingBoost);
+        let exitDir = vNorm(boostedVel, side.outBasis.normal);
+        if (vDot(exitDir, side.outBasis.normal) < 0.25) {
+          exitDir = vNorm(
+            vAdd(vScale(exitDir, 0.55), vScale(side.outBasis.normal, 0.85)),
+            side.outBasis.normal,
+          );
+        }
+        const exitVel = vScale(exitDir, targetExitSpeed);
         const exitSpeed = vLen(exitVel);
 
         // Rotate angular velocity & orientation quaternion across the portal frame
@@ -487,10 +713,11 @@ export function stepPortalCrossing(
           side.outBasis,
         );
 
-        // Transform position into exit frame, placed just outside the exit aperture plane
-        const clampedX = Math.max(-pair.radius * 0.65, Math.min(pair.radius * 0.65, currX));
-        const clampedY = Math.max(-pair.radius * 0.65, Math.min(pair.radius * 0.65, currY));
-        const exitClearance = Math.max(state.radius + 0.08, -currZ + 0.14);
+        // Exit Clearance: offset exit position by `normalB * (marbleRadius + 0.45)`
+        // with a `350 ms` re-entry lock so the marble never double-triggers
+        const clampedX = Math.max(-portalRadius * 0.45, Math.min(portalRadius * 0.45, currX * 0.5));
+        const clampedY = Math.max(-portalRadius * 0.45, Math.min(portalRadius * 0.45, currY * 0.5));
+        const exitClearance = state.radius + 0.45;
         const exitPos: Vec3 = [
           side.outPos[0] - clampedX * side.outBasis.right[0] + clampedY * side.outBasis.up[0] + exitClearance * side.outBasis.normal[0],
           side.outPos[1] - clampedX * side.outBasis.right[1] + clampedY * side.outBasis.up[1] + exitClearance * side.outBasis.normal[1],
@@ -511,7 +738,7 @@ export function stepPortalCrossing(
             grounded: false,
             normal: side.outBasis.normal,
           },
-          portalCooldown: 0.14,
+          portalCooldown: cooldownSec,
           portalCrossings: prevCrossings + 1,
           lastPortalExitSpeed: exitSpeed,
         };
@@ -545,6 +772,214 @@ export function stepPortalCrossing(
 }
 
 /**
+ * 1-Key "Smart Portal Bridge" (`[Q]`):
+ * Automatically places the Blue Entry Portal `3.5 m` directly ahead of the marble on the track
+ * (facing the player!) and automatically places the Orange Exit Portal on the next elevated
+ * terrace / checkpoint ahead (angled 45° toward the goal!) — so a single keypress creates a
+ * working portal shortcut right in front of the player!
+ */
+export function placeSmartPortalBridge(
+  marble: MarbleState,
+  course: CourseSpec,
+  evaluator: CpuWorldEvaluator,
+  forwardHintXZ: readonly [number, number] = [0, -1],
+  time = 0,
+  currentPair?: PortalPair,
+): PortalPair {
+  const horizSpeed = Math.hypot(marble.velocity[0], marble.velocity[2]);
+  const toGoalXZ: Vec3 = [
+    course.goalPos[0] - marble.position[0],
+    0,
+    course.goalPos[2] - marble.position[2],
+  ];
+
+  // Determine player's forward roll direction in XZ
+  const rollForward: Vec3 =
+    horizSpeed > 0.65
+      ? vNorm([marble.velocity[0], 0, marble.velocity[2]], [0, 0, -1])
+      : Math.hypot(forwardHintXZ[0], forwardHintXZ[1]) > 0.1
+        ? vNorm([forwardHintXZ[0], 0, forwardHintXZ[1]], [0, 0, -1])
+        : vNorm(toGoalXZ, [0, 0, -1]);
+
+  const savedPortals = evaluator.getPortals?.() ?? [];
+  evaluator.setPortals?.([]);
+
+  // 1. Place Blue Entry Portal 3.5m directly ahead of the marble on the track (facing the marble!)
+  const probeAhead: Vec3 = [
+    marble.position[0] + rollForward[0] * 3.5,
+    marble.position[1] + 2.2,
+    marble.position[2] + rollForward[2] * 3.5,
+  ];
+  let blueSurfacePos: Vec3 = [
+    marble.position[0] + rollForward[0] * 3.5,
+    marble.position[1],
+    marble.position[2] + rollForward[2] * 3.5,
+  ];
+
+  try {
+    let t = 0.1;
+    for (let step = 0; step < 36; step++) {
+      const p: Vec3 = [probeAhead[0], probeAhead[1] - t, probeAhead[2]];
+      const d = evaluator.distance(p, time);
+      if (d < 0.06) {
+        blueSurfacePos = [p[0], p[1] + 0.55, p[2]];
+        break;
+      }
+      t += Math.max(d * 0.85, 0.08);
+      if (t > 8.0) break;
+    }
+  } finally {
+    evaluator.setPortals?.(savedPortals);
+  }
+
+  // Blue portal normal faces back toward the approaching marble (slightly tilted upward for effortless capture)
+  const blueNormal = vNorm(
+    [-rollForward[0] * 0.92, 0.38, -rollForward[2] * 0.92],
+    [0, 0.38, 0.92],
+  );
+  const blueBasis = computePortalBasis(blueNormal, [0, 1, 0]);
+
+  // 2. Choose Orange Exit Portal on the next checkpoint / terrace ahead (angled 45° toward the goal)
+  let exitTarget: Vec3 | null = null;
+  if (course.checkpoints && course.checkpoints.length > 0) {
+    const goalDist = vLen(vSub(course.goalPos, marble.position));
+    let bestCp: Vec3 | null = null;
+    let bestScore = Infinity;
+    for (const cp of course.checkpoints) {
+      const distFromMarble = vLen(vSub(cp.position, marble.position));
+      const distFromCpToGoal = vLen(vSub(course.goalPos, cp.position));
+      // Pick the next checkpoint ahead that is closer to the goal and at least 6m away from the marble
+      if (distFromMarble > 5.5 && distFromCpToGoal < goalDist + 2.0 && distFromMarble < bestScore) {
+        bestScore = distFromMarble;
+        bestCp = cp.position;
+      }
+    }
+    exitTarget = bestCp ?? course.checkpoints[course.checkpoints.length - 1].position;
+  }
+
+  if (!exitTarget || vLen(vSub(exitTarget, blueSurfacePos)) < 5.0) {
+    // Fallback: place exit terrace 65% of the way toward the Goal Podium (or 4.5m in front of goal)
+    const dirToGoal = vNorm(toGoalXZ, rollForward);
+    const distToGoal = Math.hypot(toGoalXZ[0], toGoalXZ[2]);
+    if (distToGoal > 9.0) {
+      exitTarget = [
+        course.goalPos[0] - dirToGoal[0] * 4.2,
+        course.goalPos[1] + 0.95,
+        course.goalPos[2] - dirToGoal[2] * 4.2,
+      ];
+    } else {
+      exitTarget = [
+        marble.position[0] + rollForward[0] * 14.0,
+        marble.position[1] + 1.5,
+        marble.position[2] + rollForward[2] * 14.0,
+      ];
+    }
+  }
+
+  const exitPos: Vec3 = [exitTarget[0], exitTarget[1] + 0.65, exitTarget[2]];
+  const exitToGoalXZ = vNorm(
+    [course.goalPos[0] - exitPos[0], 0, course.goalPos[2] - exitPos[2]],
+    rollForward,
+  );
+  const invSqrt2 = Math.SQRT1_2;
+  const orangeNormal = vNorm(
+    [exitToGoalXZ[0] * invSqrt2, invSqrt2, exitToGoalXZ[2] * invSqrt2],
+    [0, invSqrt2, -invSqrt2],
+  );
+  const orangeBasis = computePortalBasis(orangeNormal, [0, 1, 0]);
+
+  return {
+    id: currentPair?.id ?? 'smart-portal-bridge',
+    posA: blueSurfacePos,
+    normalA: blueBasis.normal,
+    upA: blueBasis.up,
+    posB: exitPos,
+    normalB: orangeBasis.normal,
+    upB: orangeBasis.up,
+    radius: Math.max(DEFAULT_PORTAL_RADIUS, currentPair?.radius ?? DEFAULT_PORTAL_RADIUS),
+    activeA: true,
+    activeB: true,
+    flingBoost: currentPair?.flingBoost ?? DEFAULT_PORTAL_FLING_BOOST,
+  };
+}
+
+/**
+ * Raycast from the camera through the cursor ray against `CpuWorldEvaluator` to compute
+ * a live 3D Aim Ring / Trajectory Preview (`PortalAimPreview`) on the surface under the cursor.
+ */
+export function raycastPortalAimPreview(
+  end: PortalEnd,
+  origin: Vec3,
+  aimDir: Vec3,
+  evaluator: CpuWorldEvaluator,
+  time: number,
+  radius = DEFAULT_PORTAL_RADIUS,
+): PortalAimPreview {
+  const cleanDir = vNorm(aimDir, [0, -0.35, -0.93]);
+  const candidateRays: Vec3[] = [
+    cleanDir,
+    vNorm([cleanDir[0], cleanDir[1] - 0.25, cleanDir[2]], [0, -0.5, -0.86]),
+    vNorm([cleanDir[0], cleanDir[1] - 0.55, cleanDir[2]], [0, -0.8, -0.6]),
+  ];
+
+  const savedPortals = evaluator.getPortals?.() ?? [];
+  evaluator.setPortals?.([]);
+
+  let hitPos: Vec3 | null = null;
+  let hitNormal: Vec3 = [0, 1, 0];
+
+  try {
+    for (const rd of candidateRays) {
+      let t = 0.75;
+      const maxT = 68.0;
+      for (let step = 0; step < 84; step++) {
+        const p = vAdd(origin, vScale(rd, t));
+        const d = evaluator.distance(p, time);
+        if (d < 0.045) {
+          hitPos = p;
+          hitNormal = evaluator.normal(p, time);
+          break;
+        }
+        t += Math.max(d * 0.85, 0.08);
+        if (t >= maxT) break;
+      }
+      if (hitPos) break;
+    }
+  } finally {
+    evaluator.setPortals?.(savedPortals);
+  }
+
+  if (!hitPos) {
+    const fallbackPos = vAdd(origin, vScale(cleanDir, 12.0));
+    const basis = computePortalBasis([0, 1, 0], [0, 0, -1]);
+    return {
+      active: false,
+      end,
+      position: fallbackPos,
+      normal: basis.normal,
+      up: basis.up,
+      radius,
+    };
+  }
+
+  const upHint: Vec3 =
+    Math.abs(hitNormal[1]) < 0.78
+      ? [0, 1, 0]
+      : vNorm([cleanDir[0], 0, cleanDir[2]], [0, 0, -1]);
+  const basis = computePortalBasis(hitNormal, upHint);
+  const surfacePos = vAdd(hitPos, vScale(basis.normal, 0.03));
+
+  return {
+    active: true,
+    end,
+    position: surfacePos,
+    normal: basis.normal,
+    up: basis.up,
+    radius,
+  };
+}
+
+/**
  * Raycast against the course SDF from `origin` along `aimDir` and place/relocate
  * either the Blue (`'blue'`) or Orange (`'orange'`) portal of `currentPair`.
  */
@@ -561,8 +996,6 @@ export function raycastAndPlacePortal(
   readonly hitNormal: Vec3;
 } {
   const cleanDir = vNorm(aimDir, [0, -0.35, -0.93]);
-  // Candidate rays: primary aim ray, then progressively pitched-down rays so firing a portal
-  // while rolling on a track always lands on a valid course surface ahead.
   const candidateRays: Vec3[] = [
     cleanDir,
     vNorm([cleanDir[0], cleanDir[1] - 0.32, cleanDir[2]], [0, -0.5, -0.86]),
@@ -570,7 +1003,6 @@ export function raycastAndPlacePortal(
     [0, -1, 0],
   ];
 
-  // Temporarily disable portal throat carving during surface placement raycast
   const savedPortals = evaluator.getPortals?.() ?? [];
   evaluator.setPortals?.([]);
 
@@ -580,11 +1012,11 @@ export function raycastAndPlacePortal(
   try {
     for (const rd of candidateRays) {
       let t = 0.75;
-      const maxT = 44.0;
-      for (let step = 0; step < 72; step++) {
+      const maxT = 68.0;
+      for (let step = 0; step < 84; step++) {
         const p = vAdd(origin, vScale(rd, t));
         const d = evaluator.distance(p, time);
-        if (d < 0.04) {
+        if (d < 0.045) {
           hitPos = p;
           hitNormal = evaluator.normal(p, time);
           break;
@@ -599,19 +1031,18 @@ export function raycastAndPlacePortal(
   }
 
   if (!hitPos) {
-    // Fallback to a point ahead and slightly grounded
     hitPos = vAdd(origin, vScale(cleanDir, 4.5));
     hitNormal = evaluator.normal(hitPos, time);
   }
 
-  // Choose an intuitive `up` tangent vector on the hit surface
   const upHint: Vec3 =
     Math.abs(hitNormal[1]) < 0.78
       ? [0, 1, 0]
       : vNorm([cleanDir[0], 0, cleanDir[2]], [0, 0, -1]);
   const basis = computePortalBasis(hitNormal, upHint);
-  // Nudge portal slightly onto the surface plane
   const surfacePos = vAdd(hitPos, vScale(basis.normal, 0.02));
+  const nextRadius = Math.max(DEFAULT_PORTAL_RADIUS, currentPair.radius || DEFAULT_PORTAL_RADIUS);
+  const nextFlingBoost = currentPair.flingBoost ?? DEFAULT_PORTAL_FLING_BOOST;
 
   if (end === 'blue') {
     return {
@@ -620,7 +1051,9 @@ export function raycastAndPlacePortal(
         posA: surfacePos,
         normalA: basis.normal,
         upA: basis.up,
+        radius: nextRadius,
         activeA: true,
+        flingBoost: nextFlingBoost,
       },
       hitPos: surfacePos,
       hitNormal: basis.normal,
@@ -633,7 +1066,9 @@ export function raycastAndPlacePortal(
       posB: surfacePos,
       normalB: basis.normal,
       upB: basis.up,
+      radius: nextRadius,
       activeB: true,
+      flingBoost: nextFlingBoost,
     },
     hitPos: surfacePos,
     hitNormal: basis.normal,

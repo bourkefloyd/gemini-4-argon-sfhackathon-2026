@@ -87,6 +87,7 @@ export interface ArcadeHudProps {
   readonly onToggleViewMode?: () => void;
   readonly onToggleDebugDrawer?: () => void;
   readonly onSelectGridPlayer?: (slotIndex: number) => void;
+  readonly onClearSavedGhosts?: () => void;
 }
 
 export const ArcadeHud: React.FC<ArcadeHudProps> = ({
@@ -130,6 +131,7 @@ export const ArcadeHud: React.FC<ArcadeHudProps> = ({
   onToggleViewMode,
   onToggleDebugDrawer,
   onSelectGridPlayer,
+  onClearSavedGhosts,
 }) => {
   const horizSpeed = Math.hypot(marble.velocity[0], marble.velocity[2]);
   const totalSpeed = Math.hypot(marble.velocity[0], marble.velocity[1], marble.velocity[2]);
@@ -547,6 +549,21 @@ export const ArcadeHud: React.FC<ArcadeHudProps> = ({
                   AI BOT: {botEnabled ? (botStyle ?? 'tourist').toUpperCase() : 'OFF'} [P]
                 </button>
               )}
+              <button
+                type="button"
+                className="hud-btn hud-btn-sm"
+                onClick={() => {
+                  try {
+                    window.localStorage?.removeItem('marble_madness_ghost_runs_v1');
+                  } catch {
+                    // ignore storage errors
+                  }
+                  onClearSavedGhosts?.();
+                }}
+                data-testid="hud-clear-ghosts-btn"
+              >
+                CLEAR SAVED GHOSTS
+              </button>
             </div>
           </div>
 

@@ -29,7 +29,16 @@ import type {
 } from './contracts';
 import { BUILT_IN_COURSES } from './courses';
 import { createMarbleSimulation } from './physics';
-import { type PortalEnd, raycastAndPlacePortal } from './portals';
+import {
+  DEFAULT_PORTAL_FLING_BOOST,
+  DEFAULT_PORTAL_RADIUS,
+  getDefaultCoursePortals,
+  placeSmartPortalBridge,
+  type PortalAimPreview,
+  type PortalEnd,
+  raycastAndPlacePortal,
+  raycastPortalAimPreview,
+} from './portals';
 import { createRaymarchRenderer } from './rendering';
 import { createCpuWorldEvaluator } from './sdf/eval-cpu';
 import { ArcadeHud, ArchitectHookPanel } from './ui';
@@ -48,6 +57,7 @@ import {
   type RunTelemetrySummary,
 } from './bot';
 import {
+  appendFieldMutation,
   createInitialWeaponState,
   stepWeaponController,
   triggerWeaponAbility,
@@ -91,6 +101,7 @@ export interface MarblePlaytestTelemetry {
   readonly botStyle?: BotPlayStyle;
   readonly botLatestSummary?: RunTelemetrySummary | null;
   readonly portals: readonly PortalPair[];
+  readonly portalAimPreview?: PortalAimPreview;
   readonly fieldMutations: readonly FieldMutation[];
   readonly bridgeExtruderRemainingSec: number;
   readonly viewMode?: ViewportDisplayMode;
@@ -122,6 +133,7 @@ export interface MarblePlaytestApi {
   loadCourseSpec: (spec: CourseSpec) => MarblePlaytestTelemetry;
   getCompiledShaders: () => { glsl: string; wgsl: string; backend: string };
   firePortal: (end: PortalEnd, aimDir?: Vec3, origin?: Vec3) => MarblePlaytestTelemetry;
+  placeSmartPortalBridge: () => MarblePlaytestTelemetry;
   setPortals: (portals: readonly PortalPair[]) => MarblePlaytestTelemetry;
   getPortals: () => readonly PortalPair[];
   triggerWeapon: (
@@ -143,6 +155,39 @@ declare global {
   }
 }
 
+class OverlayErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { hasError: boolean }
+> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false };
+  }
+
+  static getDerivedStateFromError(): { hasError: boolean } {
+    return { hasError: true };
+  }
+
+  componentDidCatch(error: unknown, info: React.ErrorInfo): void {
+    console.error('OverlayErrorBoundary caught error:', error, info);
+  }
+
+  render(): React.ReactNode {
+    if (this.state.hasError) {
+      return null;
+    }
+    return this.props.children;
+  }
+}
+
+function useLazyRef<T>(init: () => T): React.MutableRefObject<T> {
+  const ref = useRef<T | null>(null);
+  if (ref.current === null) {
+    ref.current = init();
+  }
+  return ref as React.MutableRefObject<T>;
+}
+
 export const App: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
@@ -150,27 +195,31 @@ export const App: React.FC = () => {
   const [activeCourseIndex, setActiveCourseIndex] = useState<number>(0);
   const currentCourse = courses[activeCourseIndex] ?? courses[0];
 
-  const evaluatorRef = useRef(createCpuWorldEvaluator(currentCourse));
-  const simRef = useRef(createMarbleSimulation(currentCourse, evaluatorRef.current));
-  const cameraRigRef = useRef(
+  const evaluatorRef = useLazyRef(() => createCpuWorldEvaluator(currentCourse));
+  const simRef = useLazyRef(() => createMarbleSimulation(currentCourse, evaluatorRef.current));
+  const cameraRigRef = useLazyRef(() =>
     createIsometricCameraRig(currentCourse, currentCourse.startPos),
   );
   const rendererRef = useRef<ReturnType<typeof createRaymarchRenderer> | null>(null);
-  const sensoryRef = useRef(createArcadeSensorySession(currentCourse));
-  const shatterSimRef = useRef(createShatterSimulator());
-  const shockwaveMgrRef = useRef(createShockwaveManager());
+  const sensoryRef = useLazyRef(() => createArcadeSensorySession(currentCourse));
+  const shatterSimRef = useLazyRef(() => createShatterSimulator());
+  const shockwaveMgrRef = useLazyRef(() => createShockwaveManager());
   const botControllerRef = useRef<BotPlaytestController | null>(null);
-  const partyClientRef = useRef(createPartyRoomClient({ roomCode: 'ARGON-1' }));
-  const multiMarbleSimRef = useRef(createMultiMarbleArenaSimulation(currentCourse));
-  const aiRivalSim2Ref = useRef(createMarbleSimulation(currentCourse, evaluatorRef.current));
-  const aiRivalDriver2Ref = useRef(
+  const partyClientRef = useLazyRef(() => createPartyRoomClient({ roomCode: 'ARGON-1' }));
+  const multiMarbleSimRef = useLazyRef(() => createMultiMarbleArenaSimulation(currentCourse));
+  const aiRivalSim2Ref = useLazyRef(() =>
+    createMarbleSimulation(currentCourse, evaluatorRef.current),
+  );
+  const aiRivalDriver2Ref = useLazyRef(() =>
     createAutonomousDriver(currentCourse, evaluatorRef.current, { style: 'speedrunner' }),
   );
-  const aiRivalSim4Ref = useRef(createMarbleSimulation(currentCourse, evaluatorRef.current));
-  const aiRivalDriver4Ref = useRef(
+  const aiRivalSim4Ref = useLazyRef(() =>
+    createMarbleSimulation(currentCourse, evaluatorRef.current),
+  );
+  const aiRivalDriver4Ref = useLazyRef(() =>
     createAutonomousDriver(currentCourse, evaluatorRef.current, { style: 'chaos-explorer' }),
   );
-  const tileCameraRigsRef = useRef([
+  const tileCameraRigsRef = useLazyRef(() => [
     createIsometricCameraRig(currentCourse, currentCourse.startPos),
     createIsometricCameraRig(currentCourse, currentCourse.startPos),
     createIsometricCameraRig(currentCourse, currentCourse.startPos),
@@ -213,7 +262,7 @@ export const App: React.FC = () => {
     keyVector: [0, 0],
   });
   const [uiPortals, setUiPortals] = useState<readonly PortalPair[]>(
-    () => currentCourse.portals ?? [],
+    () => getDefaultCoursePortals(currentCourse),
   );
   const [uiWeaponState, setUiWeaponState] = useState<WeaponControllerState>(
     createInitialWeaponState,
@@ -222,6 +271,7 @@ export const App: React.FC = () => {
   const timeRemainingRef = useRef<number>(currentCourse.parTimeSec);
   const runElapsedRef = useRef<number>(0);
   const scoreRef = useRef<number>(0);
+  const scoreAccumulatorRef = useRef<number>(0);
   const fpsRef = useRef<number>(60);
   const simTimeRef = useRef<number>(0);
   const activeCourseRef = useRef<CourseSpec>(currentCourse);
@@ -229,8 +279,12 @@ export const App: React.FC = () => {
   const activeIdxRef = useRef<number>(activeCourseIndex);
   const goalAwardedRef = useRef<boolean>(false);
   const prevMarbleRef = useRef<MarbleState>(simRef.current.getState());
-  const portalsRef = useRef<readonly PortalPair[]>(currentCourse.portals ?? []);
+  const portalsRef = useRef<readonly PortalPair[]>(getDefaultCoursePortals(currentCourse));
+  const portalAimPreviewRef = useRef<PortalAimPreview | undefined>(undefined);
   const weaponStateRef = useRef<WeaponControllerState>(createInitialWeaponState());
+  const seenPartyMutationIdsRef = useRef<Set<string>>(new Set());
+  const architectOpenRef = useRef<boolean>(false);
+  const partyOpenRef = useRef<boolean>(false);
   const viewModeRef = useRef<ViewportDisplayMode>('fullscreen');
   const focusedPlayerIdxRef = useRef<number>(0);
   const debugDrawerOpenRef = useRef<boolean>(false);
@@ -250,14 +304,18 @@ export const App: React.FC = () => {
   coursesRef.current = courses;
   activeIdxRef.current = activeCourseIndex;
   activeCourseRef.current = currentCourse;
+  architectOpenRef.current = architectOpen;
+  partyOpenRef.current = partyOpen;
 
   const activateCourse = useCallback(
     (nextCourse: CourseSpec, nextIndex: number, carryOverBonusSec: number | null) => {
       const nextEval = createCpuWorldEvaluator(nextCourse);
-      const initialPortals = nextCourse.portals ? [...nextCourse.portals] : [];
+      const initialPortals = [...getDefaultCoursePortals(nextCourse)];
       const initialWeapons = createInitialWeaponState();
       portalsRef.current = initialPortals;
+      portalAimPreviewRef.current = undefined;
       weaponStateRef.current = initialWeapons;
+      seenPartyMutationIdsRef.current.clear();
       nextEval.setPortals?.(initialPortals);
       nextEval.setFieldMutations?.([]);
 
@@ -353,21 +411,20 @@ export const App: React.FC = () => {
 
   const handleApplyCustomCourse = useCallback(
     (customSpec: CourseSpec) => {
-      setCourses((prev) => {
-        const existingIdx = prev.findIndex((c) => c.id === customSpec.id);
-        let nextList: CourseSpec[];
-        let targetIdx: number;
-        if (existingIdx >= 0) {
-          nextList = prev.map((c, i) => (i === existingIdx ? customSpec : c));
-          targetIdx = existingIdx;
-        } else {
-          nextList = [...prev, { ...customSpec, index: prev.length + 1 }];
-          targetIdx = nextList.length - 1;
-        }
-        coursesRef.current = nextList;
-        activateCourse(nextList[targetIdx], targetIdx, null);
-        return nextList;
-      });
+      const prev = coursesRef.current;
+      const existingIdx = prev.findIndex((c) => c.id === customSpec.id);
+      let nextList: CourseSpec[];
+      let targetIdx: number;
+      if (existingIdx >= 0) {
+        nextList = prev.map((c, i) => (i === existingIdx ? customSpec : c));
+        targetIdx = existingIdx;
+      } else {
+        nextList = [...prev, { ...customSpec, index: prev.length + 1 }];
+        targetIdx = nextList.length - 1;
+      }
+      coursesRef.current = nextList;
+      setCourses(nextList);
+      activateCourse(nextList[targetIdx], targetIdx, null);
     },
     [activateCourse],
   );
@@ -380,6 +437,25 @@ export const App: React.FC = () => {
     rendererRef.current = renderer;
     setCompiledShaders(renderer.getCompiledShaders());
 
+    const computeCameraCursorRay = (pointerNdc: readonly [number, number]): { origin: Vec3; aimDir: Vec3 } => {
+      const cam = cameraRigRef.current.getState();
+      const aspect = Math.max(1, window.innerWidth) / Math.max(1, window.innerHeight);
+      const tanHalfFov = Math.tan((cam.fovDeg * Math.PI) / 360);
+      const rx =
+        cam.forward[0] +
+        pointerNdc[0] * aspect * tanHalfFov * cam.right[0] +
+        pointerNdc[1] * tanHalfFov * cam.up[0];
+      const ry =
+        cam.forward[1] +
+        pointerNdc[0] * aspect * tanHalfFov * cam.right[1] +
+        pointerNdc[1] * tanHalfFov * cam.up[1];
+      const rz =
+        cam.forward[2] +
+        pointerNdc[0] * aspect * tanHalfFov * cam.right[2] +
+        pointerNdc[1] * tanHalfFov * cam.up[2];
+      return { origin: cam.position, aimDir: [rx, ry, rz] };
+    };
+
     const firePortalInternal = (
       end: PortalEnd,
       pointerNdc?: readonly [number, number],
@@ -387,8 +463,29 @@ export const App: React.FC = () => {
       explicitOrigin?: Vec3,
     ) => {
       const mState = simRef.current.getState();
-      const cam = cameraRigRef.current.getState();
       const fwdXZ = cameraRigRef.current.projectInputToWorldXZ(0, 1);
+
+      // 1-Key "Smart Portal Bridge" (`[Q]`): when firing Blue without an explicit ray,
+      // automatically place Blue Entry 3.5m ahead on the track (facing the marble!)
+      // and Orange Exit on the next elevated terrace / checkpoint ahead (angled toward the goal!)
+      if (end === 'blue' && !explicitAimDir && !explicitOrigin) {
+        const smartPair = placeSmartPortalBridge(
+          mState,
+          activeCourseRef.current,
+          evaluatorRef.current,
+          fwdXZ,
+          simTimeRef.current,
+          portalsRef.current[0],
+        );
+        const nextPortals: readonly PortalPair[] = [
+          smartPair,
+          ...portalsRef.current.slice(1),
+        ];
+        portalsRef.current = nextPortals;
+        evaluatorRef.current.setPortals?.(nextPortals);
+        setUiPortals(nextPortals);
+        return;
+      }
 
       let origin: Vec3 = explicitOrigin ?? mState.position;
       let aimDir: Vec3 =
@@ -398,36 +495,23 @@ export const App: React.FC = () => {
           : [fwdXZ[0], -0.25, fwdXZ[1]]);
 
       if (!explicitAimDir && !explicitOrigin && pointerNdc) {
-        const aspect = Math.max(1, window.innerWidth) / Math.max(1, window.innerHeight);
-        const tanHalfFov = Math.tan((cam.fovDeg * Math.PI) / 360);
-        const rx =
-          cam.forward[0] +
-          pointerNdc[0] * aspect * tanHalfFov * cam.right[0] +
-          pointerNdc[1] * tanHalfFov * cam.up[0];
-        const ry =
-          cam.forward[1] +
-          pointerNdc[0] * aspect * tanHalfFov * cam.right[1] +
-          pointerNdc[1] * tanHalfFov * cam.up[1];
-        const rz =
-          cam.forward[2] +
-          pointerNdc[0] * aspect * tanHalfFov * cam.right[2] +
-          pointerNdc[1] * tanHalfFov * cam.up[2];
-        origin = cam.position;
-        aimDir = [rx, ry, rz];
+        const ray = computeCameraCursorRay(pointerNdc);
+        origin = ray.origin;
+        aimDir = ray.aimDir;
       }
 
       const existing = portalsRef.current[0] ?? {
         id: 'player-portal-pair',
-        posA: [mState.position[0], mState.position[1], mState.position[2] - 4],
-        normalA: [0, 1, 0] as Vec3,
-        upA: [0, 0, -1] as Vec3,
+        posA: [mState.position[0], mState.position[1], mState.position[2] - 3.5],
+        normalA: [0, 0.38, 0.92] as Vec3,
+        upA: [0, 0.92, -0.38] as Vec3,
         posB: [mState.position[0] + 6, mState.position[1], mState.position[2] - 10],
-        normalB: [0, 1, 0] as Vec3,
-        upB: [0, 0, -1] as Vec3,
-        radius: 1.38,
+        normalB: [0, 0.7071, -0.7071] as Vec3,
+        upB: [0, 0.7071, 0.7071] as Vec3,
+        radius: DEFAULT_PORTAL_RADIUS,
         activeA: true,
         activeB: true,
-        flingBoost: 1.0,
+        flingBoost: DEFAULT_PORTAL_FLING_BOOST,
       };
 
       const placed = raycastAndPlacePortal(
@@ -529,6 +613,16 @@ export const App: React.FC = () => {
       onFirePortal: (end, pointerNdc) => {
         firePortalInternal(end, pointerNdc);
       },
+      onPointerHoverNdc: (pointerNdc) => {
+        const ray = computeCameraCursorRay(pointerNdc);
+        portalAimPreviewRef.current = raycastPortalAimPreview(
+          'orange',
+          ray.origin,
+          ray.aimDir,
+          evaluatorRef.current,
+          simTimeRef.current,
+        );
+      },
       onTriggerWeapon: (ability) => {
         triggerWeaponInternal(ability);
       },
@@ -591,6 +685,7 @@ export const App: React.FC = () => {
         botStyle: botControllerRef.current?.getStyle() ?? 'tourist',
         botLatestSummary: botControllerRef.current?.getLatestSummary() ?? null,
         portals: portalsRef.current,
+        portalAimPreview: portalAimPreviewRef.current,
         fieldMutations: weaponStateRef.current.mutations,
         bridgeExtruderRemainingSec: weaponStateRef.current.bridgeExtruderRemainingSec,
         viewMode: viewModeRef.current,
@@ -746,6 +841,7 @@ export const App: React.FC = () => {
           rimDanger: shockUniforms.uRimDanger,
           fieldMutations: weaponStateRef.current.mutations,
           portals: portalsRef.current,
+          portalAimPreview: portalAimPreviewRef.current,
         });
         setUiMarble(mState);
         setUiCamera(camState);
@@ -790,6 +886,10 @@ export const App: React.FC = () => {
       getCompiledShaders: () => renderer.getCompiledShaders(),
       firePortal: (end, aimDir, origin) => {
         firePortalInternal(end, undefined, aimDir, origin);
+        return buildTelemetrySnapshot();
+      },
+      placeSmartPortalBridge: () => {
+        firePortalInternal('blue');
         return buildTelemetrySnapshot();
       },
       setPortals: (nextPortals) => {
@@ -845,152 +945,212 @@ export const App: React.FC = () => {
     let uiSyncAccumulator = 0;
 
     const tick = (nowMs: number) => {
-      const rawDt = Math.max(0.001, Math.min(0.08, (nowMs - lastTimeMs) / 1000));
-      lastTimeMs = nowMs;
-      simTimeRef.current += rawDt;
+      try {
+        const rawDt = Math.max(0.001, Math.min(0.08, (nowMs - lastTimeMs) / 1000));
+        lastTimeMs = nowMs;
+        simTimeRef.current += rawDt;
 
-      const instFps = 1.0 / rawDt;
-      fpsRef.current = fpsRef.current * 0.92 + instFps * 0.08;
+        const instFps = 1.0 / rawDt;
+        fpsRef.current = fpsRef.current * 0.92 + instFps * 0.08;
 
-      const sampled = inputCtrl.sampleInput(rawDt, (r, u) =>
-        cameraRigRef.current.projectInputToWorldXZ(r, u),
-      );
-
-      let effectiveMoveXZ = sampled.moveXZ;
-      let effectiveJump = sampled.jumpPressed;
-      if (botOverrideRef.current.mode === 'screen') {
-        effectiveMoveXZ = cameraRigRef.current.projectInputToWorldXZ(
-          botOverrideRef.current.vec[0],
-          botOverrideRef.current.vec[1],
+        const sampled = inputCtrl.sampleInput(rawDt, (r, u) =>
+          cameraRigRef.current.projectInputToWorldXZ(r, u),
         );
-        if (botOverrideRef.current.jumpQueued) {
-          effectiveJump = true;
-          botOverrideRef.current.jumpQueued = false;
-        }
-      } else if (botOverrideRef.current.mode === 'world') {
-        effectiveMoveXZ = botOverrideRef.current.vec;
-        if (botOverrideRef.current.jumpQueued) {
-          effectiveJump = true;
-          botOverrideRef.current.jumpQueued = false;
-        }
-      }
 
-      // Apply Rim-Catch Assist torque boost from previous feel step when teetering on cliff rims
-      const prevFeel = sensoryRef.current.feelTracker.getState();
-      const rimAssistedMoveXZ = prevFeel.rim.rimSaveActive
-        ? prevFeel.rim.assistedMoveXZ
-        : effectiveMoveXZ;
+        let effectiveMoveXZ = sampled.moveXZ;
+        let effectiveJump = sampled.jumpPressed;
+        if (botOverrideRef.current.mode === 'screen') {
+          effectiveMoveXZ = cameraRigRef.current.projectInputToWorldXZ(
+            botOverrideRef.current.vec[0],
+            botOverrideRef.current.vec[1],
+          );
+          if (botOverrideRef.current.jumpQueued) {
+            effectiveJump = true;
+            botOverrideRef.current.jumpQueued = false;
+          }
+        } else if (botOverrideRef.current.mode === 'world') {
+          effectiveMoveXZ = botOverrideRef.current.vec;
+          if (botOverrideRef.current.jumpQueued) {
+            effectiveJump = true;
+            botOverrideRef.current.jumpQueued = false;
+          }
+        }
 
-      if (weaponStateRef.current.bridgeExtruderRemainingSec > 0) {
-        const fwdXZ = cameraRigRef.current.projectInputToWorldXZ(0, 1);
-        const wStep = stepWeaponController(
-          weaponStateRef.current,
-          simRef.current.getState(),
-          [effectiveMoveXZ[0] || fwdXZ[0], 0, effectiveMoveXZ[1] || fwdXZ[1]],
+        // Apply Rim-Catch Assist torque boost from previous feel step when teetering on cliff rims
+        const prevFeel = sensoryRef.current.feelTracker.getState();
+        const rimAssistedMoveXZ = prevFeel.rim.rimSaveActive
+          ? prevFeel.rim.assistedMoveXZ
+          : effectiveMoveXZ;
+
+        if (weaponStateRef.current.bridgeExtruderRemainingSec > 0) {
+          const fwdXZ = cameraRigRef.current.projectInputToWorldXZ(0, 1);
+          const wStep = stepWeaponController(
+            weaponStateRef.current,
+            simRef.current.getState(),
+            [effectiveMoveXZ[0] || fwdXZ[0], 0, effectiveMoveXZ[1] || fwdXZ[1]],
+            rawDt,
+            simTimeRef.current,
+          );
+          weaponStateRef.current = wStep.weaponState;
+          evaluatorRef.current.setFieldMutations?.(wStep.weaponState.mutations);
+          simRef.current.setState(wStep.marbleState);
+        }
+
+        const prevMarble = prevMarbleRef.current;
+        const { state: marbleState, renderPosition, renderOrientation } = simRef.current.update(
+          rawDt,
+          {
+            moveXZ: rimAssistedMoveXZ,
+            jumpPressed: effectiveJump,
+            respawnPressed: sampled.respawnPressed,
+          },
+          simTimeRef.current,
+        );
+
+        const course = activeCourseRef.current;
+
+        // Update countdown timer while racing (pause solo timer when Architect or Party drawer is open)
+        if (marbleState.status === 'racing') {
+          if (prevMarble.status !== 'racing') {
+            runElapsedRef.current = 0;
+          }
+          const timerPaused = architectOpenRef.current || partyOpenRef.current;
+          if (!timerPaused) {
+            runElapsedRef.current += rawDt;
+            timeRemainingRef.current = Math.max(0, timeRemainingRef.current - rawDt);
+            if (timeRemainingRef.current <= 0) {
+              timeRemainingRef.current = course.parTimeSec;
+              runElapsedRef.current = 0;
+              simRef.current.respawn(false);
+              sensoryRef.current.onRespawn(course, simRef.current.getState());
+            }
+          }
+          const speed = Math.hypot(marbleState.velocity[0], marbleState.velocity[2]);
+          if (speed > 2.5) {
+            scoreAccumulatorRef.current += speed * rawDt * 12;
+            scoreRef.current = Math.floor(scoreAccumulatorRef.current);
+          }
+        } else if (marbleState.status === 'goal' && !goalAwardedRef.current) {
+          goalAwardedRef.current = true;
+          scoreAccumulatorRef.current += 2500 + Math.round(timeRemainingRef.current * 100);
+          scoreRef.current = Math.floor(scoreAccumulatorRef.current);
+        }
+
+        const camState = cameraRigRef.current.update(
+          rawDt,
+          course,
+          marbleState,
+          renderPosition,
+          evaluatorRef.current,
+          simTimeRef.current,
+        );
+
+        const sensoryStep = sensoryRef.current.step({
+          dt: rawDt,
+          marble: marbleState,
+          input: {
+            moveXZ: effectiveMoveXZ,
+            jumpPressed: effectiveJump,
+            respawnPressed: sampled.respawnPressed,
+          },
+          evaluator: evaluatorRef.current,
+          camera: camState,
+          simTimeSec: simTimeRef.current,
+          runTimeSec: runElapsedRef.current,
+          timeRemainingSec: timeRemainingRef.current,
+        });
+
+        shatterSimRef.current.syncWithMarbleState(
+          marbleState,
+          evaluatorRef.current,
           rawDt,
           simTimeRef.current,
         );
-        weaponStateRef.current = wStep.weaponState;
-        evaluatorRef.current.setFieldMutations?.(wStep.weaponState.mutations);
-        simRef.current.setState(wStep.marbleState);
-      }
+        shockwaveMgrRef.current.detectMarbleEvents(
+          prevMarble,
+          marbleState,
+          simTimeRef.current,
+        );
+        shockwaveMgrRef.current.updateRimDanger(
+          marbleState,
+          evaluatorRef.current,
+          simTimeRef.current,
+        );
+        shockwaveMgrRef.current.step(rawDt, simTimeRef.current);
+        prevMarbleRef.current = marbleState;
 
-      const prevMarble = prevMarbleRef.current;
-      const { state: marbleState, renderPosition, renderOrientation } = simRef.current.update(
-        rawDt,
-        {
-          moveXZ: rimAssistedMoveXZ,
-          jumpPressed: effectiveJump,
-          respawnPressed: sampled.respawnPressed,
-        },
-        simTimeRef.current,
-      );
+        const shockUniforms = shockwaveMgrRef.current.packUniforms();
 
-      const course = activeCourseRef.current;
+        // Step AI rivals & sync QR Party racers + Crowd Mutations for Multi-Player Perspective Grid (2×2)
+        const partySnap = partyClientRef.current.getSnapshot();
+        const currentRoomCode = partySnap.roomId || partySnap.roomCode || 'ARGON-1';
 
-      // Update countdown timer while racing
-      if (marbleState.status === 'racing') {
-        if (prevMarble.status !== 'racing') {
-          runElapsedRef.current = 0;
+        if (partySnap.activeMutations && partySnap.activeMutations.length > 0) {
+          let updatedMutations = weaponStateRef.current.mutations;
+          let addedAny = false;
+          for (const pm of partySnap.activeMutations) {
+            if (!seenPartyMutationIdsRef.current.has(pm.id)) {
+              seenPartyMutationIdsRef.current.add(pm.id);
+              addedAny = true;
+              const fieldKind: FieldMutation['kind'] =
+                pm.kind === 'craterMortar'
+                  ? 'subtractSphere'
+                  : pm.kind === 'rescueBridge'
+                    ? 'unionCapsule'
+                    : pm.kind === 'tectonicRamp'
+                      ? 'unionRamp'
+                      : 'materialOverride';
+              const fieldMut: FieldMutation = {
+                id: pm.id,
+                kind: fieldKind,
+                posA: pm.position,
+                posB:
+                  pm.kind === 'tectonicRamp'
+                    ? [0, 1.85, -1]
+                    : pm.secondaryPos ?? [pm.position[0], pm.position[1], pm.position[2] - 2.2],
+                radius: pm.radius,
+                blendK: pm.blendK,
+                material: pm.material,
+                spawnTime: simTimeRef.current,
+                ttl: Math.max(4.0, (pm.expiresAtMs - pm.createdAtMs) / 1000 || 12.0),
+              };
+              updatedMutations = appendFieldMutation(
+                updatedMutations,
+                fieldMut,
+                simTimeRef.current,
+              );
+            }
+          }
+          if (addedAny) {
+            weaponStateRef.current = {
+              ...weaponStateRef.current,
+              mutations: updatedMutations,
+            };
+            evaluatorRef.current.setFieldMutations?.(updatedMutations);
+          }
         }
-        runElapsedRef.current += rawDt;
-        timeRemainingRef.current = Math.max(0, timeRemainingRef.current - rawDt);
-        if (timeRemainingRef.current <= 0) {
-          timeRemainingRef.current = course.parTimeSec;
-          runElapsedRef.current = 0;
-          simRef.current.respawn(false);
-          sensoryRef.current.onRespawn(course, simRef.current.getState());
+
+        multiMarbleSimRef.current.syncPlayersFromRoom(partySnap);
+        const partyRacerSource = partySnap.roomPlayers ?? partySnap.players;
+        const partyInputs = new Map<
+          string,
+          { moveXZ: readonly [number, number]; jumpPressed: boolean; respawnPressed: boolean }
+        >();
+        for (const p of partyRacerSource) {
+          if (p.role === 'racer') {
+            partyInputs.set(p.playerId, {
+              moveXZ: p.input.moveXZ,
+              jumpPressed: p.input.jumpPressed,
+              respawnPressed: false,
+            });
+          }
         }
-        const speed = Math.hypot(marbleState.velocity[0], marbleState.velocity[2]);
-        if (speed > 2.5) {
-          scoreRef.current += Math.floor(speed * rawDt * 12);
-        }
-      } else if (marbleState.status === 'goal' && !goalAwardedRef.current) {
-        goalAwardedRef.current = true;
-        scoreRef.current += 2500 + Math.round(timeRemainingRef.current * 100);
-      }
-
-      const camState = cameraRigRef.current.update(
-        rawDt,
-        course,
-        marbleState,
-        renderPosition,
-        evaluatorRef.current,
-        simTimeRef.current,
-      );
-
-      const sensoryStep = sensoryRef.current.step({
-        dt: rawDt,
-        marble: marbleState,
-        input: {
-          moveXZ: effectiveMoveXZ,
-          jumpPressed: effectiveJump,
-          respawnPressed: sampled.respawnPressed,
-        },
-        evaluator: evaluatorRef.current,
-        camera: camState,
-        simTimeSec: simTimeRef.current,
-        runTimeSec: runElapsedRef.current,
-        timeRemainingSec: timeRemainingRef.current,
-      });
-
-      shatterSimRef.current.syncWithMarbleState(
-        marbleState,
-        evaluatorRef.current,
-        rawDt,
-        simTimeRef.current,
-      );
-      shockwaveMgrRef.current.detectMarbleEvents(
-        prevMarble,
-        marbleState,
-        simTimeRef.current,
-      );
-      shockwaveMgrRef.current.updateRimDanger(
-        marbleState,
-        evaluatorRef.current,
-        simTimeRef.current,
-      );
-      shockwaveMgrRef.current.step(rawDt, simTimeRef.current);
-      prevMarbleRef.current = marbleState;
-
-      const shockUniforms = shockwaveMgrRef.current.packUniforms();
-
-      // Step AI rivals & sync QR Party racers for Multi-Player Perspective Grid (2×2)
-      const partySnap = partyClientRef.current.getSnapshot();
-      const currentRoomCode = partySnap.roomCode || 'ARGON-1';
-      multiMarbleSimRef.current.syncPlayersFromRoom(partySnap);
-      const partyInputs = new Map<string, { moveXZ: readonly [number, number]; jumpPressed: boolean; respawnPressed: boolean }>();
-      for (const p of partySnap.players) {
-        if (p.role === 'racer') {
-          partyInputs.set(p.playerId, {
-            moveXZ: p.input.moveXZ,
-            jumpPressed: p.input.jumpPressed,
-            respawnPressed: false,
-          });
-        }
-      }
-      const partyStep = multiMarbleSimRef.current.stepFixed(rawDt, partyInputs, simTimeRef.current);
-      const activePartyMarbles = partyStep.marbles;
+        const partyStep = multiMarbleSimRef.current.stepFixed(
+          rawDt,
+          partyInputs,
+          simTimeRef.current,
+        );
+        const activePartyMarbles = partyStep.marbles;
 
       const rival2Cur = aiRivalSim2Ref.current.getState();
       if (rival2Cur.status === 'goal') {
@@ -1199,6 +1359,7 @@ export const App: React.FC = () => {
         rimDanger: shockUniforms.uRimDanger,
         fieldMutations: weaponStateRef.current.mutations,
         portals: portalsRef.current,
+        portalAimPreview: portalAimPreviewRef.current,
         gridTiles: viewModeRef.current === 'grid' ? tileDefs : undefined,
       });
 
@@ -1220,6 +1381,9 @@ export const App: React.FC = () => {
         setUiWeaponState(weaponStateRef.current);
         setUiGridCells(nextGridCells);
         setPartyRoomCode(currentRoomCode);
+      }
+      } catch (err) {
+        console.error('Frame tick error:', err);
       }
 
       rafId = window.requestAnimationFrame(tick);
@@ -1244,99 +1408,110 @@ export const App: React.FC = () => {
         aria-label="Marble Madness SDF Raymarched Viewport"
       />
 
-      <ArcadeHud
-        courses={courses}
-        activeCourseIndex={activeCourseIndex}
-        currentCourse={currentCourse}
-        marble={uiMarble}
-        camera={uiCamera}
-        timeRemainingSec={timeRemainingSec}
-        score={score}
-        bonusBannerSec={bonusBannerSec}
-        fps={fps}
-        trackball={trackball}
-        feel={uiFeel}
-        ghostSplit={uiGhostSplit}
-        synthTelemetry={uiSynth}
-        botEnabled={botEnabled}
-        botStyle={botStyle}
-        architectOpen={architectOpen}
-        partyOpen={partyOpen}
-        partyRoomCode={partyRoomCode}
-        viewMode={viewMode}
-        focusedPlayerIndex={focusedPlayerIndex}
-        debugDrawerOpen={debugDrawerOpen}
-        gridCells={uiGridCells}
-        portals={uiPortals}
-        fieldMutations={uiWeaponState.mutations}
-        bridgeExtruderRemainingSec={uiWeaponState.bridgeExtruderRemainingSec}
-        lastActivatedAbility={uiWeaponState.lastActivatedAbility}
-        onSelectCourse={handleSelectCourse}
-        onCycleCameraZoom={() => {
-          cameraRigRef.current.cycleZoomStop();
-        }}
-        onCycleMarblePreset={() => {
-          simRef.current.cycleMarblePreset();
-        }}
-        onRespawn={() => {
-          simRef.current.respawn(true);
-          sensoryRef.current.onRespawn(activeCourseRef.current, simRef.current.getState());
-          runElapsedRef.current = 0;
-        }}
-        onNextCourseWithBonus={handleNextCourseWithBonus}
-        onToggleArchitect={() => setArchitectOpen((prev) => !prev)}
-        onToggleAudioMute={() => {
-          sensoryRef.current.synth.resume();
-          sensoryRef.current.synth.toggleMute();
-          setUiSynth(sensoryRef.current.synth.getState());
-        }}
-        onToggleBotPlaytest={() => {
-          const ctrl = botControllerRef.current;
-          if (!ctrl) return;
-          const next = ctrl.toggle();
-          setBotEnabled(next);
-          setBotStyle(ctrl.getStyle());
-        }}
-        onFirePortal={(end) => {
-          window.__MARBLE_PLAYTEST__?.firePortal(end);
-        }}
-        onTriggerWeapon={(ability) => {
-          window.__MARBLE_PLAYTEST__?.triggerWeapon(ability);
-        }}
-        onToggleParty={() => setPartyOpen((prev) => !prev)}
-        onToggleViewMode={() => {
-          window.__MARBLE_PLAYTEST__?.toggleViewMode?.();
-        }}
-        onToggleDebugDrawer={() => {
-          const next = !debugDrawerOpenRef.current;
-          debugDrawerOpenRef.current = next;
-          setDebugDrawerOpen(next);
-        }}
-        onSelectGridPlayer={(slotIndex) => {
-          window.__MARBLE_PLAYTEST__?.selectGridPlayer?.(slotIndex);
-        }}
-      />
+      <OverlayErrorBoundary>
+        <ArcadeHud
+          courses={courses}
+          activeCourseIndex={activeCourseIndex}
+          currentCourse={currentCourse}
+          marble={uiMarble}
+          camera={uiCamera}
+          timeRemainingSec={timeRemainingSec}
+          score={score}
+          bonusBannerSec={bonusBannerSec}
+          fps={fps}
+          trackball={trackball}
+          feel={uiFeel}
+          ghostSplit={uiGhostSplit}
+          synthTelemetry={uiSynth}
+          botEnabled={botEnabled}
+          botStyle={botStyle}
+          architectOpen={architectOpen}
+          partyOpen={partyOpen}
+          partyRoomCode={partyRoomCode}
+          viewMode={viewMode}
+          focusedPlayerIndex={focusedPlayerIndex}
+          debugDrawerOpen={debugDrawerOpen}
+          gridCells={uiGridCells}
+          portals={uiPortals}
+          fieldMutations={uiWeaponState.mutations}
+          bridgeExtruderRemainingSec={uiWeaponState.bridgeExtruderRemainingSec}
+          lastActivatedAbility={uiWeaponState.lastActivatedAbility}
+          onSelectCourse={handleSelectCourse}
+          onCycleCameraZoom={() => {
+            cameraRigRef.current.cycleZoomStop();
+          }}
+          onCycleMarblePreset={() => {
+            simRef.current.cycleMarblePreset();
+          }}
+          onRespawn={() => {
+            simRef.current.respawn(true);
+            sensoryRef.current.onRespawn(activeCourseRef.current, simRef.current.getState());
+            runElapsedRef.current = 0;
+          }}
+          onNextCourseWithBonus={handleNextCourseWithBonus}
+          onToggleArchitect={() => setArchitectOpen((prev) => !prev)}
+          onToggleAudioMute={() => {
+            sensoryRef.current.synth.resume();
+            sensoryRef.current.synth.toggleMute();
+            setUiSynth(sensoryRef.current.synth.getState());
+          }}
+          onToggleBotPlaytest={() => {
+            const ctrl = botControllerRef.current;
+            if (!ctrl) return;
+            const next = ctrl.toggle();
+            setBotEnabled(next);
+            setBotStyle(ctrl.getStyle());
+          }}
+          onFirePortal={(end) => {
+            window.__MARBLE_PLAYTEST__?.firePortal(end);
+          }}
+          onTriggerWeapon={(ability) => {
+            window.__MARBLE_PLAYTEST__?.triggerWeapon(ability);
+          }}
+          onToggleParty={() => setPartyOpen((prev) => !prev)}
+          onToggleViewMode={() => {
+            window.__MARBLE_PLAYTEST__?.toggleViewMode?.();
+          }}
+          onToggleDebugDrawer={() => {
+            const next = !debugDrawerOpenRef.current;
+            debugDrawerOpenRef.current = next;
+            setDebugDrawerOpen(next);
+          }}
+          onSelectGridPlayer={(slotIndex) => {
+            window.__MARBLE_PLAYTEST__?.selectGridPlayer?.(slotIndex);
+          }}
+          onClearSavedGhosts={() => {
+            sensoryRef.current.replayManager.clearPersonalBests();
+            setUiGhostSplit(
+              sensoryRef.current.replayManager.getSplitSnapshot(
+                simRef.current.getState(),
+                runElapsedRef.current,
+              ),
+            );
+          }}
+        />
 
-      <ArchitectHookPanel
-        isOpen={architectOpen}
-        onClose={() => setArchitectOpen(false)}
-        currentCourse={currentCourse}
-        compiledShaders={compiledShaders}
-        onApplyCustomCourse={handleApplyCustomCourse}
-        seedPrompt={crowdSeedPrompt}
-      />
+        <ArchitectHookPanel
+          isOpen={architectOpen}
+          onClose={() => setArchitectOpen(false)}
+          currentCourse={currentCourse}
+          compiledShaders={compiledShaders}
+          onApplyCustomCourse={handleApplyCustomCourse}
+          seedPrompt={crowdSeedPrompt}
+        />
 
-      <QrPartyHudModal
-        isOpen={partyOpen}
-        onClose={() => setPartyOpen(false)}
-        client={partyClientRef.current}
-        roomCode={partyRoomCode}
-        onSynthesizeCrowdTwist={(combinedPrompt) => {
-          setCrowdSeedPrompt(combinedPrompt);
-          setPartyOpen(false);
-          setArchitectOpen(true);
-        }}
-      />
+        <QrPartyHudModal
+          isOpen={partyOpen}
+          onClose={() => setPartyOpen(false)}
+          client={partyClientRef.current}
+          roomCode={partyRoomCode}
+          onSynthesizeCrowdTwist={(combinedPrompt) => {
+            setCrowdSeedPrompt(combinedPrompt);
+            setPartyOpen(false);
+            setArchitectOpen(true);
+          }}
+        />
+      </OverlayErrorBoundary>
     </main>
   );
 };

@@ -209,7 +209,16 @@ export function createIsometricCameraRig(
 
     const followPoint = vec3Add(renderMarblePos, smoothedLookAhead);
     const desiredTarget = vec3Lerp(followPoint, course.overviewCenter, stop.overviewBlend);
-    smoothedTarget = vec3Lerp(smoothedTarget, desiredTarget, blendRate);
+
+    // Smoothly align camera follow target across a non-Euclidean portal warp
+    const jumpDist = Math.hypot(
+      desiredTarget[0] - smoothedTarget[0],
+      desiredTarget[1] - smoothedTarget[1],
+      desiredTarget[2] - smoothedTarget[2],
+    );
+    const warpBoost = (marble.portalCooldown ?? 0) > 0.12 || jumpDist > 8.5 ? 24.0 : 8.5;
+    const targetBlendRate = 1.0 - Math.exp(-warpBoost * safeDt);
+    smoothedTarget = vec3Lerp(smoothedTarget, desiredTarget, targetBlendRate);
 
     const targetDist =
       stop.id === 'overview'

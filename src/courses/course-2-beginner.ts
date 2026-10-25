@@ -51,6 +51,21 @@ export const COURSE_2_BEGINNER_CHUTES: CourseSpec = {
       radius: 4.2,
     },
   ],
+  portals: [
+    {
+      id: 'beginner-acid-vault-portal',
+      posA: [2.8, 6.2, -18.5],
+      normalA: [0.0, 0.34, 0.9404],
+      upA: [0.0, 0.9404, -0.34],
+      posB: [2.5, 6.55, -31.8],
+      normalB: [-0.15, 0.691, -0.7071],
+      upB: [-0.15, 0.7071, 0.691],
+      radius: 1.55,
+      activeA: true,
+      activeB: true,
+      flingBoost: 1.25,
+    },
+  ],
   hazardManifest: [
     {
       id: 'twin-parallel-chutes',

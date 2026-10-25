@@ -83,6 +83,13 @@ export interface RenderFrameInput {
   readonly rimDanger?: Float32Array;
   readonly fieldMutations?: readonly FieldMutation[];
   readonly portals?: readonly PortalPair[];
+  readonly portalAimPreview?: {
+    readonly active: boolean;
+    readonly end: 'blue' | 'orange';
+    readonly position: readonly [number, number, number];
+    readonly normal: readonly [number, number, number];
+    readonly radius: number;
+  };
   /** Optional multi-POV grid tiles; when provided with length > 0, renders each tile with WebGL2 scissor + viewport */
   readonly gridTiles?: readonly GridTileViewInput[];
 }
@@ -146,6 +153,8 @@ interface UniformLocations {
   uPortalPosB: WebGLUniformLocation | null;
   uPortalNormalB: WebGLUniformLocation | null;
   uPortalUpB: WebGLUniformLocation | null;
+  uPortalAimPos: WebGLUniformLocation | null;
+  uPortalAimNormal: WebGLUniformLocation | null;
 }
 
 function compileShader(gl: WebGL2RenderingContext, type: number, source: string): WebGLShader {
@@ -208,6 +217,10 @@ export function createRaymarchRenderer(
   let vao: WebGLVertexArrayObject | null = null;
   let locations: UniformLocations | null = null;
   let fallbackEvaluator = createCpuWorldEvaluator(initialCourse);
+  let contextLost = false;
+  let rollingFrameTimeMs = 16.6;
+  let lastRenderTimeMs = typeof performance !== 'undefined' ? performance.now() : 0;
+  let adaptiveDprScale = 1.0;
 
   function queryUniforms(glCtx: WebGL2RenderingContext, prog: WebGLProgram): UniformLocations {
     const u = (name: string) => glCtx.getUniformLocation(prog, name);
@@ -263,26 +276,65 @@ export function createRaymarchRenderer(
       uPortalPosB: u('uPortalPosB[0]'),
       uPortalNormalB: u('uPortalNormalB[0]'),
       uPortalUpB: u('uPortalUpB[0]'),
+      uPortalAimPos: u('uPortalAimPos'),
+      uPortalAimNormal: u('uPortalAimNormal'),
     };
   }
 
   function rebuildGpuProgram(course: CourseSpec) {
-    currentCourse = course;
-    currentGlsl = compileCourseToGlsl(course);
-    currentWgsl = compileCourseToWgsl(course);
-    fallbackEvaluator = createCpuWorldEvaluator(course);
-
-    if (!gl) return;
-    if (program) {
-      gl.deleteProgram(program);
-      program = null;
+    let nextGlsl = currentGlsl;
+    let nextWgsl = currentWgsl;
+    try {
+      nextGlsl = compileCourseToGlsl(course);
+      nextWgsl = compileCourseToWgsl(course);
+      fallbackEvaluator = createCpuWorldEvaluator(course);
+    } catch (compileErr) {
+      console.error('[RaymarchRenderer] Course SDF compilation failed; keeping active shader:', compileErr);
+      return;
     }
-    program = createProgram(gl, VERTEX_SHADER_GLSL, currentGlsl);
-    locations = queryUniforms(gl, program);
-    if (!vao) {
-      vao = gl.createVertexArray();
+
+    if (!gl || contextLost) {
+      currentCourse = course;
+      currentGlsl = nextGlsl;
+      currentWgsl = nextWgsl;
+      return;
+    }
+
+    try {
+      // Compile & link new WebGL program BEFORE deleting the existing valid program
+      const nextProgram = createProgram(gl, VERTEX_SHADER_GLSL, nextGlsl);
+      const nextLocations = queryUniforms(gl, nextProgram);
+      if (program) {
+        gl.deleteProgram(program);
+      }
+      program = nextProgram;
+      locations = nextLocations;
+      currentCourse = course;
+      currentGlsl = nextGlsl;
+      currentWgsl = nextWgsl;
+      if (!vao) {
+        vao = gl.createVertexArray();
+      }
+    } catch (err) {
+      console.error('[RaymarchRenderer] Hot-swap shader link failed; keeping previous glProgram active:', err);
     }
   }
+
+  const handleContextLost = (ev: Event) => {
+    ev.preventDefault();
+    contextLost = true;
+    program = null;
+    vao = null;
+    locations = null;
+  };
+
+  const handleContextRestored = () => {
+    contextLost = false;
+    rebuildGpuProgram(currentCourse);
+  };
+
+  canvas.addEventListener('webglcontextlost', handleContextLost);
+  canvas.addEventListener('webglcontextrestored', handleContextRestored);
 
   rebuildGpuProgram(initialCourse);
 
@@ -296,7 +348,18 @@ export function createRaymarchRenderer(
       rebuildGpuProgram(frame.course);
     }
 
-    const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+    const nowMs = typeof performance !== 'undefined' ? performance.now() : lastRenderTimeMs + 16.6;
+    const dtMs = Math.max(1, Math.min(100, nowMs - lastRenderTimeMs));
+    lastRenderTimeMs = nowMs;
+    rollingFrameTimeMs = rollingFrameTimeMs * 0.9 + dtMs * 0.1;
+    if (rollingFrameTimeMs > 20.0) {
+      adaptiveDprScale = 0.75;
+    } else if (rollingFrameTimeMs < 14.5) {
+      adaptiveDprScale = 1.0;
+    }
+
+    const baseDpr = Math.min(window.devicePixelRatio || 1, 1.5);
+    const dpr = Math.max(0.65, baseDpr * adaptiveDprScale);
     const displayWidth = Math.max(1, Math.floor((canvas.clientWidth || window.innerWidth) * dpr));
     const displayHeight = Math.max(1, Math.floor((canvas.clientHeight || window.innerHeight) * dpr));
 
@@ -305,7 +368,7 @@ export function createRaymarchRenderer(
       canvas.height = displayHeight;
     }
 
-    if (!gl || !program || !locations) {
+    if (!gl || contextLost || !program || !locations) {
       renderCpuFallback(canvas, frame);
       return;
     }
@@ -469,6 +532,27 @@ export function createRaymarchRenderer(
     gl.uniform4fv(locations.uPortalNormalB, portalNormalBData);
     gl.uniform4fv(locations.uPortalUpB, portalUpBData);
 
+    const aim = frame.portalAimPreview;
+    if (aim && aim.active) {
+      gl.uniform4f(
+        locations.uPortalAimPos,
+        aim.position[0],
+        aim.position[1],
+        aim.position[2],
+        aim.radius,
+      );
+      gl.uniform4f(
+        locations.uPortalAimNormal,
+        aim.normal[0],
+        aim.normal[1],
+        aim.normal[2],
+        aim.end === 'blue' ? 2.0 : 1.0,
+      );
+    } else {
+      gl.uniform4f(locations.uPortalAimPos, 0, -100, 0, 0);
+      gl.uniform4f(locations.uPortalAimNormal, 0, 1, 0, 0);
+    }
+
     const gridTiles = frame.gridTiles;
     if (gridTiles && gridTiles.length > 0) {
       gl.enable(gl.SCISSOR_TEST);
@@ -556,6 +640,8 @@ export function createRaymarchRenderer(
   }
 
   function dispose() {
+    canvas.removeEventListener('webglcontextlost', handleContextLost);
+    canvas.removeEventListener('webglcontextrestored', handleContextRestored);
     if (!gl) return;
     if (program) gl.deleteProgram(program);
     if (vao) gl.deleteVertexArray(vao);

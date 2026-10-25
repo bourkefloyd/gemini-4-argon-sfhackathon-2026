@@ -35,6 +35,7 @@ export interface ArcadeInputCallbacks {
   onToggleAudioMute?: () => void;
   onUserGesture?: () => void;
   onFirePortal?: (end: 'blue' | 'orange', pointerNdc?: readonly [number, number]) => void;
+  onPointerHoverNdc?: (pointerNdc: readonly [number, number]) => void;
   onTriggerWeapon?: (ability: WeaponAbilityId) => void;
   onToggleParty?: () => void;
   onToggleViewMode?: () => void;
@@ -151,6 +152,12 @@ export function createArcadeInputController(
       return;
     }
     lastPointerNdc = computeNdc(ev.clientX, ev.clientY);
+    callbacks.onPointerHoverNdc?.(lastPointerNdc);
+    if (ev.button === 0 && ev.altKey) {
+      ev.preventDefault();
+      callbacks.onFirePortal?.('orange', lastPointerNdc);
+      return;
+    }
     if (ev.button === 2) {
       rightClickDownPos = [ev.clientX, ev.clientY];
       orbitDragging = true;
@@ -165,6 +172,7 @@ export function createArcadeInputController(
 
   function onPointerMove(ev: PointerEvent) {
     lastPointerNdc = computeNdc(ev.clientX, ev.clientY);
+    callbacks.onPointerHoverNdc?.(lastPointerNdc);
     if (!pointerDragging && !orbitDragging) return;
     if (orbitDragging) {
       const dx = ev.clientX - pointerCurrent[0];

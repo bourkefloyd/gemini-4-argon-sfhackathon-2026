@@ -60,10 +60,10 @@ export const COURSE_1_PRACTICE_RACE: CourseSpec = {
       posB: [27.05, 1.7, -19.85],
       normalB: [0.0, 0.36, -0.933],
       upB: [0.0, 0.933, 0.36],
-      radius: 1.38,
+      radius: 1.55,
       activeA: true,
       activeB: true,
-      flingBoost: 1.0,
+      flingBoost: 1.25,
     },
   ],
   hazardManifest: [
