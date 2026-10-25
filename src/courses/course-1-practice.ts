@@ -1,13 +1,12 @@
 /**
  * Course 1: PRACTICE RACE (`src/courses/course-1-practice.ts`)
  *
- * Inspired by the iconic 1984 Atari Marble Madness opening race:
- * - High isometric start monolith with checkered launch pad
- * - Tiered downhill ramps with anti-aliased isometric grid contours
- * - Mid-course turn plaza with arcade bumper pins & inner bounce shortcut
- * - High-walled banked chute accelerating along +X
- * - Tall occlusion monolith archway (showcases the camera-to-marble capsule cutout)
- * - Narrow catwalk bridge over the volumetric abyss leading to the Goal Podium
+ * Polished onboarding course inspired by the iconic 1984 Atari Marble Madness opening race:
+ * - Wide isometric grid terraces with checkered launch pad
+ * - Banked S-chute (downhill -Z chute sweeping through the mid-course plaza into a high-walled +X chute)
+ * - Bumper plaza with arcade bumper pins & inner bounce-pad apex
+ * - Tall occlusion archway (showcases the camera-to-marble X-Ray capsule cutout)
+ * - Secret high-speed ramp shortcut that skips the lower hairpin across the abyss
  */
 
 import type { CourseSpec } from '../contracts';
@@ -16,12 +15,12 @@ export const COURSE_1_PRACTICE_RACE: CourseSpec = {
   id: 'practice-race',
   index: 1,
   name: 'PRACTICE RACE',
-  subtitle: 'TIERED RAMPS // BANKED CHUTE // ABYSS BRIDGE',
+  subtitle: 'ISOMETRIC TERRACES // BANKED S-CHUTE // OCCLUSION ARCHWAY',
   difficulty: 'PRACTICE',
   parTimeSec: 60,
   bonusTimeSec: 35,
-  startPos: [0, 8.78, 0],
-  goalPos: [24.6, 1.08, -35.2],
+  startPos: [0, 8.75, 0],
+  goalPos: [24.6, 1.02, -35.2],
   goalRadius: 2.55,
   killPlaneY: -10.5,
   overviewCenter: [12.0, 3.5, -18.0],
@@ -41,35 +40,35 @@ export const COURSE_1_PRACTICE_RACE: CourseSpec = {
   checkpoints: [
     {
       id: 'cp-turn-plaza',
-      label: 'MID-COURSE PLAZA',
-      position: [3.2, 5.2, -16.8],
+      label: 'BUMPER PLAZA',
+      position: [3.2, 5.15, -16.8],
       radius: 4.2,
     },
     {
       id: 'cp-bridge-head',
-      label: 'ABYSS BRIDGE APPROACH',
-      position: [24.6, 1.65, -16.8],
+      label: 'OCCLUSION ARCHWAY',
+      position: [24.6, 1.55, -16.8],
       radius: 3.5,
     },
   ],
   hazardManifest: [
     {
-      id: 'banked-chute',
-      label: 'Banked Downhill Chute',
+      id: 'banked-s-chute',
+      label: 'Banked S-Chute',
       kind: 'conveyor',
-      description: 'Fillet-smoothed CSG chute with raised containment rails and slope boost.',
+      description: 'Fillet-smoothed CSG S-chute with raised containment rails and slope boost.',
     },
     {
       id: 'speedrun-sky-jump',
-      label: 'Speedrun Diagonal Vault',
+      label: 'Secret High-Speed Ramp Shortcut',
       kind: 'conveyor',
-      description: 'Risk/reward diagonal boost ramp cutting across the abyss straight to the Goal Podium.',
+      description: 'Diagonal high-speed ramp & bounce kicker that skips the lower hairpin over the abyss.',
     },
     {
       id: 'plaza-bumpers',
-      label: 'Arcade Bumper Pins',
+      label: 'Bumper Plaza Pins',
       kind: 'bumper',
-      description: 'High-restitution chrome-red pins guarding the apex of Turn 1.',
+      description: 'High-restitution chrome-red pins guarding the apex of the mid-course plaza.',
     },
     {
       id: 'patrol-steelie-1',
@@ -79,13 +78,13 @@ export const COURSE_1_PRACTICE_RACE: CourseSpec = {
     },
   ],
   nodes: [
-    // --- TIER 1: START PODIUM & MONOLITH ---
+    // --- TIER 1: WIDE ISOMETRIC START TERRACE & MONOLITH ---
     {
       id: 'start-podium-deck',
       kind: 'roundedBox',
       material: 'standard',
       center: [0, 7.6, 0.2],
-      halfExtents: [3.8, 0.6, 3.4],
+      halfExtents: [4.2, 0.6, 3.6],
       radius: 0.14,
       supportBias: true,
     },
@@ -93,7 +92,7 @@ export const COURSE_1_PRACTICE_RACE: CourseSpec = {
       id: 'start-pad-inlay',
       kind: 'cylinder',
       material: 'start',
-      center: [0, 7.72, 0],
+      center: [0, 7.7, 0],
       radius: 2.2,
       halfHeight: 0.5,
       supportBias: true,
@@ -109,12 +108,12 @@ export const COURSE_1_PRACTICE_RACE: CourseSpec = {
       id: 'start-back-guardrail',
       kind: 'roundedBox',
       material: 'standard',
-      center: [0, 8.65, 3.45],
-      halfExtents: [3.8, 0.45, 0.35],
+      center: [0, 8.65, 3.55],
+      halfExtents: [4.2, 0.45, 0.35],
       radius: 0.08,
     },
 
-    // --- RAMP 1: PRIMARY DOWNHILL CHUTE (-Z) ---
+    // --- RAMP 1: UPPER LEG OF BANKED S-CHUTE (-Z) ---
     // Connects z = -3.2 (yTop = 8.2) down to z = -13.6 (yTop = 4.6)
     {
       id: 'ramp-1-downhill',
@@ -131,7 +130,7 @@ export const COURSE_1_PRACTICE_RACE: CourseSpec = {
       supportBias: true,
     },
 
-    // --- TIER 2: MID-COURSE TURN PLAZA ---
+    // --- TIER 2: MID-COURSE BUMPER PLAZA (S-CHUTE INFLECTION) ---
     {
       id: 'turn-1-plaza',
       kind: 'roundedBox',
@@ -152,8 +151,8 @@ export const COURSE_1_PRACTICE_RACE: CourseSpec = {
       id: 'turn-1-south-wall',
       kind: 'roundedBox',
       material: 'standard',
-      center: [3.2, 5.15, -20.05],
-      halfExtents: [6.4, 0.55, 0.35],
+      center: [2.0, 5.15, -20.05],
+      halfExtents: [5.2, 0.55, 0.35],
       radius: 0.08,
     },
     {
@@ -168,12 +167,12 @@ export const COURSE_1_PRACTICE_RACE: CourseSpec = {
       id: 'turn-1-inside-bounce',
       kind: 'cylinder',
       material: 'bounce',
-      center: [7.6, 4.12, -14.5],
+      center: [7.6, 4.12, -14.2],
       radius: 1.05,
       halfHeight: 0.5,
     },
 
-    // --- RAMP 2: BANKED HIGH-SPEED CHUTE (+X) ---
+    // --- RAMP 2: LOWER LEG OF BANKED S-CHUTE (+X) ---
     // Connects x = 9.2 (yTop = 4.6) down to x = 21.6 (yTop = 1.0)
     {
       id: 'ramp-2-banked-chute',
@@ -190,7 +189,7 @@ export const COURSE_1_PRACTICE_RACE: CourseSpec = {
       supportBias: true,
     },
 
-    // --- TIER 3: ABYSS BRIDGE HEAD & OCCLUSION ARCHWAY ---
+    // --- TIER 3: HAIRPIN TERRACE & OCCLUSION ARCHWAY ---
     {
       id: 'bridge-approach-deck',
       kind: 'roundedBox',
@@ -208,7 +207,8 @@ export const COURSE_1_PRACTICE_RACE: CourseSpec = {
       halfExtents: [0.35, 0.55, 3.6],
       radius: 0.08,
     },
-    // Tall isometric tower on the foreground side so rolling behind it demonstrates the occlusion reveal tunnel
+    // Tall isometric occlusion archway spanning the bridge entrance so rolling beneath it
+    // showcases the camera-to-marble capsule cutout
     {
       id: 'occlusion-monolith-tower',
       kind: 'roundedBox',
@@ -217,30 +217,52 @@ export const COURSE_1_PRACTICE_RACE: CourseSpec = {
       halfExtents: [1.3, 2.8, 1.1],
       radius: 0.12,
     },
+    {
+      id: 'occlusion-arch-west-pillar',
+      kind: 'roundedBox',
+      material: 'standard',
+      center: [22.4, 2.7, -20.6],
+      halfExtents: [0.45, 1.9, 0.55],
+      radius: 0.08,
+    },
+    {
+      id: 'occlusion-arch-east-pillar',
+      kind: 'roundedBox',
+      material: 'standard',
+      center: [26.8, 2.7, -20.6],
+      halfExtents: [0.45, 1.9, 0.55],
+      radius: 0.08,
+    },
+    {
+      id: 'occlusion-arch-lintel',
+      kind: 'roundedBox',
+      material: 'standard',
+      center: [24.6, 4.75, -20.6],
+      halfExtents: [2.75, 0.55, 0.75],
+      radius: 0.1,
+    },
 
-    // --- SPEEDRUN SHORTCUT: DIAGONAL SKY-CHUTE & BOUNCE VAULT ACROSS ABYSS ---
-    // Allows skilled players who carve hard right at the bottom of Ramp 1 to launch
-    // diagonally across the void toward the Goal Podium, bypassing the outer bridge!
+    // --- SECRET HIGH-SPEED RAMP SHORTCUT (SKIPS THE LOWER HAIRPIN) ---
     {
       id: 'speedrun-diagonal-chute',
       kind: 'sweptTrack',
       material: 'conveyor',
       center: [0, 0, 0],
-      start: [8.4, 4.45, -19.6],
-      end: [17.8, 1.45, -29.2],
-      halfWidth: 1.35,
+      start: [8.4, 4.55, -19.4],
+      end: [18.8, 1.15, -30.2],
+      halfWidth: 1.45,
       thickness: 0.75,
-      railHeight: 0.28,
+      railHeight: 0.3,
       railThickness: 0.22,
-      conveyorDirection: [5.2, -1.2, -5.2],
+      conveyorDirection: [5.5, -1.2, -5.5],
       supportBias: true,
     },
     {
       id: 'speedrun-kicker-pad',
       kind: 'cylinder',
       material: 'bounce',
-      center: [18.4, 1.05, -29.8],
-      radius: 1.15,
+      center: [19.6, 0.65, -31.0],
+      radius: 1.2,
       halfHeight: 0.45,
     },
 
@@ -250,7 +272,7 @@ export const COURSE_1_PRACTICE_RACE: CourseSpec = {
       kind: 'roundedBox',
       material: 'standard',
       center: [24.6, 0.5, -25.6],
-      halfExtents: [1.65, 0.5, 5.6],
+      halfExtents: [1.85, 0.5, 5.6],
       radius: 0.1,
       supportBias: true,
     },
@@ -258,8 +280,8 @@ export const COURSE_1_PRACTICE_RACE: CourseSpec = {
       id: 'bridge-sticky-brake-strip',
       kind: 'roundedBox',
       material: 'sticky',
-      center: [24.6, 0.52, -30.2],
-      halfExtents: [1.5, 0.5, 0.9],
+      center: [24.6, 0.5, -30.2],
+      halfExtents: [1.65, 0.5, 0.9],
       radius: 0.06,
       supportBias: true,
     },
@@ -285,7 +307,7 @@ export const COURSE_1_PRACTICE_RACE: CourseSpec = {
       id: 'goal-pad-disc',
       kind: 'cylinder',
       material: 'goal',
-      center: [24.6, 0.55, -35.2],
+      center: [24.6, 0.5, -35.2],
       radius: 2.55,
       halfHeight: 0.52,
       supportBias: true,
@@ -296,16 +318,16 @@ export const COURSE_1_PRACTICE_RACE: CourseSpec = {
       id: 'turn-1-bumper-a',
       kind: 'cylinder',
       material: 'bumper',
-      center: [1.8, 5.15, -16.8],
-      radius: 0.62,
+      center: [0.8, 5.15, -16.8],
+      radius: 0.58,
       halfHeight: 0.55,
     },
     {
       id: 'turn-1-bumper-b',
       kind: 'cylinder',
       material: 'bumper',
-      center: [5.4, 5.15, -18.2],
-      radius: 0.62,
+      center: [5.6, 5.15, -18.5],
+      radius: 0.58,
       halfHeight: 0.55,
     },
     {
