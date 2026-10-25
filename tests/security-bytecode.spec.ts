@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import {
   COURSE_1_PRACTICE_RACE,
@@ -11,16 +12,23 @@ import {
   bakeCourseToSparseBrickAtlas,
   benchmarkSdfEvaluators,
   compileCourseToMsdfBytecode,
+  computeHmacSha256Hex,
+  computeHmacSha256WebCryptoHex,
   createMsdfBytecodeWorldEvaluator,
   deserializeMsdfBytecode,
   evalMsdfBytecode,
   evalMsdfBytecodeDistance,
+  issuedChallengeNonces,
+  issueProofChallengeNonce,
   packInputFrames,
   recordGuidedCourseRun,
+  replayConsumedNonces,
+  resetProofChallengeNonces,
   sampleSparseBrickAtlasDistance,
   unpackInputFrames,
   verifyProofOfPlay,
   verifySectorUnlockToken,
+  verifySectorUnlockTokenWebCrypto,
   verifyZeroLeakedIdentifiers,
 } from '../src/security';
 
@@ -218,7 +226,20 @@ describe('Web Game IP Security POC — .msdf RPN Bytecode, Sparse Brick Atlas & 
     expect(Math.abs(startSurfaceDist)).toBeLessThan(0.15);
   });
 
-  it('packs 120 Hz input streams and verifies Proof-of-Play goal completion & tamper rejection', () => {
+  it('packs 120 Hz input streams, signs tokens with RFC 2104 HMAC-SHA256, and enforces single-use challenge nonces against replay attacks', async () => {
+    resetProofChallengeNonces();
+
+    const serverSecret = 'argon-zero-trust-secret-2026';
+    const samplePayload = 'course-1|0x99887766|tick:420:goal';
+    const expectedNodeHmac = createHmac('sha256', serverSecret)
+      .update(samplePayload)
+      .digest('hex');
+    const syncHmac = computeHmacSha256Hex(samplePayload, serverSecret);
+    const webCryptoHmac = await computeHmacSha256WebCryptoHex(samplePayload, serverSecret);
+
+    expect(syncHmac).toBe(expectedNodeHmac);
+    expect(webCryptoHmac).toBe(expectedNodeHmac);
+
     const waypoints = [
       [0, 6.4, -8.4],
       [2.8, 4.6, -16.8],
@@ -232,16 +253,21 @@ describe('Web Game IP Security POC — .msdf RPN Bytecode, Sparse Brick Atlas & 
     expect(frames.length).toBeGreaterThan(120);
     expect(frames.length).toBeLessThan(2400);
 
-    const packed = packInputFrames(frames, 0x99887766);
+    // Issue a single-use server challenge nonce bound to Course 1
+    const challengeNonce = issueProofChallengeNonce(COURSE_1_PRACTICE_RACE.id);
+    expect(issuedChallengeNonces.has(challengeNonce)).toBe(true);
+    expect(replayConsumedNonces.has(challengeNonce)).toBe(false);
+
+    const packed = packInputFrames(frames, challengeNonce);
     const unpacked = unpackInputFrames(packed);
     expect(unpacked.totalTicks).toBe(frames.length);
-    expect(unpacked.sessionNonce).toBe(0x99887766);
+    expect(unpacked.sessionNonce).toBe(challengeNonce);
 
-    const serverSecret = 'argon-zero-trust-secret-2026';
     const verification = verifyProofOfPlay(
       COURSE_1_PRACTICE_RACE,
       packed,
       serverSecret,
+      { requireIssuedNonce: true },
     );
 
     expect(verification.valid).toBe(true);
@@ -252,6 +278,34 @@ describe('Web Game IP Security POC — .msdf RPN Bytecode, Sparse Brick Atlas & 
     expect(
       verifySectorUnlockToken(verification.unlockToken!, serverSecret),
     ).toBe(true);
+    expect(
+      await verifySectorUnlockTokenWebCrypto(verification.unlockToken!, serverSecret),
+    ).toBe(true);
+
+    // Nonce must now be marked consumed in replayConsumedNonces and removed from active challenges
+    expect(issuedChallengeNonces.has(challengeNonce)).toBe(false);
+    expect(replayConsumedNonces.has(challengeNonce)).toBe(true);
+
+    // Replaying the exact same .mpop packet a second time MUST be rejected as a replay attack
+    const replayAttempt = verifyProofOfPlay(
+      COURSE_1_PRACTICE_RACE,
+      packed,
+      serverSecret,
+    );
+    expect(replayAttempt.valid).toBe(false);
+    expect(replayAttempt.reason).toContain('Replay attack detected');
+    expect(replayAttempt.unlockToken).toBeNull();
+
+    // A client-invented nonce when requireIssuedNonce is enabled must be rejected
+    const unissuedPacked = packInputFrames(frames, 0xdeadbeef);
+    const unissuedAttempt = verifyProofOfPlay(
+      COURSE_1_PRACTICE_RACE,
+      unissuedPacked,
+      serverSecret,
+      { requireIssuedNonce: true },
+    );
+    expect(unissuedAttempt.valid).toBe(false);
+    expect(unissuedAttempt.reason).toContain('not issued by server');
 
     console.info('[security:proof-of-play]', {
       ticksSimulated: verification.ticksSimulated,
@@ -264,15 +318,17 @@ describe('Web Game IP Security POC — .msdf RPN Bytecode, Sparse Brick Atlas & 
       nextSectorSeed: `0x${verification.unlockToken?.nextSectorSeed.toString(16)}`,
     });
 
-    // Tampering with the unlock token must fail signature verification
+    // Tampering with the unlock token must fail HMAC-SHA256 signature verification
     const forgedToken = {
       ...verification.unlockToken!,
       carryOverTimeSec: verification.unlockToken!.carryOverTimeSec + 100,
     };
     expect(verifySectorUnlockToken(forgedToken, serverSecret)).toBe(false);
+    expect(await verifySectorUnlockTokenWebCrypto(forgedToken, serverSecret)).toBe(false);
 
-    // An incomplete 20-tick run must not issue an unlock token
-    const shortPacked = packInputFrames(frames.slice(0, 20), 0x99887766);
+    // An incomplete 20-tick run with a fresh nonce must not issue an unlock token
+    const shortNonce = issueProofChallengeNonce(COURSE_1_PRACTICE_RACE.id);
+    const shortPacked = packInputFrames(frames.slice(0, 20), shortNonce);
     const failedVerify = verifyProofOfPlay(
       COURSE_1_PRACTICE_RACE,
       shortPacked,

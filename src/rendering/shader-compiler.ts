@@ -975,6 +975,21 @@ vec3 renderSkyAndAbyss(vec3 ro, vec3 rd) {
   return sky;
 }
 
+/**
+ * Curvature-Bounded Over-Relaxed Sphere Tracing (kappa-March):
+ * Modulates over-relaxation omega_kappa in [1.0, 1.38] using the smooth-CSG
+ * fillet shell exp(-(d / (0.45 * k))^2) and directional secant slope, paired
+ * with Keinert sphere-overlap safeguard in the raymarching loop.
+ */
+float computeKappaOverRelaxation(float d, float prevD, float prevStep) {
+  float k = 0.14;
+  float shellWeight = exp(-pow(abs(d) / (0.45 * k), 2.0));
+  float curvatureDamping = exp(-0.55 * shellWeight);
+  float slope = (prevStep > 1e-4) ? clamp((d - prevD) / prevStep, -1.0, 1.0) : -1.0;
+  float omegaMax = (slope < -0.75) ? 1.16 : 1.38;
+  return 1.0 + (omegaMax - 1.0) * curvatureDamping;
+}
+
 void main() {
   vec2 ndc = vUv * 2.0 - 1.0;
   float aspect = uResolution.x / max(uResolution.y, 1.0);
@@ -993,11 +1008,24 @@ void main() {
   int portalHops = 0;
   int ignorePortalSide = -1;
   vec3 portalEdgeGlow = vec3(0.0);
+  float prevRadius = 0.0;
+  float prevStep = 0.0;
 
   for (int i = 0; i < 96; i++) {
     vec3 p = ro + rd * t;
     vec2 s = evalSceneSdf(p);
     vec2 ap = evalPortalApertures(p, ignorePortalSide);
+    float stepDist = min(s.x, ap.x);
+
+    // Keinert sphere-overlap safeguard for kappa-March over-relaxation
+    if (i > 0 && prevStep > prevRadius + max(stepDist, 0.0)) {
+      t = t - prevStep + prevRadius;
+      p = ro + rd * t;
+      s = evalSceneSdf(p);
+      ap = evalPortalApertures(p, ignorePortalSide);
+      stepDist = min(s.x, ap.x);
+      prevStep = prevRadius;
+    }
 
     // Accumulate subtle goal beacon glow
     float dGoalBeacon = length(p.xz - uGoalPos.xz) - uGoalRadius * 0.65;
@@ -1043,6 +1071,8 @@ void main() {
         float dz = dot(rd, inN);
         rd = normalize(-dx * outR + dy * outU - dz * outN);
         t = 0.02;
+        prevRadius = 0.0;
+        prevStep = 0.0;
         portalHops++;
         ignorePortalSide = enteredA ? 1 : 0;
       } else {
@@ -1053,8 +1083,10 @@ void main() {
       hit = vec2(t, s.y);
       break;
     } else {
-      float stepDist = min(s.x, ap.x);
-      t += max(stepDist * 0.88, 0.004);
+      float omegaKappa = computeKappaOverRelaxation(stepDist, prevRadius, prevStep);
+      prevRadius = max(stepDist, 0.004);
+      prevStep = max(stepDist * omegaKappa, 0.004);
+      t += prevStep;
       if (t >= maxT) break;
     }
   }
@@ -1431,6 +1463,15 @@ fn transformPortalRay(p: vec3<f32>, rd: vec3<f32>, inPos: vec3<f32>, inN: vec3<f
   let dz = dot(rd, inN);
   let nextD = normalize(-dx * outR + dy * outU - dz * outN);
   return array<vec3<f32>, 2>(nextP, nextD);
+}
+
+fn computeKappaOverRelaxation(d: f32, prevD: f32, prevStep: f32) -> f32 {
+  let k = 0.14;
+  let shellWeight = exp(-pow(abs(d) / (0.45 * k), 2.0));
+  let curvatureDamping = exp(-0.55 * shellWeight);
+  let slope = select(-1.0, clamp((d - prevD) / prevStep, -1.0, 1.0), prevStep > 1e-4);
+  let omegaMax = select(1.38, 1.16, slope < -0.75);
+  return 1.0 + (omegaMax - 1.0) * curvatureDamping;
 }
 `;
 }

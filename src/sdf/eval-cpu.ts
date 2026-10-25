@@ -28,6 +28,15 @@ import {
 } from '../contracts';
 import { applyPortalThroatCarveToDistance } from '../portals';
 import { applyFieldMutationsToSample } from '../weapons';
+import {
+  analyticalJetNormal,
+  evalSceneJetCpu,
+  evaluateJetSdfTree,
+  evaluatePrimitiveJet,
+  type JetSdfSample,
+} from './jet-sdf';
+
+export { analyticalJetNormal, evalSceneJetCpu, type JetSdfSample };
 
 const ZERO_VEC3: Vec3 = [0, 0, 0];
 const SEAM_BIAS_EPS = 0.03;
@@ -700,13 +709,10 @@ export function createCpuWorldEvaluator(course: CourseSpec): CpuWorldEvaluator {
 
     for (let i = 0; i < closePrimitives.length; i++) {
       const prim = closePrimitives[i];
-      const d = evaluatePrimitiveNode(prim, p, time).distance;
+      const primJet = evaluatePrimitiveJet(prim, p, time);
+      const d = primJet.distance;
       if (Math.abs(d - minDist) <= SEAM_BIAS_EPS) {
-        const childNormal = tetrahedralNormalFromFn(
-          (pt) => evaluatePrimitiveNode(prim, pt, time).distance,
-          p,
-          NORMAL_EPS,
-        );
+        const childNormal = primJet.normal;
         if (childNormal[1] >= SEAM_SUPPORT_MIN_Y && childNormal[1] > bestSupportY + 0.02) {
           bestSupportY = childNormal[1];
           bestSupportNormal = childNormal;
@@ -721,6 +727,33 @@ export function createCpuWorldEvaluator(course: CourseSpec): CpuWorldEvaluator {
     return baseNormal;
   }
 
+  /**
+   * Single-pass analytical 1-Jet (`jSDF`) contact query propagating exact spatial
+   * gradients (`∇d`) and meniscus-amplified surface velocities (`-∂d/∂t / ||∇d||`).
+   */
+  function queryJetContact(center: Vec3, radius: number, time: number): SdfContactQuery {
+    if (fieldMutations.length > 0 || portals.length > 0) {
+      return queryContact(center, radius, time);
+    }
+    const centerJet = evaluateJetSdfTree(rootTree, center, time);
+    const n = normal(center, time);
+    const contactPoint: Vec3 = [
+      center[0] - n[0] * Math.min(radius, Math.max(0, centerJet.distance)),
+      center[1] - n[1] * Math.min(radius, Math.max(0, centerJet.distance)),
+      center[2] - n[2] * Math.min(radius, Math.max(0, centerJet.distance)),
+    ];
+    const contactJet = evaluateJetSdfTree(rootTree, contactPoint, time);
+
+    return {
+      distance: centerJet.distance,
+      normal: n,
+      material: contactJet.material,
+      materialId: contactJet.materialId,
+      contactPoint,
+      surfaceVelocity: contactJet.surfaceVelocity,
+    };
+  }
+
   function queryContact(center: Vec3, radius: number, time: number): SdfContactQuery {
     const centerSample = sample(center, time);
     const n = normal(center, time);
@@ -730,10 +763,17 @@ export function createCpuWorldEvaluator(course: CourseSpec): CpuWorldEvaluator {
       center[2] - n[2] * Math.min(radius, Math.max(0, centerSample.distance)),
     ];
     const contactSample = sample(contactPoint, time);
-    const surfaceVelocity = vec3Add(
+    let surfaceVelocity = vec3Add(
       contactSample.kinematicVelocity,
       contactSample.conveyorVelocity,
     );
+
+    if (fieldMutations.length === 0 && portals.length === 0) {
+      const contactJet = evaluateJetSdfTree(rootTree, contactPoint, time);
+      if (contactJet.filletActivation > 0.01) {
+        surfaceVelocity = contactJet.surfaceVelocity;
+      }
+    }
 
     return {
       distance: centerSample.distance,
@@ -847,6 +887,7 @@ export function createCpuWorldEvaluator(course: CourseSpec): CpuWorldEvaluator {
     distance,
     normal,
     queryContact,
+    queryJetContact,
     sphereCast,
     isOccluded,
     setFieldMutations,
