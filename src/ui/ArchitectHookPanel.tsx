@@ -19,16 +19,20 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ARGON_SYNTHESIS_PRESETS,
+  announceArcadeCallout,
+  createArchitectVoiceInput,
   createLiveTelemetryTracker,
   fetchArgonServerStatus,
   packArgon1MContext,
   runArgonSwarmArchitect,
   verifyCourseSpecSolvability,
+  type ArcadeAnnounceEvent,
   type ArgonPresetId,
   type RealtimeCsgMutationKind,
   type SwarmAgentExecutionTrace,
   type SwarmSynthesisProposal,
 } from '../argon';
+import { ArchitectureDiagramModal } from '../argon/ArchitectureDiagramModal';
 import type { CourseSpec } from '../contracts';
 
 export interface ArchitectHookPanelProps {
@@ -214,6 +218,17 @@ export const ArchitectHookPanel: React.FC<ArchitectHookPanelProps> = ({
   const [previousInteractionId, setPreviousInteractionId] = useState<string | null>(null);
   const [pendingProposal, setPendingProposal] = useState<SwarmSynthesisProposal | null>(null);
   const [approvedBanner, setApprovedBanner] = useState<string | null>(null);
+  const [diagramOpen, setDiagramOpen] = useState<boolean>(false);
+  const [micState, setMicState] = useState<'idle' | 'listening' | 'unsupported'>('idle');
+  const [callout, setCallout] = useState<string | null>(null);
+  const voiceInput = useMemo(
+    () =>
+      createArchitectVoiceInput({
+        onTranscript: (text) => setPromptText(text),
+        onState: setMicState,
+      }),
+    [],
+  );
   const [swarmAgents, setSwarmAgents] = useState<readonly SwarmAgentExecutionTrace[]>(
     () => ARGON_SYNTHESIS_PRESETS['portal-fling-citadel'].swarmAgents,
   );
@@ -273,6 +288,19 @@ export const ArchitectHookPanel: React.FC<ArchitectHookPanelProps> = ({
   const glslLines = compiledShaders.glsl.split('\n').length;
   const wgslLines = compiledShaders.wgsl.split('\n').length;
 
+  const speakCallout = (event: ArcadeAnnounceEvent, title?: string) => {
+    void announceArcadeCallout(
+      {
+        event,
+        courseName: title ?? currentCourse.name,
+        archetype: liveTelemetry.inferredArchetype,
+        peakSpeed: liveTelemetry.peakSpeed,
+        title,
+      },
+      { apiKey: userApiKey.trim() || undefined },
+    ).then((announcement) => setCallout(announcement.text));
+  };
+
   const executeSwarm = async (options: {
     mode: 'preset' | 'telemetry-mutation' | 'natural-language' | 'realtime-csg';
     presetId?: ArgonPresetId;
@@ -306,6 +334,15 @@ export const ArchitectHookPanel: React.FC<ArchitectHookPanelProps> = ({
       setPreviousInteractionId(proposal.interactionId);
       setPendingProposal(proposal);
       setJsonText(JSON.stringify(proposal.proposedCourse, null, 2));
+      const announceEvent: ArcadeAnnounceEvent =
+        options.mode === 'telemetry-mutation'
+          ? 'analyze-run'
+          : options.mode === 'realtime-csg'
+            ? 'csg'
+            : options.mode === 'preset'
+              ? 'preset'
+              : 'mutate-course';
+      speakCallout(announceEvent, proposal.title);
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
     } finally {
@@ -317,6 +354,7 @@ export const ArchitectHookPanel: React.FC<ArchitectHookPanelProps> = ({
     if (!pendingProposal) return;
     const approvedCourse = pendingProposal.proposedCourse;
     onApplyCustomCourse(approvedCourse);
+    speakCallout('approved', approvedCourse.name);
     setApprovedBanner(
       `HOT-SWAPPED "${approvedCourse.name}" (${approvedCourse.nodes.length + approvedCourse.hazards.length} SDF Primitives · CPU == GPU Lockstep)`,
     );
@@ -460,6 +498,22 @@ export const ArchitectHookPanel: React.FC<ArchitectHookPanelProps> = ({
         <div className="architect-prompt-actions" style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
           <button
             type="button"
+            className="hud-btn hud-btn-sm"
+            data-testid="btn-voice-mic"
+            aria-pressed={micState === 'listening'}
+            onClick={() => {
+              if (micState === 'listening') voiceInput.stop();
+              else voiceInput.start();
+            }}
+          >
+            {micState === 'listening'
+              ? 'MIC LIVE'
+              : micState === 'unsupported'
+                ? 'MIC UNAVAILABLE'
+                : 'VOICE MIC'}
+          </button>
+          <button
+            type="button"
             className="hud-btn hud-btn-primary"
             disabled={isSynthesizing}
             data-testid="btn-analyze-mutate-run"
@@ -544,6 +598,17 @@ export const ArchitectHookPanel: React.FC<ArchitectHookPanelProps> = ({
               {pendingProposal.solvability.passed ? 'GATE PASSED' : 'REPAIRED'}
             </span>
           </div>
+          <div
+            data-testid="antigravity-sandbox-badge"
+            style={{ fontFamily: 'var(--font-mono)', fontSize: '10px', color: '#ffd29a' }}
+          >
+            Antigravity Sandbox Verifier (`{pendingProposal.antigravitySandbox.agent}`):{' '}
+            {pendingProposal.antigravitySandbox.verdict} · {pendingProposal.antigravitySandbox.source}{' '}
+            · env {pendingProposal.antigravitySandbox.environment}
+          </div>
+          <pre className="argon-trace-pre" data-testid="antigravity-verification-trace">
+            {pendingProposal.antigravitySandbox.verificationTrace.join('\n')}
+          </pre>
           <div style={{ fontFamily: 'var(--font-mono)', fontSize: '10px', color: '#d8f3ff' }}>
             Spawn d={pendingProposal.solvability.startDistance.toFixed(2)}m (Grounded) ·{' '}
             {pendingProposal.solvability.glslLineCount} GLSL2 /{' '}
@@ -600,6 +665,14 @@ export const ArchitectHookPanel: React.FC<ArchitectHookPanelProps> = ({
         </button>
         <button
           type="button"
+          className="architect-tab"
+          data-testid="tab-how-it-works"
+          onClick={() => setDiagramOpen(true)}
+        >
+          How It Works / 1M Diagram
+        </button>
+        <button
+          type="button"
           className={`architect-tab ${activeTab === 'spec' ? 'active' : ''}`}
           onClick={() => setActiveTab('spec')}
         >
@@ -626,6 +699,26 @@ export const ArchitectHookPanel: React.FC<ArchitectHookPanelProps> = ({
           <div className="architect-label">
             PARALLEL MULTI-AGENT SWARM ORCHESTRATOR STATUS:
           </div>
+          <div className="argon-agent-row agent-gate" data-testid="antigravity-standby-badge">
+            <div className="argon-agent-header">
+              <span>Antigravity Sandbox Verifier (antigravity-preview-09-2026)</span>
+              <span className="text-emerald">
+                {pendingProposal
+                  ? `${pendingProposal.antigravitySandbox.verdict} · ${pendingProposal.antigravitySandbox.status.toUpperCase()}`
+                  : 'READY'}
+              </span>
+            </div>
+            <div style={{ color: 'var(--text-muted)' }}>
+              {pendingProposal
+                ? pendingProposal.antigravitySandbox.verificationTrace[0]
+                : 'Remote sandbox (environment remote, background true, model gemini-4-argon) signs the certificate before you approve.'}
+            </div>
+          </div>
+          {callout && (
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: '10px', color: '#ffd23f' }}>
+              ARCADE ANNOUNCER: {callout}
+            </div>
+          )}
           {swarmAgents.map((agent) => (
             <div
               key={agent.agentId}
@@ -737,6 +830,17 @@ export const ArchitectHookPanel: React.FC<ArchitectHookPanelProps> = ({
           {activeTab === 'glsl' ? compiledShaders.glsl : compiledShaders.wgsl}
         </pre>
       )}
+
+      <ArchitectureDiagramModal
+        open={diagramOpen}
+        onClose={() => setDiagramOpen(false)}
+        stats={{
+          totalTokens: contextBundle.totalTokensPacked,
+          cachedTokens: contextBundle.cachedPrefixTokens,
+          dynamicTokens: contextBundle.dynamicTailTokens,
+          courseName: currentCourse.name,
+        }}
+      />
     </aside>
   );
 };

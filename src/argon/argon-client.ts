@@ -30,6 +30,10 @@ import {
   type CourseSolvabilityReport,
 } from './solvability-gate';
 import type { PlayerRunTelemetrySummary } from './telemetry-tracker';
+import {
+  requestAntigravitySandboxVerification,
+  type AntigravitySandboxCertificate,
+} from './antigravity-sandbox';
 
 export interface SwarmSynthesisRequest {
   readonly mode: 'preset' | 'telemetry-mutation' | 'natural-language' | 'realtime-csg';
@@ -59,6 +63,7 @@ export interface SwarmSynthesisProposal {
   readonly swarmAgents: readonly SwarmAgentExecutionTrace[];
   readonly solvability: CourseSolvabilityReport;
   readonly proposedCourse: CourseSpec;
+  readonly antigravitySandbox: AntigravitySandboxCertificate;
   readonly requiresHumanApproval: true;
   readonly createdAtIso: string;
 }
@@ -355,6 +360,15 @@ export async function runArgonSwarmArchitect(
   ];
   req.onProgress?.(finalSwarmAgents);
 
+  const antigravitySandbox = await requestAntigravitySandboxVerification({
+    prompt: req.prompt,
+    course: verifiedCourse,
+    solvability,
+    previousInteractionId: interactionId,
+    apiKey: req.apiKey,
+    fetchFn: fetchImpl,
+  });
+
   return {
     proposalId: `prop_${Date.now().toString(36)}`,
     interactionId,
@@ -368,6 +382,7 @@ export async function runArgonSwarmArchitect(
     swarmAgents: finalSwarmAgents,
     solvability,
     proposedCourse: verifiedCourse,
+    antigravitySandbox,
     requiresHumanApproval: true,
     createdAtIso: new Date().toISOString(),
   };
