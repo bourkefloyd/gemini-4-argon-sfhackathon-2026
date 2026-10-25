@@ -152,11 +152,13 @@ export function createPartyRoomMiddleware(engine?: PartyRoomEngine) {
       return;
     }
 
-    const pathname = urlStr.split('?')[0];
+    const [pathname, rawQuery = ''] = urlStr.split('?');
 
     try {
       if (req.method === 'GET' && pathname === '/api/party/state') {
-        sendJson(res, 200, room.getSnapshot());
+        const params = new URLSearchParams(rawQuery);
+        const requestedRoom = params.get('room') ?? undefined;
+        sendJson(res, 200, room.getSnapshot(undefined, requestedRoom));
         return;
       }
 
@@ -215,6 +217,22 @@ export function createPartyRoomMiddleware(engine?: PartyRoomEngine) {
         const snapshot = body.stepOnly
           ? room.stepSimulatedCrowdPhones()
           : room.spawnSimulatedCrowdPhones(body.count ?? 6);
+        sendJson(res, 200, { ok: true, snapshot });
+        return;
+      }
+
+      if (req.method === 'POST' && pathname === '/api/party/room') {
+        const body = await readJsonBody<{
+          roomId?: string | number;
+          maxMarblesPerRoom?: number;
+        }>(req);
+        let snapshot = room.getSnapshot();
+        if (typeof body.maxMarblesPerRoom === 'number') {
+          snapshot = room.setMaxMarblesPerRoom(body.maxMarblesPerRoom);
+        }
+        if (body.roomId !== undefined) {
+          snapshot = room.setActiveRoom(body.roomId);
+        }
         sendJson(res, 200, { ok: true, snapshot });
         return;
       }

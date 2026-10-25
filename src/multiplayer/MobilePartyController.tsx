@@ -235,10 +235,22 @@ export const MobilePartyController: React.FC<MobilePartyControllerProps> = ({
     return trimmed ? trimmed.split(/\s+/).length : 0;
   }, [twistInput]);
 
-  const roleBadgeText =
-    me?.role === 'racer' && me.racerSlot !== null
-      ? `ARENA RACER • MARBLE #${me.racerSlot + 1}`
-      : 'CROWD CHAOS & RESCUE ARCHITECT';
+  const assignedRoomId = me?.roomId ?? snapshot.roomId ?? `${snapshot.roomCode}-1`;
+  const maxPerRoom = snapshot.maxMarblesPerRoom ?? 4;
+  const assignedRoomSummary = snapshot.allRoomsSummary?.find(
+    (r) => r.roomId === assignedRoomId,
+  );
+  const myRoomPlayerCount =
+    assignedRoomSummary?.playerCount ?? snapshot.roomPlayerCount ?? snapshot.players.length;
+  const myPlayerNum = me?.roomPlayerNumber ?? 1;
+  const isOverflowRoom = Boolean(me?.autoOverflowed || (me?.roomIndex ?? 1) > 1);
+
+  const roomBadgeText =
+    me?.role === 'racer'
+      ? isOverflowRoom
+        ? `ROOM ${assignedRoomId} • PLAYER ${myPlayerNum}/${maxPerRoom} (AUTO-OVERFLOW)`
+        : `ROOM ${assignedRoomId} • PLAYER ${myPlayerNum}/${maxPerRoom} • MARBLE #${(me.racerSlot ?? 0) + 1}`
+      : `ROOM ${assignedRoomId} • CROWD CHAOS & RESCUE ARCHITECT`;
 
   return (
     <div
@@ -273,6 +285,7 @@ export const MobilePartyController: React.FC<MobilePartyControllerProps> = ({
       >
         <div>
           <div
+            data-testid="mobile-room-overflow-badge"
             style={{
               fontSize: '11px',
               fontWeight: 700,
@@ -281,11 +294,12 @@ export const MobilePartyController: React.FC<MobilePartyControllerProps> = ({
               textTransform: 'uppercase',
             }}
           >
-            ROOM {snapshot.roomCode} • {roleBadgeText}
+            {roomBadgeText}
           </div>
           <div style={{ fontSize: '13px', color: '#cbd5e1', marginTop: '2px' }}>
             Score: <strong style={{ color: '#facc15' }}>{me?.score ?? 0} pts</strong> •{' '}
-            {snapshot.players.length} in room
+            {myRoomPlayerCount}/{maxPerRoom} in {assignedRoomId} •{' '}
+            {snapshot.allRoomsSummary?.length ?? 1} active room(s)
           </div>
         </div>
 

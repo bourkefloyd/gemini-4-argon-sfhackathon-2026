@@ -16,10 +16,10 @@ import {
 import type {
   CrowdMutatorKind,
   JoinPartyRequest,
+  JoinPartyResponse,
   PartyActionPayload,
   PartyCrowdPrompt,
   PartyInputPayload,
-  PartyPlayerRecord,
   PartyPromptPayload,
   PartyRoomSnapshot,
 } from './party-types';
@@ -33,7 +33,9 @@ type BroadcastEnvelope =
   | { type: 'action'; payload: PartyActionPayload }
   | { type: 'prompt'; payload: PartyPromptPayload }
   | { type: 'tunnel'; customTunnelUrl: string | null }
-  | { type: 'simulate'; count: number; stepOnly?: boolean };
+  | { type: 'simulate'; count: number; stepOnly?: boolean }
+  | { type: 'selectRoom'; roomId: string | number }
+  | { type: 'setMaxMarbles'; maxMarblesPerRoom: number };
 
 export interface PartyRoomClientOptions {
   readonly roomCode?: string;
@@ -45,10 +47,7 @@ export interface PartyRoomClientOptions {
 export interface PartyRoomClient {
   getSnapshot(): PartyRoomSnapshot;
   getLocalEngine(): PartyRoomEngine;
-  join(req: JoinPartyRequest): Promise<{
-    player: PartyPlayerRecord;
-    snapshot: PartyRoomSnapshot;
-  }>;
+  join(req: JoinPartyRequest): Promise<JoinPartyResponse>;
   sendInput(payload: PartyInputPayload): Promise<void>;
   triggerAction(
     playerId: string,
@@ -60,6 +59,8 @@ export interface PartyRoomClient {
   ): Promise<{ prompt: PartyCrowdPrompt | null; snapshot: PartyRoomSnapshot }>;
   setCustomTunnelUrl(url: string | null): Promise<PartyRoomSnapshot>;
   simulateCrowdPhones(count?: number, stepOnly?: boolean): Promise<PartyRoomSnapshot>;
+  selectRoom(roomIdOrIndex: string | number): Promise<PartyRoomSnapshot>;
+  setMaxMarblesPerRoom(maxMarbles: number): Promise<PartyRoomSnapshot>;
   subscribe(listener: (snapshot: PartyRoomSnapshot) => void): () => void;
   dispose(): void;
 }
@@ -183,6 +184,12 @@ export function createPartyRoomClient(
               localEngine.spawnSimulatedCrowdPhones(msg.count);
             }
             break;
+          case 'selectRoom':
+            localEngine.setActiveRoom(msg.roomId);
+            break;
+          case 'setMaxMarbles':
+            localEngine.setMaxMarblesPerRoom(msg.maxMarblesPerRoom);
+            break;
         }
       };
     } catch {
@@ -241,13 +248,10 @@ export function createPartyRoomClient(
     }
   }
 
-  async function join(req: JoinPartyRequest) {
+  async function join(req: JoinPartyRequest): Promise<JoinPartyResponse> {
     const localRes = localEngine.joinPlayer(req);
     channel?.postMessage({ type: 'join', payload: req } satisfies BroadcastEnvelope);
-    const remote = await postJson<{
-      player: PartyPlayerRecord;
-      snapshot: PartyRoomSnapshot;
-    }>('/api/party/join', req);
+    const remote = await postJson<JoinPartyResponse>('/api/party/join', req);
     if (remote?.snapshot) {
       emit(remote.snapshot);
       return remote;
@@ -331,6 +335,40 @@ export function createPartyRoomClient(
     return localSnap;
   }
 
+  async function selectRoom(roomIdOrIndex: string | number): Promise<PartyRoomSnapshot> {
+    const localSnap = localEngine.setActiveRoom(roomIdOrIndex);
+    channel?.postMessage({
+      type: 'selectRoom',
+      roomId: roomIdOrIndex,
+    } satisfies BroadcastEnvelope);
+    const remote = await postJson<{ ok: boolean; snapshot: PartyRoomSnapshot }>(
+      '/api/party/room',
+      { roomId: roomIdOrIndex },
+    );
+    if (remote?.snapshot) {
+      emit(remote.snapshot);
+      return remote.snapshot;
+    }
+    return localSnap;
+  }
+
+  async function setMaxMarblesPerRoom(maxMarbles: number): Promise<PartyRoomSnapshot> {
+    const localSnap = localEngine.setMaxMarblesPerRoom(maxMarbles);
+    channel?.postMessage({
+      type: 'setMaxMarbles',
+      maxMarblesPerRoom: maxMarbles,
+    } satisfies BroadcastEnvelope);
+    const remote = await postJson<{ ok: boolean; snapshot: PartyRoomSnapshot }>(
+      '/api/party/room',
+      { maxMarblesPerRoom: maxMarbles },
+    );
+    if (remote?.snapshot) {
+      emit(remote.snapshot);
+      return remote.snapshot;
+    }
+    return localSnap;
+  }
+
   function subscribe(listener: (snapshot: PartyRoomSnapshot) => void): () => void {
     listeners.add(listener);
     listener(latestSnapshot);
@@ -355,6 +393,8 @@ export function createPartyRoomClient(
     submitPrompt,
     setCustomTunnelUrl,
     simulateCrowdPhones,
+    selectRoom,
+    setMaxMarblesPerRoom,
     subscribe,
     dispose,
   };
