@@ -17,6 +17,10 @@ import {
   type MarbleState,
 } from '../contracts';
 import type { TrackballUiTelemetry } from '../camera';
+import type { TactileFeelState } from '../feel';
+import type { SplitDeltaSnapshot } from '../replay';
+import type { Ym2151SynthState } from '../audio';
+import type { BotPlayStyle } from '../bot';
 
 export interface ArcadeHudProps {
   readonly courses: readonly CourseSpec[];
@@ -29,6 +33,11 @@ export interface ArcadeHudProps {
   readonly bonusBannerSec: number | null;
   readonly fps: number;
   readonly trackball: TrackballUiTelemetry;
+  readonly feel?: TactileFeelState;
+  readonly ghostSplit?: SplitDeltaSnapshot;
+  readonly synthTelemetry?: Ym2151SynthState;
+  readonly botEnabled?: boolean;
+  readonly botStyle?: BotPlayStyle;
   readonly architectOpen: boolean;
   readonly onSelectCourse: (index: number) => void;
   readonly onCycleCameraZoom: () => void;
@@ -36,6 +45,8 @@ export interface ArcadeHudProps {
   readonly onRespawn: () => void;
   readonly onNextCourseWithBonus: () => void;
   readonly onToggleArchitect: () => void;
+  readonly onToggleAudioMute?: () => void;
+  readonly onToggleBotPlaytest?: () => void;
 }
 
 export const ArcadeHud: React.FC<ArcadeHudProps> = ({
@@ -49,6 +60,11 @@ export const ArcadeHud: React.FC<ArcadeHudProps> = ({
   bonusBannerSec,
   fps,
   trackball,
+  feel,
+  ghostSplit,
+  synthTelemetry,
+  botEnabled,
+  botStyle,
   architectOpen,
   onSelectCourse,
   onCycleCameraZoom,
@@ -56,6 +72,8 @@ export const ArcadeHud: React.FC<ArcadeHudProps> = ({
   onRespawn,
   onNextCourseWithBonus,
   onToggleArchitect,
+  onToggleAudioMute,
+  onToggleBotPlaytest,
 }) => {
   const horizSpeed = Math.hypot(marble.velocity[0], marble.velocity[2]);
   const totalSpeed = Math.hypot(marble.velocity[0], marble.velocity[1], marble.velocity[2]);
@@ -123,6 +141,22 @@ export const ArcadeHud: React.FC<ArcadeHudProps> = ({
             <span className="hud-course-diff">{currentCourse.difficulty}</span>
           </div>
 
+          {ghostSplit && ghostSplit.hasReferenceGhost && (
+            <div
+              className={`hud-ghost-split-pill ${
+                ghostSplit.status === 'ahead'
+                  ? 'ghost-split-ahead'
+                  : ghostSplit.status === 'behind'
+                    ? 'ghost-split-behind'
+                    : 'ghost-split-even'
+              }`}
+              data-testid="ghost-split-timer"
+            >
+              <span className="hud-ghost-label">GHOST ({ghostSplit.referenceLabel}):</span>
+              <strong className="hud-ghost-delta">{ghostSplit.formattedDelta}</strong>
+            </div>
+          )}
+
           {bonusBannerSec !== null && (
             <div className="hud-bonus-carryover-banner">
               +{bonusBannerSec} BONUS SECONDS CARRIED OVER!
@@ -155,6 +189,26 @@ export const ArcadeHud: React.FC<ArcadeHudProps> = ({
             <button type="button" className="hud-btn hud-btn-sm" onClick={onRespawn}>
               RESPAWN [R]
             </button>
+            {onToggleAudioMute && (
+              <button
+                type="button"
+                className={`hud-btn hud-btn-sm ${synthTelemetry && !synthTelemetry.muted ? 'hud-btn-active' : ''}`}
+                onClick={onToggleAudioMute}
+                data-testid="hud-audio-toggle"
+              >
+                SYNTH: {synthTelemetry?.muted ? 'MUTED' : 'YM2151 FM'} [N]
+              </button>
+            )}
+            {onToggleBotPlaytest && (
+              <button
+                type="button"
+                className={`hud-btn hud-btn-sm ${botEnabled ? 'hud-btn-active' : ''}`}
+                onClick={onToggleBotPlaytest}
+                data-testid="hud-bot-toggle"
+              >
+                AI BOT: {botEnabled ? (botStyle ?? 'tourist').toUpperCase() : 'OFF'} [P]
+              </button>
+            )}
             <button
               type="button"
               className={`hud-btn hud-btn-sm ${architectOpen ? 'hud-btn-accent' : ''}`}
@@ -251,6 +305,20 @@ export const ArcadeHud: React.FC<ArcadeHudProps> = ({
               </strong>
             </div>
           </div>
+
+          {feel && (
+            <div className="hud-feel-row" data-testid="hud-feel-telemetry">
+              <span className={`hud-stress-pill stress-${feel.stress.fractureStage}`}>
+                GLASS: {feel.stress.fractureStage.toUpperCase()} ({Math.round(feel.stress.glassStress * 100)}%)
+              </span>
+              {feel.rim.rimSaveActive && (
+                <span className="hud-rim-assist-pill">RIM-CATCH ASSIST</span>
+              )}
+              {feel.slip.backspinIntensity > 0.2 && (
+                <span className="hud-skid-pill">BACKSPIN SKID</span>
+              )}
+            </div>
+          )}
         </div>
 
         <div className="hud-panel hud-hazards-panel">
@@ -266,9 +334,9 @@ export const ArcadeHud: React.FC<ArcadeHudProps> = ({
           <div className="hud-keybind-hint">
             <span>WASD / ARROWS / MOUSE DRAG: Roll Trackball</span>
             <span>SPACE: Hop</span>
-            <span>Q/E: Orbit Cam</span>
-            <span>C: Zoom Stop</span>
-            <span>1/2: Course</span>
+            <span>P: AI Bot</span>
+            <span>N: Synth</span>
+            <span>G: Argon 1M</span>
           </div>
         </div>
 

@@ -1,0 +1,31 @@
+export {
+  type AutonomousDriver,
+  type AutonomousDriverOptions,
+  type BotDecisionTelemetry,
+  type BotFanRayProbe,
+  type BotJumpReason,
+  type BotPlayStyle,
+  type BotWaypoint,
+  buildCourseWaypoints,
+  createAutonomousDriver,
+  FAN_PROBE_ANGLES_DEG,
+} from './autonomous-driver';
+
+export {
+  type BottleneckReason,
+  type BotPlaytestController,
+  computeMarbleSlipRatio,
+  createBotPlaytestController,
+  createTelemetryRecorder,
+  type HeadlessRolloutOptions,
+  type HeadlessRolloutResult,
+  installBotPlaytestGlobalBridge,
+  type PlaytestWindowHost,
+  type RunTelemetrySummary,
+  runHeadlessBotRollout,
+  type TelemetryBottleneckSegment,
+  type TelemetryDeathEvent,
+  type TelemetryRecorder,
+  type TelemetrySplitTime,
+  type TelemetryTrajectoryPoint,
+} from './telemetry-recorder';

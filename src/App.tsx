@@ -29,6 +29,19 @@ import { createMarbleSimulation } from './physics';
 import { createRaymarchRenderer } from './rendering';
 import { createCpuWorldEvaluator } from './sdf/eval-cpu';
 import { ArcadeHud, ArchitectHookPanel } from './ui';
+import {
+  createArcadeSensorySession,
+  type TactileFeelState,
+} from './feel';
+import type { GhostPlaybackPose, SplitDeltaSnapshot } from './replay';
+import type { Ym2151SynthState } from './audio';
+import { createShatterSimulator, createShockwaveManager } from './vfx';
+import {
+  type BotPlayStyle,
+  type BotPlaytestController,
+  createBotPlaytestController,
+  type RunTelemetrySummary,
+} from './bot';
 
 export interface MarblePlaytestTelemetry {
   readonly courseId: string;
@@ -52,6 +65,13 @@ export interface MarblePlaytestTelemetry {
   readonly score: number;
   readonly fps: number;
   readonly camera: CameraState;
+  readonly feel?: TactileFeelState;
+  readonly ghostPose?: GhostPlaybackPose;
+  readonly ghostSplit?: SplitDeltaSnapshot;
+  readonly synth?: Ym2151SynthState;
+  readonly botEnabled?: boolean;
+  readonly botStyle?: BotPlayStyle;
+  readonly botLatestSummary?: RunTelemetrySummary | null;
 }
 
 export interface MarblePlaytestApi {
@@ -98,9 +118,24 @@ export const App: React.FC = () => {
     createIsometricCameraRig(currentCourse, currentCourse.startPos),
   );
   const rendererRef = useRef<ReturnType<typeof createRaymarchRenderer> | null>(null);
+  const sensoryRef = useRef(createArcadeSensorySession(currentCourse));
+  const shatterSimRef = useRef(createShatterSimulator());
+  const shockwaveMgrRef = useRef(createShockwaveManager());
+  const botControllerRef = useRef<BotPlaytestController | null>(null);
 
   const [uiMarble, setUiMarble] = useState<MarbleState>(() => simRef.current.getState());
   const [uiCamera, setUiCamera] = useState<CameraState>(() => cameraRigRef.current.getState());
+  const [uiFeel, setUiFeel] = useState<TactileFeelState>(() =>
+    sensoryRef.current.feelTracker.getState(),
+  );
+  const [uiGhostSplit, setUiGhostSplit] = useState<SplitDeltaSnapshot>(() =>
+    sensoryRef.current.replayManager.getSplitSnapshot(simRef.current.getState(), 0),
+  );
+  const [uiSynth, setUiSynth] = useState<Ym2151SynthState>(() =>
+    sensoryRef.current.synth.getState(),
+  );
+  const [botEnabled, setBotEnabled] = useState<boolean>(false);
+  const [botStyle, setBotStyle] = useState<BotPlayStyle>('tourist');
   const [timeRemainingSec, setTimeRemainingSec] = useState<number>(currentCourse.parTimeSec);
   const [score, setScore] = useState<number>(0);
   const [bonusBannerSec, setBonusBannerSec] = useState<number | null>(null);
@@ -118,6 +153,7 @@ export const App: React.FC = () => {
   });
 
   const timeRemainingRef = useRef<number>(currentCourse.parTimeSec);
+  const runElapsedRef = useRef<number>(0);
   const scoreRef = useRef<number>(0);
   const fpsRef = useRef<number>(60);
   const simTimeRef = useRef<number>(0);
@@ -125,6 +161,7 @@ export const App: React.FC = () => {
   const coursesRef = useRef<readonly CourseSpec[]>(courses);
   const activeIdxRef = useRef<number>(activeCourseIndex);
   const goalAwardedRef = useRef<boolean>(false);
+  const prevMarbleRef = useRef<MarbleState>(simRef.current.getState());
 
   // Programmatic bot override state for `window.__MARBLE_PLAYTEST__`
   const botOverrideRef = useRef<{
@@ -147,6 +184,11 @@ export const App: React.FC = () => {
       evaluatorRef.current = nextEval;
       simRef.current.setCourse(nextCourse, nextEval);
       cameraRigRef.current.snapToCourse(nextCourse, nextCourse.startPos);
+      sensoryRef.current.setCourse(nextCourse);
+      shatterSimRef.current.reset();
+      shockwaveMgrRef.current.clear();
+      runElapsedRef.current = 0;
+      prevMarbleRef.current = simRef.current.getState();
 
       if (rendererRef.current) {
         rendererRef.current.setCourse(nextCourse);
@@ -167,6 +209,10 @@ export const App: React.FC = () => {
       setTimeRemainingSec(nextTime);
       setUiMarble(simRef.current.getState());
       setUiCamera(cameraRigRef.current.getState());
+      setUiFeel(sensoryRef.current.feelTracker.getState());
+      setUiGhostSplit(
+        sensoryRef.current.replayManager.getSplitSnapshot(simRef.current.getState(), 0),
+      );
 
       if (carryOverBonusSec !== null) {
         setBonusBannerSec(carryOverBonusSec);
@@ -246,12 +292,22 @@ export const App: React.FC = () => {
       },
       onRespawn: () => {
         simRef.current.respawn(true);
+        sensoryRef.current.onRespawn(activeCourseRef.current, simRef.current.getState());
+        runElapsedRef.current = 0;
       },
       onOrbitCameraYaw: (deltaDeg) => {
         cameraRigRef.current.adjustYaw(deltaDeg);
       },
       onToggleArchitectPanel: () => {
         setArchitectOpen((prev) => !prev);
+      },
+      onToggleAudioMute: () => {
+        sensoryRef.current.synth.resume();
+        sensoryRef.current.synth.toggleMute();
+        setUiSynth(sensoryRef.current.synth.getState());
+      },
+      onUserGesture: () => {
+        sensoryRef.current.synth.resume();
       },
     });
 
@@ -292,6 +348,16 @@ export const App: React.FC = () => {
         score: scoreRef.current,
         fps: Math.round(fpsRef.current),
         camera,
+        feel: sensoryRef.current.feelTracker.getState(),
+        ghostPose: sensoryRef.current.replayManager.sampleGhostPose(runElapsedRef.current),
+        ghostSplit: sensoryRef.current.replayManager.getSplitSnapshot(
+          marble,
+          runElapsedRef.current,
+        ),
+        synth: sensoryRef.current.synth.getState(),
+        botEnabled: botControllerRef.current?.isEnabled() ?? false,
+        botStyle: botControllerRef.current?.getStyle() ?? 'tourist',
+        botLatestSummary: botControllerRef.current?.getLatestSummary() ?? null,
       };
     };
 
@@ -332,13 +398,22 @@ export const App: React.FC = () => {
       stepFrames: (frames = 1, worldInputXZ, jump = false) => {
         const count = Math.max(1, Math.min(2400, Math.floor(frames)));
         const dt = 1 / 120;
-        const moveXZ: readonly [number, number] = worldInputXZ ?? [0, 0];
+        const baseMoveXZ: readonly [number, number] = worldInputXZ ?? [0, 0];
+        let latestSensory = sensoryRef.current.getSnapshot(
+          simRef.current.getState(),
+          runElapsedRef.current,
+        );
         for (let i = 0; i < count; i++) {
           simTimeRef.current += dt;
+          const prevM = simRef.current.getState();
+          const currentFeel = sensoryRef.current.feelTracker.getState();
+          const assistedMoveXZ = currentFeel.rim.rimSaveActive
+            ? currentFeel.rim.assistedMoveXZ
+            : baseMoveXZ;
           const mState = simRef.current.stepFixed(
             dt,
             {
-              moveXZ,
+              moveXZ: assistedMoveXZ,
               jumpPressed: i === 0 ? jump : false,
               respawnPressed: false,
             },
@@ -346,7 +421,36 @@ export const App: React.FC = () => {
           );
           if (mState.status === 'racing') {
             timeRemainingRef.current = Math.max(0, timeRemainingRef.current - dt);
+            runElapsedRef.current += dt;
           }
+          latestSensory = sensoryRef.current.step({
+            dt,
+            marble: mState,
+            input: {
+              moveXZ: baseMoveXZ,
+              jumpPressed: i === 0 ? jump : false,
+              respawnPressed: false,
+            },
+            evaluator: evaluatorRef.current,
+            camera: cameraRigRef.current.getState(),
+            simTimeSec: simTimeRef.current,
+            runTimeSec: runElapsedRef.current,
+            timeRemainingSec: timeRemainingRef.current,
+          });
+          shatterSimRef.current.syncWithMarbleState(
+            mState,
+            evaluatorRef.current,
+            dt,
+            simTimeRef.current,
+          );
+          shockwaveMgrRef.current.detectMarbleEvents(prevM, mState, simTimeRef.current);
+          shockwaveMgrRef.current.updateRimDanger(
+            mState,
+            evaluatorRef.current,
+            simTimeRef.current,
+          );
+          shockwaveMgrRef.current.step(dt, simTimeRef.current);
+          prevMarbleRef.current = mState;
         }
         const mState = simRef.current.getState();
         const camState = cameraRigRef.current.update(
@@ -357,6 +461,7 @@ export const App: React.FC = () => {
           evaluatorRef.current,
           simTimeRef.current,
         );
+        const shockUniforms = shockwaveMgrRef.current.packUniforms();
         renderer.render({
           course: activeCourseRef.current,
           marble: mState,
@@ -364,14 +469,37 @@ export const App: React.FC = () => {
           renderOrientation: mState.orientation,
           camera: camState,
           time: simTimeRef.current,
+          glassStress: latestSensory.feel.stress.glassStress,
+          crackVisibility: latestSensory.feel.stress.crackVisibility,
+          stressGlow: latestSensory.feel.stress.stressGlowIntensity,
+          ghostActive: latestSensory.ghostPose.active,
+          ghostPos: latestSensory.ghostPose.position,
+          ghostQuat: latestSensory.ghostPose.orientation,
+          ghostColor: [
+            latestSensory.ghostPose.holoColorRgba[0],
+            latestSensory.ghostPose.holoColorRgba[1],
+            latestSensory.ghostPose.holoColorRgba[2],
+          ],
+          shatterShards: shatterSimRef.current.packUniforms(),
+          shatterShardCount: shatterSimRef.current.getState().active
+            ? shatterSimRef.current.getState().shards.length
+            : 0,
+          shockwaveRings: shockUniforms.uShockwaveRings,
+          shockwaveParams: shockUniforms.uShockwaveParams,
+          rimDanger: shockUniforms.uRimDanger,
         });
         setUiMarble(mState);
         setUiCamera(camState);
+        setUiFeel(latestSensory.feel);
+        setUiGhostSplit(latestSensory.split);
+        setUiSynth(latestSensory.synth);
         setTimeRemainingSec(timeRemainingRef.current);
         return buildTelemetrySnapshot();
       },
       respawn: (atCheckpoint = true) => {
         simRef.current.respawn(atCheckpoint);
+        sensoryRef.current.onRespawn(activeCourseRef.current, simRef.current.getState());
+        runElapsedRef.current = 0;
         return buildTelemetrySnapshot();
       },
       teleportMarble: (position, velocity = [0, 0, 0]) => {
@@ -403,6 +531,13 @@ export const App: React.FC = () => {
 
     window.__MARBLE_PLAYTEST__ = playtestApi;
     window.__MARBLE_MADNESS_ARCHITECT__ = playtestApi;
+
+    const botController = createBotPlaytestController(() => window.__MARBLE_PLAYTEST__, {
+      initialStyle: 'tourist',
+      attachKeyboardShortcut: true,
+    });
+    botControllerRef.current = botController;
+    window.__MARBLE_BOT__ = botController;
 
     let rafId = 0;
     let lastTimeMs = performance.now();
@@ -439,10 +574,17 @@ export const App: React.FC = () => {
         }
       }
 
+      // Apply Rim-Catch Assist torque boost from previous feel step when teetering on cliff rims
+      const prevFeel = sensoryRef.current.feelTracker.getState();
+      const rimAssistedMoveXZ = prevFeel.rim.rimSaveActive
+        ? prevFeel.rim.assistedMoveXZ
+        : effectiveMoveXZ;
+
+      const prevMarble = prevMarbleRef.current;
       const { state: marbleState, renderPosition, renderOrientation } = simRef.current.update(
         rawDt,
         {
-          moveXZ: effectiveMoveXZ,
+          moveXZ: rimAssistedMoveXZ,
           jumpPressed: effectiveJump,
           respawnPressed: sampled.respawnPressed,
         },
@@ -453,10 +595,16 @@ export const App: React.FC = () => {
 
       // Update countdown timer while racing
       if (marbleState.status === 'racing') {
+        if (prevMarble.status !== 'racing') {
+          runElapsedRef.current = 0;
+        }
+        runElapsedRef.current += rawDt;
         timeRemainingRef.current = Math.max(0, timeRemainingRef.current - rawDt);
         if (timeRemainingRef.current <= 0) {
           timeRemainingRef.current = course.parTimeSec;
+          runElapsedRef.current = 0;
           simRef.current.respawn(false);
+          sensoryRef.current.onRespawn(course, simRef.current.getState());
         }
         const speed = Math.hypot(marbleState.velocity[0], marbleState.velocity[2]);
         if (speed > 2.5) {
@@ -476,6 +624,41 @@ export const App: React.FC = () => {
         simTimeRef.current,
       );
 
+      const sensoryStep = sensoryRef.current.step({
+        dt: rawDt,
+        marble: marbleState,
+        input: {
+          moveXZ: effectiveMoveXZ,
+          jumpPressed: effectiveJump,
+          respawnPressed: sampled.respawnPressed,
+        },
+        evaluator: evaluatorRef.current,
+        camera: camState,
+        simTimeSec: simTimeRef.current,
+        runTimeSec: runElapsedRef.current,
+        timeRemainingSec: timeRemainingRef.current,
+      });
+
+      shatterSimRef.current.syncWithMarbleState(
+        marbleState,
+        evaluatorRef.current,
+        rawDt,
+        simTimeRef.current,
+      );
+      shockwaveMgrRef.current.detectMarbleEvents(
+        prevMarble,
+        marbleState,
+        simTimeRef.current,
+      );
+      shockwaveMgrRef.current.updateRimDanger(
+        marbleState,
+        evaluatorRef.current,
+        simTimeRef.current,
+      );
+      shockwaveMgrRef.current.step(rawDt, simTimeRef.current);
+      prevMarbleRef.current = marbleState;
+
+      const shockUniforms = shockwaveMgrRef.current.packUniforms();
       renderer.render({
         course,
         marble: marbleState,
@@ -483,6 +666,24 @@ export const App: React.FC = () => {
         renderOrientation,
         camera: camState,
         time: simTimeRef.current,
+        glassStress: sensoryStep.feel.stress.glassStress,
+        crackVisibility: sensoryStep.feel.stress.crackVisibility,
+        stressGlow: sensoryStep.feel.stress.stressGlowIntensity,
+        ghostActive: sensoryStep.ghostPose.active,
+        ghostPos: sensoryStep.ghostPose.position,
+        ghostQuat: sensoryStep.ghostPose.orientation,
+        ghostColor: [
+          sensoryStep.ghostPose.holoColorRgba[0],
+          sensoryStep.ghostPose.holoColorRgba[1],
+          sensoryStep.ghostPose.holoColorRgba[2],
+        ],
+        shatterShards: shatterSimRef.current.packUniforms(),
+        shatterShardCount: shatterSimRef.current.getState().active
+          ? shatterSimRef.current.getState().shards.length
+          : 0,
+        shockwaveRings: shockUniforms.uShockwaveRings,
+        shockwaveParams: shockUniforms.uShockwaveParams,
+        rimDanger: shockUniforms.uRimDanger,
       });
 
       uiSyncAccumulator += rawDt;
@@ -490,6 +691,11 @@ export const App: React.FC = () => {
         uiSyncAccumulator = 0;
         setUiMarble(marbleState);
         setUiCamera(camState);
+        setUiFeel(sensoryStep.feel);
+        setUiGhostSplit(sensoryStep.split);
+        setUiSynth(sensoryStep.synth);
+        setBotEnabled(botController.isEnabled());
+        setBotStyle(botController.getStyle());
         setTimeRemainingSec(timeRemainingRef.current);
         setScore(scoreRef.current);
         setFps(fpsRef.current);
@@ -503,6 +709,8 @@ export const App: React.FC = () => {
 
     return () => {
       window.cancelAnimationFrame(rafId);
+      botController.dispose();
+      botControllerRef.current = null;
       inputCtrl.dispose();
       renderer.dispose();
     };
@@ -527,6 +735,11 @@ export const App: React.FC = () => {
         bonusBannerSec={bonusBannerSec}
         fps={fps}
         trackball={trackball}
+        feel={uiFeel}
+        ghostSplit={uiGhostSplit}
+        synthTelemetry={uiSynth}
+        botEnabled={botEnabled}
+        botStyle={botStyle}
         architectOpen={architectOpen}
         onSelectCourse={handleSelectCourse}
         onCycleCameraZoom={() => {
@@ -537,9 +750,23 @@ export const App: React.FC = () => {
         }}
         onRespawn={() => {
           simRef.current.respawn(true);
+          sensoryRef.current.onRespawn(activeCourseRef.current, simRef.current.getState());
+          runElapsedRef.current = 0;
         }}
         onNextCourseWithBonus={handleNextCourseWithBonus}
         onToggleArchitect={() => setArchitectOpen((prev) => !prev)}
+        onToggleAudioMute={() => {
+          sensoryRef.current.synth.resume();
+          sensoryRef.current.synth.toggleMute();
+          setUiSynth(sensoryRef.current.synth.getState());
+        }}
+        onToggleBotPlaytest={() => {
+          const ctrl = botControllerRef.current;
+          if (!ctrl) return;
+          const next = ctrl.toggle();
+          setBotEnabled(next);
+          setBotStyle(ctrl.getStyle());
+        }}
       />
 
       <ArchitectHookPanel

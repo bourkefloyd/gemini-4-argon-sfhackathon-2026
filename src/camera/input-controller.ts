@@ -26,6 +26,8 @@ export interface ArcadeInputCallbacks {
   onRespawn?: () => void;
   onOrbitCameraYaw?: (deltaDeg: number) => void;
   onToggleArchitectPanel?: () => void;
+  onToggleAudioMute?: () => void;
+  onUserGesture?: () => void;
 }
 
 export interface ArcadeInputController {
@@ -64,6 +66,7 @@ export function createArcadeInputController(
 
   function onKeyDown(ev: KeyboardEvent) {
     if (isTypingInInput(ev)) return;
+    callbacks.onUserGesture?.();
     const code = ev.code;
     keysDown.add(code);
 
@@ -79,6 +82,8 @@ export function createArcadeInputController(
       callbacks.onCycleMarblePreset?.();
     } else if (code === 'KeyG') {
       callbacks.onToggleArchitectPanel?.();
+    } else if (code === 'KeyN') {
+      callbacks.onToggleAudioMute?.();
     } else if (code === 'Digit1') {
       callbacks.onSelectCourse?.(0);
     } else if (code === 'Digit2') {
@@ -94,6 +99,7 @@ export function createArcadeInputController(
 
   function onPointerDown(ev: PointerEvent) {
     if (isTypingInInput(ev)) return;
+    callbacks.onUserGesture?.();
     const target = ev.target as HTMLElement | null;
     if (target && target.closest('[data-hud-interactive="true"]')) {
       return;

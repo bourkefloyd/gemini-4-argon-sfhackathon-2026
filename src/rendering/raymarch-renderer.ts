@@ -45,6 +45,18 @@ export interface RenderFrameInput {
   readonly renderOrientation: readonly [number, number, number, number];
   readonly camera: CameraState;
   readonly time: number;
+  readonly glassStress?: number;
+  readonly crackVisibility?: number;
+  readonly stressGlow?: number;
+  readonly ghostActive?: boolean;
+  readonly ghostPos?: readonly [number, number, number];
+  readonly ghostQuat?: readonly [number, number, number, number];
+  readonly ghostColor?: readonly [number, number, number];
+  readonly shatterShards?: Float32Array;
+  readonly shatterShardCount?: number;
+  readonly shockwaveRings?: Float32Array;
+  readonly shockwaveParams?: Float32Array;
+  readonly rimDanger?: Float32Array;
 }
 
 export interface RaymarchRenderer {
@@ -83,6 +95,18 @@ interface UniformLocations {
   uAbyssFogColor: WebGLUniformLocation | null;
   uAbyssFogDensity: WebGLUniformLocation | null;
   uSunDir: WebGLUniformLocation | null;
+  uGlassStress: WebGLUniformLocation | null;
+  uCrackVisibility: WebGLUniformLocation | null;
+  uStressGlow: WebGLUniformLocation | null;
+  uGhostActive: WebGLUniformLocation | null;
+  uGhostPos: WebGLUniformLocation | null;
+  uGhostQuat: WebGLUniformLocation | null;
+  uGhostColor: WebGLUniformLocation | null;
+  uShatterShards: WebGLUniformLocation | null;
+  uShatterShardCount: WebGLUniformLocation | null;
+  uShockwaveRings: WebGLUniformLocation | null;
+  uShockwaveParams: WebGLUniformLocation | null;
+  uRimDanger: WebGLUniformLocation | null;
 }
 
 function compileShader(gl: WebGL2RenderingContext, type: number, source: string): WebGLShader {
@@ -177,6 +201,18 @@ export function createRaymarchRenderer(
       uAbyssFogColor: u('uAbyssFogColor'),
       uAbyssFogDensity: u('uAbyssFogDensity'),
       uSunDir: u('uSunDir'),
+      uGlassStress: u('uGlassStress'),
+      uCrackVisibility: u('uCrackVisibility'),
+      uStressGlow: u('uStressGlow'),
+      uGhostActive: u('uGhostActive'),
+      uGhostPos: u('uGhostPos'),
+      uGhostQuat: u('uGhostQuat'),
+      uGhostColor: u('uGhostColor'),
+      uShatterShards: u('uShatterShards'),
+      uShatterShardCount: u('uShatterShardCount'),
+      uShockwaveRings: u('uShockwaveRings'),
+      uShockwaveParams: u('uShockwaveParams'),
+      uRimDanger: u('uRimDanger'),
     };
   }
 
@@ -274,6 +310,35 @@ export function createRaymarchRenderer(
     gl.uniform3f(locations.uAbyssFogColor, theme.abyssFogColor[0], theme.abyssFogColor[1], theme.abyssFogColor[2]);
     gl.uniform1f(locations.uAbyssFogDensity, theme.abyssFogDensity);
     gl.uniform3f(locations.uSunDir, theme.sunDirection[0], theme.sunDirection[1], theme.sunDirection[2]);
+
+    gl.uniform1f(locations.uGlassStress, frame.glassStress ?? 0);
+    gl.uniform1f(locations.uCrackVisibility, frame.crackVisibility ?? 0);
+    gl.uniform1f(locations.uStressGlow, frame.stressGlow ?? 0);
+
+    gl.uniform1i(locations.uGhostActive, frame.ghostActive ? 1 : 0);
+    const gPos = frame.ghostPos ?? [0, -100, 0];
+    const gQuat = frame.ghostQuat ?? [0, 0, 0, 1];
+    const gCol = frame.ghostColor ?? [0.22, 0.94, 1.0];
+    gl.uniform3f(locations.uGhostPos, gPos[0], gPos[1], gPos[2]);
+    gl.uniform4f(locations.uGhostQuat, gQuat[0], gQuat[1], gQuat[2], gQuat[3]);
+    gl.uniform3f(locations.uGhostColor, gCol[0], gCol[1], gCol[2]);
+
+    gl.uniform1i(locations.uShatterShardCount, frame.shatterShardCount ?? 0);
+    if (frame.shatterShards && locations.uShatterShards) {
+      gl.uniform4fv(locations.uShatterShards, frame.shatterShards);
+    }
+
+    if (frame.shockwaveRings && locations.uShockwaveRings) {
+      gl.uniform4fv(locations.uShockwaveRings, frame.shockwaveRings);
+    }
+    if (frame.shockwaveParams && locations.uShockwaveParams) {
+      gl.uniform4fv(locations.uShockwaveParams, frame.shockwaveParams);
+    }
+    if (frame.rimDanger && locations.uRimDanger) {
+      gl.uniform4fv(locations.uRimDanger, frame.rimDanger);
+    } else if (locations.uRimDanger) {
+      gl.uniform4f(locations.uRimDanger, 0, 0, 0, 0);
+    }
 
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }

@@ -258,6 +258,90 @@ body,
   box-shadow: 0 0 20px rgba(40, 247, 156, 0.35);
 }
 
+.hud-ghost-split-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 12px;
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  background: rgba(8, 20, 42, 0.85);
+  border: 1px solid rgba(60, 232, 255, 0.45);
+}
+
+.hud-ghost-label {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.hud-ghost-delta {
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.ghost-split-ahead {
+  border-color: rgba(40, 247, 156, 0.6);
+  color: var(--emerald-neon);
+}
+
+.ghost-split-behind {
+  border-color: rgba(255, 59, 92, 0.6);
+  color: var(--crimson-neon);
+}
+
+.ghost-split-even {
+  border-color: rgba(60, 232, 255, 0.55);
+  color: var(--cyan-neon);
+}
+
+.hud-feel-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.hud-stress-pill {
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: rgba(60, 232, 255, 0.14);
+  color: var(--cyan-neon);
+}
+
+.stress-crazed {
+  background: rgba(255, 210, 63, 0.22);
+  color: var(--gold-arcade);
+}
+
+.stress-critical,
+.stress-shattered {
+  background: rgba(255, 59, 92, 0.28);
+  color: var(--crimson-neon);
+}
+
+.hud-rim-assist-pill {
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: rgba(40, 247, 156, 0.2);
+  color: var(--emerald-neon);
+}
+
+.hud-skid-pill {
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: rgba(255, 210, 63, 0.2);
+  color: var(--gold-arcade);
+}
+
 /* --- BUTTONS & COURSE TABS --- */
 .hud-course-tabs {
   display: flex;

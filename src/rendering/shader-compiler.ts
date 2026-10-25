@@ -19,6 +19,7 @@ import {
   type Vec3,
 } from '../contracts';
 import { buildCourseSceneTree } from '../sdf/eval-cpu';
+import { getShatterShaderSnippet, getShockwaveShaderSnippet } from '../vfx';
 
 function f(n: number): string {
   if (!Number.isFinite(n)) return '0.0';
@@ -205,6 +206,8 @@ export function compileCourseToGlsl(course: CourseSpec): string {
   const bodyLines: string[] = [];
   const counter = { id: 0 };
   const finalVar = buildGlslNodeStatements(rootTree, bodyLines, counter);
+  const shatterSnippet = getShatterShaderSnippet().glsl;
+  const shockwaveSnippet = getShockwaveShaderSnippet().glsl;
 
   return `#version 300 es
 precision highp float;
@@ -232,6 +235,15 @@ uniform vec3 uMarbleVeinColor;
 uniform vec3 uMarbleGlowColor;
 uniform float uMarbleIridescence;
 
+uniform float uGlassStress;
+uniform float uCrackVisibility;
+uniform float uStressGlow;
+
+uniform int uGhostActive;
+uniform vec3 uGhostPos;
+uniform vec4 uGhostQuat;
+uniform vec4 uGhostColor;
+
 uniform vec3 uGoalPos;
 uniform float uGoalRadius;
 uniform float uOcclusionStrength;
@@ -245,6 +257,9 @@ uniform vec3 uSkyHorizon;
 uniform vec3 uAbyssFogColor;
 uniform float uAbyssFogDensity;
 uniform vec3 uSunDir;
+
+${shatterSnippet}
+${shockwaveSnippet}
 
 vec3 rotateByQuatInverse(vec3 d, vec4 q) {
   vec3 t = 2.0 * cross(q.xyz, d);
@@ -429,22 +444,44 @@ vec2 evalWorldSdf(vec3 p) {
 }
 
 vec2 evalSceneSdf(vec3 p) {
-  vec2 world = evalWorldSdf(p);
+  vec2 res = evalWorldSdf(p);
 
-  // Player marble SDF (material ID = 100.0)
-  float effRadius = uMarbleRadius;
-  if (uMarbleStatus == 3) {
-    // Sinking into acid
-    effRadius *= max(0.15, 1.0 - 0.65 * clamp(uMarbleStatusTimer, 0.0, 1.2));
+  // Player marble SDF (material ID = 100.0) vs Shattered Glass Shards (material ID = 102.0)
+  if (uMarbleStatus == 2 && uShatterShardCount > 0) {
+    vec2 dShards = evalShatterShardsSdf(p);
+    if (dShards.x < res.x) {
+      res = dShards;
+    }
+  } else {
+    float effRadius = uMarbleRadius;
+    if (uMarbleStatus == 3) {
+      // Sinking into acid
+      effRadius *= max(0.15, 1.0 - 0.65 * clamp(uMarbleStatusTimer, 0.0, 1.2));
+    }
+    vec3 mp = p - uMarblePos;
+    float dMarble = length(mp) - effRadius;
+    if (uMarbleStatus == 2) {
+      // Shattered displacement fractures fallback
+      float shard = sin(mp.x * 18.0 + uTime * 12.0) * cos(mp.y * 18.0) * sin(mp.z * 18.0);
+      dMarble += shard * 0.08 * clamp(uMarbleStatusTimer * 2.0, 0.0, 1.0);
+    }
+    if (dMarble < res.x) {
+      res = vec2(dMarble, 100.0);
+    }
   }
-  vec3 mp = p - uMarblePos;
-  float dMarble = length(mp) - effRadius;
-  if (uMarbleStatus == 2) {
-    // Shattered displacement fractures
-    float shard = sin(mp.x * 18.0 + uTime * 12.0) * cos(mp.y * 18.0) * sin(mp.z * 18.0);
-    dMarble += shard * 0.08 * clamp(uMarbleStatusTimer * 2.0, 0.0, 1.0);
+
+  // 120 Hz Holographic Ghost Marble SDF (material ID = 103.0)
+  if (uGhostActive == 1) {
+    vec3 gpGhost = p - uGhostPos;
+    // Only render ghost when not overlapping player marble core
+    float distToPlayer = length(uGhostPos - uMarblePos);
+    if (distToPlayer > 0.08) {
+      float dGhost = length(gpGhost) - (uMarbleRadius * 0.96);
+      if (dGhost < res.x) {
+        res = vec2(dGhost, 103.0);
+      }
+    }
   }
-  vec2 res = (dMarble < world.x) ? vec2(dMarble, 100.0) : world;
 
   // Hovering holographic Goal Halo Torus above the Goal Pad (material ID = 101.0)
   vec3 gp = p - (uGoalPos + vec3(0.0, 1.35 + 0.18 * sin(uTime * 3.2), 0.0));
@@ -634,12 +671,16 @@ vec3 shadeCourseSurface(vec3 p, vec3 n, vec3 V, float matId) {
              vec3(1.0, 0.98, 0.95) * spec +
              surfaceCol * emissive;
 
+  // Apply expanding neon cyan/magenta shockwave contour rings & cliff rim-danger pulse
+  lit = applyShockwaveAndRimContours(p, gridMask, lit, uMarblePos);
+
   return lit;
 }
 
 /**
  * Refracting, iridescent subsurface-scattered player marble with internal veins
- * rotated in exact lockstep with the physics quaternion uMarbleQuat.
+ * rotated in exact lockstep with the physics quaternion uMarbleQuat, plus
+ * progressive Glass Stress internal fracture lines (uGlassStress / uCrackVisibility).
  */
 vec3 shadePlayerMarble(vec3 p, vec3 n, vec3 V) {
   vec3 localPos = rotateByQuatInverse((p - uMarblePos) / max(uMarbleRadius, 0.01), uMarbleQuat);
@@ -670,6 +711,20 @@ vec3 shadePlayerMarble(vec3 p, vec3 n, vec3 V) {
   coreCol += uMarbleGlowColor * sss * 0.65;
   coreCol = mix(coreCol, iridescenceTint, fresnel * uMarbleIridescence * 0.55);
 
+  // Internal Glass Stress Fracture Veins (Voronoi / Crystalline Cleavage Planes)
+  if (uCrackVisibility > 0.01 || uGlassStress > 0.05) {
+    vec3 fp = internalP * 7.5;
+    float p1 = abs(sin(fp.x * 1.7 + fp.y * 2.3 - fp.z * 1.3));
+    float p2 = abs(cos(fp.y * 2.1 - fp.z * 1.9 + fp.x * 1.1));
+    float p3 = abs(sin(fp.z * 2.5 + fp.x * 1.5 + fp.y * 0.9));
+    float crackLine1 = 1.0 - smoothstep(0.0, 0.09 + 0.08 * uCrackVisibility, min(p1, min(p2, p3)));
+    float crackLine2 = 1.0 - smoothstep(0.0, 0.06 * uCrackVisibility, abs(p1 - p2));
+    float crackMask = clamp((crackLine1 * 0.75 + crackLine2 * 0.85) * uCrackVisibility, 0.0, 1.0);
+    vec3 stressColor = mix(vec3(0.95, 0.98, 1.0), vec3(1.0, 0.38, 0.12), uStressGlow);
+    coreCol = mix(coreCol, stressColor * 1.65, crackMask);
+    coreCol += vec3(1.0, 0.28, 0.08) * uStressGlow * (0.35 + 0.65 * fresnel);
+  }
+
   float specPrimary = pow(max(dot(n, H), 0.0), 128.0) * 1.35;
   vec3 H2 = normalize(normalize(vec3(-0.6, 0.8, -0.5)) + V);
   float specSecondary = pow(max(dot(n, H2), 0.0), 48.0) * 0.45;
@@ -687,6 +742,33 @@ vec3 shadePlayerMarble(vec3 p, vec3 n, vec3 V) {
   }
 
   return col;
+}
+
+/**
+ * 120 Hz Holographic Ghost Marble (Personal Best Cyan or Argon Pro Par Violet/Gold)
+ * with rotating internal scanline bands and translucent rim glow.
+ */
+vec3 shadeGhostMarble(vec3 p, vec3 n, vec3 V, vec3 ro) {
+  vec3 localPos = rotateByQuatInverse((p - uGhostPos) / max(uMarbleRadius, 0.01), uGhostQuat);
+  float ndotv = clamp(dot(n, V), 0.0, 1.0);
+  float fresnel = pow(1.0 - ndotv, 2.2);
+
+  // Rotating meridian & equator bands so 120 Hz ghost spin is clearly visible
+  float meridian = smoothstep(0.72, 0.95, abs(sin(atan(localPos.z, localPos.x) * 4.0)));
+  float equator = exp(-abs(localPos.y) * 7.0);
+  float scanline = 0.55 + 0.45 * sin((p.y - uGhostPos.y) * 42.0 - uTime * 14.0);
+
+  vec3 holoBase = uGhostColor.rgb;
+  vec3 holoAccent = mix(vec3(1.0, 0.88, 0.32), vec3(0.35, 0.98, 1.0), 0.5);
+  vec3 ghostGlow = mix(holoBase, holoAccent, clamp(meridian * 0.55 + equator * 0.65, 0.0, 1.0));
+
+  // Sample underlying course surface below the ghost for genuine holographic translucency
+  vec3 underPos = vec3(p.x, p.y - uMarbleRadius * 0.9, p.z);
+  vec3 bgCol = shadeCourseSurface(underPos, vec3(0.0, 1.0, 0.0), V, 0.0);
+
+  float alpha = clamp(uGhostColor.a * (0.35 + 0.65 * fresnel) * scanline + (meridian + equator) * 0.28, 0.22, 0.88);
+  vec3 holoLit = ghostGlow * (0.75 + 0.95 * fresnel) * scanline + vec3(0.95, 1.0, 1.0) * pow(1.0 - ndotv, 5.0) * 0.9;
+  return mix(bgCol, holoLit, alpha);
 }
 
 vec3 renderSkyAndAbyss(vec3 ro, vec3 rd) {
@@ -750,7 +832,13 @@ void main() {
     vec3 normal = calcWorldNormal(hitPos);
     vec3 V = -rd;
 
-    if (hit.y > 100.5) {
+    if (hit.y > 102.5) {
+      // 120 Hz Holographic Ghost Marble
+      color = shadeGhostMarble(hitPos, normal, V, ro);
+    } else if (hit.y > 101.5) {
+      // Raymarched Faceted Glass Shatter Shards
+      color = shadeShatterGlassShard(hitPos, normal, V, uMarbleBaseColor, uMarbleVeinColor, uSunDir);
+    } else if (hit.y > 100.5) {
       // Hovering Goal Halo Torus
       float pulse = 0.5 + 0.5 * sin(uTime * 6.0);
       color = mix(vec3(0.2, 1.0, 0.72), vec3(1.0, 0.92, 0.28), pulse) * 1.45;
@@ -842,6 +930,8 @@ export function compileCourseToWgsl(course: CourseSpec): string {
   const bodyLines: string[] = [];
   const counter = { id: 0 };
   const finalVar = buildWgslNodeStatements(rootTree, bodyLines, counter);
+  const shatterWgsl = getShatterShaderSnippet().wgsl;
+  const shockwaveWgsl = getShockwaveShaderSnippet().wgsl;
 
   return `// WGSL Lockstep Raymarching Shader for course: ${course.id}
 struct Uniforms {
@@ -861,6 +951,14 @@ struct Uniforms {
   marbleQuat: vec4<f32>,
   goalPos: vec3<f32>,
   marbleIridescence: f32,
+  glassStress: f32,
+  crackVisibility: f32,
+  stressGlow: f32,
+  ghostActive: f32,
+  ghostPos: vec3<f32>,
+  padGhost: f32,
+  ghostQuat: vec4<f32>,
+  ghostColor: vec4<f32>,
   trackPrimary: vec3<f32>,
   pad0: f32,
   trackSecondary: vec3<f32>,
@@ -874,6 +972,9 @@ struct Uniforms {
 };
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
+
+${shatterWgsl}
+${shockwaveWgsl}
 
 fn rotateByQuatInverse(d: vec3<f32>, q: vec4<f32>) -> vec3<f32> {
   let t = 2.0 * cross(q.xyz, d);
