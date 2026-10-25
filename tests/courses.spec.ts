@@ -8,6 +8,7 @@ import {
   BUILT_IN_COURSES,
   CLASSIC_COURSES,
   COURSE_1_PRACTICE_RACE,
+  COURSE_1_RAMP_GAUNTLET,
   COURSE_2_BEGINNER_CHUTES,
   COURSE_3_INTERMEDIATE_MADNESS,
   COURSE_4_AERIAL_CATWALKS,
@@ -17,6 +18,7 @@ import {
 import { createMarbleSimulation } from '../src/physics';
 import { compileCourseToGlsl, compileCourseToWgsl } from '../src/rendering';
 import { createCpuWorldEvaluator } from '../src/sdf/eval-cpu';
+import { createInitialWeaponState, triggerWeaponAbility } from '../src/weapons';
 
 /**
  * Helper: Drive the 120 Hz marble physics simulation along a sequence of world-space
@@ -111,11 +113,23 @@ describe('Classic 6-Course Campaign — SDF Integrity, Shaders & 120 Hz Physical
     expect(BUILT_IN_COURSES).toHaveLength(6);
     expect(CLASSIC_COURSES).toEqual(BUILT_IN_COURSES);
 
-    // Course 1: Practice Race (parTimeSec: 60)
+    // Course 1: Marble Ramp Gauntlet — 4-Stage Progressive Mechanics Ramp Track (parTimeSec: 60)
     expect(COURSE_1_PRACTICE_RACE.index).toBe(1);
+    expect(COURSE_1_RAMP_GAUNTLET).toBe(COURSE_1_PRACTICE_RACE);
     expect(COURSE_1_PRACTICE_RACE.parTimeSec).toBe(60);
+    expect(COURSE_1_PRACTICE_RACE.subtitle).toContain(
+      'Stage 1: Steep Ramp & Backspin -> Stage 2: Portal Fling Gap -> Stage 3: Wave & Pistons -> Stage 4: Ice, Steelie & Goal',
+    );
+    expect(COURSE_1_PRACTICE_RACE.startPos[1]).toBeCloseTo(14.57, 2);
+    expect(COURSE_1_PRACTICE_RACE.goalPos[1]).toBeCloseTo(1.02, 2);
+    expect(COURSE_1_PRACTICE_RACE.portals?.length).toBeGreaterThanOrEqual(1);
+    expect(COURSE_1_PRACTICE_RACE.nodes.some((n) => n.kind === 'waveFloor')).toBe(true);
+    expect(COURSE_1_PRACTICE_RACE.nodes.some((n) => n.material === 'ice')).toBe(true);
+    expect(COURSE_1_PRACTICE_RACE.nodes.some((n) => n.id === 'stage4-destructible-barrier')).toBe(true);
     expect(COURSE_1_PRACTICE_RACE.nodes.some((n) => n.id?.includes('occlusion-arch'))).toBe(true);
     expect(COURSE_1_PRACTICE_RACE.nodes.some((n) => n.id?.includes('speedrun'))).toBe(true);
+    expect(COURSE_1_PRACTICE_RACE.hazards.filter((h) => h.kind === 'piston').length).toBe(2);
+    expect(COURSE_1_PRACTICE_RACE.hazards.some((h) => h.kinematic?.kind === 'steelie')).toBe(true);
 
     // Course 2: Beginner Chutes (parTimeSec: 65, +65s bonus)
     expect(COURSE_2_BEGINNER_CHUTES.index).toBe(2);
@@ -251,16 +265,66 @@ describe('Classic 6-Course Campaign — SDF Integrity, Shaders & 120 Hz Physical
   );
 
   it('verifies goalPos is physically reachable and triggers status === "goal" on all 6 courses', () => {
-    // Course 1: Practice Race (full run via secret high-speed diagonal shortcut OR main bridge)
-    const run1 = driveMarbleAlongWaypoints(COURSE_1_PRACTICE_RACE, COURSE_1_PRACTICE_RACE.startPos, [
-      { target: [0, 5.15, -13.6], captureRadius: 2.2 },
-      { target: [3.2, 5.15, -16.8], captureRadius: 2.5 },
-      { target: [24.6, 1.55, -16.8], captureRadius: 2.4 },
-      { target: [24.6, 1.55, -26.0], captureRadius: 2.0 },
-      { target: COURSE_1_PRACTICE_RACE.goalPos, captureRadius: 2.0 },
-    ]);
+    // Course 1: Marble Ramp Gauntlet (Stage 1 Steep 28° Ramp -> Stage 2 Side-Catwalk -> Stage 3 Wave & Pistons -> Stage 4 Ice, Steelie & S-Slalom to Goal)
+    const run1 = driveMarbleAlongWaypoints(
+      COURSE_1_PRACTICE_RACE,
+      COURSE_1_PRACTICE_RACE.startPos,
+      [
+        { target: [0, 12.0, -7.0], captureRadius: 2.2 },
+        { target: [0.4, 10.55, -14.2], captureRadius: 2.2 },
+        { target: [7.2, 10.55, -14.8], captureRadius: 2.2 },
+        { target: [16.8, 7.55, -16.8], captureRadius: 1.8 },
+        { target: [22.0, 7.55, -16.8], captureRadius: 1.6 },
+        { target: [29.8, 7.55, -16.4], captureRadius: 2.2 },
+        { target: [30.0, 7.55, -23.4], captureRadius: 2.2 },
+        { target: [30.0, 5.5, -31.0], captureRadius: 2.2 },
+        { target: [31.2, 4.55, -36.2], captureRadius: 2.2 },
+        { target: [32.4, 1.0, -45.2], captureRadius: 2.0 },
+        { target: [32.6, 1.0, -48.6], captureRadius: 1.85 },
+        { target: COURSE_1_PRACTICE_RACE.goalPos, captureRadius: 2.0 },
+      ],
+      3000,
+    );
     expect(run1.reachedGoal).toBe(true);
     expect(run1.finalState.status).toBe('goal');
+
+    // Course 1 Portal Fling + [F] Crater Bomb CSG Breach Route:
+    // Roll down Stage 2 Drop Ramp straight into the Blue Portal, fling out of the 40° Orange Portal
+    // across the 12m abyss onto Terrace 3, and blast through the Stage 4 Destructible Barrier with [F] Crater Bomb!
+    const eval1Portal = createCpuWorldEvaluator(COURSE_1_PRACTICE_RACE);
+    const sim1Portal = createMarbleSimulation(COURSE_1_PRACTICE_RACE, eval1Portal);
+    sim1Portal.setState({
+      ...sim1Portal.getState(),
+      position: [8.8, 10.55, -13.6],
+      prevPosition: [8.8, 10.55, -13.6],
+      velocity: [7.5, 0, 0],
+      status: 'racing',
+    });
+    for (let f = 0; f < 140; f++) {
+      sim1Portal.stepFixed(
+        1 / 120,
+        { moveXZ: [1, 0], jumpPressed: false, respawnPressed: false },
+        f / 120,
+      );
+    }
+    const afterPortalFling = sim1Portal.getState();
+    expect(afterPortalFling.portalCrossings ?? 0).toBeGreaterThanOrEqual(1);
+    expect(afterPortalFling.position[0]).toBeGreaterThan(25.5); // Landed across the 12m chasm on Terrace 3!
+    expect(afterPortalFling.status).toBe('racing');
+
+    // Verify Stage 4 thin destructible CSG barrier blocks center at [29.1, 0.95, -48.6] before [F] Matter Bomb,
+    // and is carved open after [F] Matter Bomb so the marble rolls straight through to Goal!
+    expect(eval1Portal.distance([29.1, 0.95, -48.6], 1.5)).toBeLessThan(0);
+    const bombRes = triggerWeaponAbility(
+      'matterBomb',
+      createInitialWeaponState(),
+      afterPortalFling,
+      [0, 0, -1],
+      1.5,
+      { targetPosition: [29.1, 0.95, -48.6], radius: 2.2 },
+    );
+    eval1Portal.setFieldMutations?.(bombRes.weaponState.mutations);
+    expect(eval1Portal.distance([29.1, 0.95, -48.6], 1.5)).toBeGreaterThan(0.8);
 
     // Course 2: Beginner Chutes (start -> safe chute -> confluence -> west bridge spine -> wave floor -> goal)
     const run2 = driveMarbleAlongWaypoints(COURSE_2_BEGINNER_CHUTES, COURSE_2_BEGINNER_CHUTES.startPos, [

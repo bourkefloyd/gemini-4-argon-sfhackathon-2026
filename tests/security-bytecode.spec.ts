@@ -220,12 +220,18 @@ describe('Web Game IP Security POC — .msdf RPN Bytecode, Sparse Brick Atlas & 
 
   it('packs 120 Hz input streams and verifies Proof-of-Play goal completion & tamper rejection', () => {
     const waypoints = [
-      [0, 6.4, -8.4],
-      [2.8, 4.6, -16.8],
-      [15.4, 2.8, -16.8],
-      [24.6, 1.0, -16.8],
-      [24.6, 1.0, -25.6],
-      [24.6, 1.08, -35.2],
+      [0, 12.0, -7.0],
+      [0.4, 10.55, -14.2],
+      [7.2, 10.55, -14.8],
+      [16.8, 7.55, -16.8],
+      [22.0, 7.55, -16.8],
+      [29.8, 7.55, -16.4],
+      [30.0, 7.55, -23.4],
+      [30.0, 5.5, -31.0],
+      [31.2, 4.55, -36.2],
+      [32.4, 1.0, -45.2],
+      [32.6, 1.0, -48.6],
+      [30.0, 1.0, -52.6],
     ] as const;
 
     const frames = recordGuidedCourseRun(COURSE_1_PRACTICE_RACE, waypoints, 2400);
