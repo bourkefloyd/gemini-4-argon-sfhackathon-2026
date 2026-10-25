@@ -41,9 +41,6 @@ export const MobilePartyController: React.FC<MobilePartyControllerProps> = ({
   onExitPartyMode,
 }) => {
   const clientRef = useRef<PartyRoomClient | null>(externalClient ?? null);
-  if (!clientRef.current) {
-    clientRef.current = createPartyRoomClient({ roomCode });
-  }
 
   const [playerId, setPlayerId] = useState<string>(() => {
     if (typeof window !== 'undefined' && window.sessionStorage) {
@@ -77,9 +74,7 @@ export const MobilePartyController: React.FC<MobilePartyControllerProps> = ({
     return `roller_${Math.floor(100 + Math.random() * 899)}`;
   });
 
-  const [snapshot, setSnapshot] = useState<PartyRoomSnapshot>(() =>
-    clientRef.current!.getSnapshot(),
-  );
+  const [snapshot, setSnapshot] = useState<PartyRoomSnapshot | null>(null);
   const [me, setMe] = useState<PartyPlayerRecord | null>(null);
   const [trackballVec, setTrackballVec] = useState<readonly [number, number]>([0, 0]);
   const [isDraggingPad, setIsDraggingPad] = useState<boolean>(false);
@@ -290,6 +285,8 @@ export const MobilePartyController: React.FC<MobilePartyControllerProps> = ({
     const trimmed = twistInput.trim();
     return trimmed ? trimmed.split(/\s+/).length : 0;
   }, [twistInput]);
+
+  if (!snapshot) return null;
 
   const assignedRoomId = me?.roomId ?? snapshot.roomId ?? `${snapshot.roomCode}-1`;
   const maxPerRoom = snapshot.maxMarblesPerRoom ?? 4;

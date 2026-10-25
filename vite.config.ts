@@ -9,10 +9,16 @@ const partyRoomPlugin = createPartyRoomVitePlugin();
 export default defineConfig({
   plugins: [react(), argonProxyPlugin, partyRoomPlugin],
   build: {
+    // Do not modulepreload the stage chunk. A phone opening ?party=1 downloads
+    // the controller entry, the React vendor chunk, and CSS only.
+    modulePreload: false,
     rollupOptions: {
       output: {
         manualChunks(id) {
           if (id.includes('node_modules')) {
+            // Keep the QR encoder with the stage chunk so the phone vendor
+            // file stays React-only.
+            if (id.includes('/qrcode/')) return undefined;
             return 'vendor';
           }
           if (id.includes('/src/courses/') || id.includes('/src/sdf/') || id.includes('/src/security/')) {
@@ -30,12 +36,12 @@ export default defineConfig({
     host: '0.0.0.0',
     port: 5173,
     strictPort: true,
-    allowedHosts: ['localhost', '127.0.0.1', '.trycloudflare.com'],
+    allowedHosts: true,
   },
   preview: {
     host: '0.0.0.0',
     port: 5173,
     strictPort: true,
-    allowedHosts: ['localhost', '127.0.0.1', '.trycloudflare.com'],
+    allowedHosts: true,
   },
 });

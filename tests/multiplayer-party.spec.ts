@@ -1,5 +1,12 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { Readable } from 'node:stream';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { PNG } from 'pngjs';
+import { Resvg } from '@resvg/resvg-js';
+import jsQR from 'jsqr';
+import QRCode from 'qrcode';
 import { describe, expect, it } from 'vitest';
 import { COURSE_1_PRACTICE_RACE, COURSE_2_INTERMEDIATE_MADNESS } from '../src/courses';
 import { createInitialMarbleState } from '../src/physics';
@@ -7,14 +14,17 @@ import { compileCourseToGlsl, compileCourseToWgsl } from '../src/rendering';
 import { createCpuWorldEvaluator, evaluateSdfTree } from '../src/sdf/eval-cpu';
 import {
   applyCrowdMutationsToCourse,
+  GITHUB_PAGES_PARTY_ORIGIN,
+  buildPartyControllerUrl,
   buildPartyJoinUrl,
   createMultiMarbleArenaSimulation,
   createPartyRoomClient,
   createPartyRoomEngine,
   detectBrowserTunnelOrigin,
-  encodeQrMatrix,
   parsePartyUrlQuery,
+  partyJoinUrlForViewer,
   renderQrSvg,
+  resolvePartyApiBase,
   resolveMarbleCollisions,
   type JoinPartyResponse,
 } from '../src/multiplayer';
@@ -22,46 +32,43 @@ import {
   createPartyRoomMiddleware,
   detectLanIpv4Address,
   detectPublicTunnelUrl,
+  extractTryCloudflareUrl,
   isLocalhostRequest,
 } from '../server/party-room';
+
+async function decodeQrSvg(svg: string): Promise<string | null> {
+  const png = new Resvg(svg, { fitTo: { mode: 'width', value: 640 } }).render().asPng();
+  const image = PNG.sync.read(png);
+  const decoded = jsQR(new Uint8ClampedArray(image.data), image.width, image.height);
+  return decoded?.data ?? null;
+}
 import { isAuthorizedArgonRequest } from '../server/argon-proxy';
 
 describe('QR Party Multiplayer Module — QR SVG, In-Memory Room, Tunnel & Bumper Physics', () => {
-  it('generates valid ISO/IEC 18004 QR matrices and crisp zero-dependency SVG markup', () => {
-    const lanUrl = 'http://192.168.1.42:5173/?party=1&room=ARGON';
-    const matrix = encodeQrMatrix(lanUrl);
+  it('renders a black-on-white ISO QR that a real decoder reads back', async () => {
+    const joinUrl = `${GITHUB_PAGES_PARTY_ORIGIN}/?party=1&room=ARGON&api=${encodeURIComponent(
+      'https://live-mac.trycloudflare.com',
+    )}`;
+    const created = QRCode.create(joinUrl, { errorCorrectionLevel: 'M' });
+    const quiet = created.modules.size + 8;
 
-    expect(matrix.encodedText).toBe(lanUrl);
-    expect(matrix.size).toBeGreaterThanOrEqual(25);
-    expect(matrix.modules.length).toBe(matrix.size);
-    expect(matrix.modules[0].length).toBe(matrix.size);
-
-    // Top-left, Top-right, and Bottom-left 7x7 finder corners must have dark outer corners and 3x3 cores
-    const checkFinder = (topR: number, leftC: number) => {
-      expect(matrix.modules[topR][leftC]).toBe(true);
-      expect(matrix.modules[topR][leftC + 6]).toBe(true);
-      expect(matrix.modules[topR + 6][leftC]).toBe(true);
-      expect(matrix.modules[topR + 6][leftC + 6]).toBe(true);
-      expect(matrix.modules[topR + 3][leftC + 3]).toBe(true);
-      // Inner white ring at offset 1
-      expect(matrix.modules[topR + 1][leftC + 1]).toBe(false);
-    };
-
-    checkFinder(0, 0);
-    checkFinder(0, matrix.size - 7);
-    checkFinder(matrix.size - 7, 0);
-
-    const svg = renderQrSvg(lanUrl, {
-      sizePx: 220,
+    const svg = await renderQrSvg(joinUrl, {
+      sizePx: 280,
       marginModules: 3,
       darkColor: '#050811',
-      lightColor: '#ffffff',
+      lightColor: '#111111',
     });
 
-    expect(svg).toContain('<svg xmlns="http://www.w3.org/2000/svg"');
-    expect(svg).toContain('width="220" height="220"');
-    expect(svg).toContain('<path d="M');
-    expect(svg).toContain(lanUrl.replace(/&/g, '&amp;'));
+    expect(svg.startsWith('<svg')).toBe(true);
+    expect(svg).toContain('xmlns="http://www.w3.org/2000/svg"');
+    expect(svg).toContain('width="280"');
+    expect(svg).toContain('height="280"');
+    expect(svg).toContain(`viewBox="0 0 ${quiet} ${quiet}"`);
+    expect(svg).toContain('#000000');
+    expect(svg).toContain('#ffffff');
+    expect(svg).not.toContain('#050811');
+    expect(svg).not.toContain('#070b14');
+    expect(await decodeQrSvg(svg)).toBe(joinUrl);
   });
 
   it('auto-detects LAN IPv4 addresses and PUBLIC_PARTY_URL tunnel overrides for AP-isolated venues', () => {
@@ -100,6 +107,62 @@ describe('QR Party Multiplayer Module — QR SVG, In-Memory Room, Tunnel & Bumpe
     expect(parsed.isPartyController).toBe(true);
     expect(parsed.roomCode).toBe('SHACK15');
     expect(parsed.publicTunnelOverride).toBe('https://shack15.trycloudflare.com');
+    expect(parsed.apiBase).toBeNull();
+
+    const withApi = parsePartyUrlQuery(
+      '?party=1&room=ARGON&api=https%3A%2F%2Flive-mac.trycloudflare.com',
+    );
+    expect(withApi.apiBase).toBe('https://live-mac.trycloudflare.com');
+    expect(
+      resolvePartyApiBase(
+        '?party=1&room=ARGON&api=https://live-mac.trycloudflare.com/api/party/state',
+        'bourkefloyd.github.io',
+      ),
+    ).toBe('https://live-mac.trycloudflare.com');
+    expect(
+      resolvePartyApiBase('', 'bourkefloyd.github.io', 'https://live-mac.trycloudflare.com/'),
+    ).toBe('https://live-mac.trycloudflare.com');
+    expect(resolvePartyApiBase('', 'localhost', 'https://live-mac.trycloudflare.com')).toBe('');
+
+    const scanned = partyJoinUrlForViewer({
+      roomCode: 'argon',
+      serverJoinUrl: 'https://live-mac.trycloudflare.com/?party=1&room=ARGON',
+      tunnelOrigin: 'https://live-mac.trycloudflare.com',
+    });
+    expect(scanned).toBe(
+      `${GITHUB_PAGES_PARTY_ORIGIN}/?party=1&room=ARGON&api=https%3A%2F%2Flive-mac.trycloudflare.com`,
+    );
+    expect(new URL(scanned).pathname).toBe('/gemini-4-argon-sfhackathon-2026/');
+    expect(
+      buildPartyControllerUrl({
+        origin: 'https://bourkefloyd.github.io',
+        pathname: '/gemini-4-argon-sfhackathon-2026',
+        roomCode: 'ARGON',
+        apiBase: 'https://live-mac.trycloudflare.com',
+      }),
+    ).toBe(scanned);
+
+    const log = [
+      'old https://did-scott-yet-queens.trycloudflare.com',
+      'placeholder https://argon-demo.trycloudflare.com',
+      'live https://live-mac-tunnel.trycloudflare.com',
+    ].join('\n');
+    expect(extractTryCloudflareUrl(log)).toBe('https://live-mac-tunnel.trycloudflare.com');
+    expect(extractTryCloudflareUrl('https://did-scott-yet-queens.trycloudflare.com')).toBeNull();
+
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'party-tunnel-'));
+    const logPath = path.join(dir, 'cloudflared.log');
+    fs.writeFileSync(logPath, 'https://from-log.trycloudflare.com\n');
+    expect(detectPublicTunnelUrl({ PARTY_TUNNEL_LOG: logPath })).toBe(
+      'https://from-log.trycloudflare.com',
+    );
+    expect(
+      detectPublicTunnelUrl({
+        PUBLIC_PARTY_URL: 'https://argon-sf-demo.trycloudflare.com/',
+        PARTY_TUNNEL_LOG: logPath,
+      }),
+    ).toBe('https://argon-sf-demo.trycloudflare.com');
+    expect(detectPublicTunnelUrl({})).toBeNull();
   });
 
   it('automatically overflows players into ARGON-1, ARGON-2, ARGON-3 when reaching maxMarblesPerRoom (default 4)', () => {
@@ -470,6 +533,37 @@ describe('QR Party Multiplayer Module — QR SVG, In-Memory Room, Tunnel & Bumpe
     expect(expiryEngine.getSnapshot().players.length).toBe(1);
     simClock += 61_000; // > 60s idle timeout
     expect(expiryEngine.getSnapshot().players.length).toBe(0);
+  });
+
+  it('answers party preflight from GitHub Pages with wildcard CORS', async () => {
+    const { middleware } = createPartyRoomMiddleware();
+    const corsHeaders: Record<string, string | number | string[]> = {};
+    let optionsStatus = 0;
+    const optionsReq = Object.assign(Readable.from([]), {
+      method: 'OPTIONS',
+      url: '/api/party/join',
+      headers: {
+        origin: 'https://bourkefloyd.github.io',
+        'access-control-request-method': 'POST',
+        'access-control-request-headers': 'content-type',
+      },
+    }) as unknown as IncomingMessage;
+    const optionsRes = {
+      writeHead(code: number, hdrs?: Record<string, string | number | string[]>) {
+        optionsStatus = code;
+        if (hdrs) Object.assign(corsHeaders, hdrs);
+        return this;
+      },
+      end() {
+        return this;
+      },
+    } as unknown as ServerResponse;
+    await middleware(optionsReq, optionsRes);
+    expect(optionsStatus).toBe(204);
+    expect(corsHeaders['Access-Control-Allow-Origin']).toBe('*');
+    expect(String(corsHeaders['Access-Control-Allow-Methods'])).toContain('OPTIONS');
+    expect(String(corsHeaders['Access-Control-Allow-Headers'])).toContain('Content-Type');
+    expect(String(corsHeaders['Access-Control-Allow-Headers'])).toContain('Accept');
   });
 
   it('fixes Codex F4 (GitHub Pages base path preservation) and Codex F5 (React StrictMode BroadcastChannel remount)', async () => {

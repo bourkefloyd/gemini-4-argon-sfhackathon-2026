@@ -9,6 +9,7 @@
  */
 
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import os from 'node:os';
 import {
@@ -69,16 +70,65 @@ export function detectLanIpv4Address(
   return candidates[0]?.address ?? '127.0.0.1';
 }
 
+const DEAD_TUNNEL_HOSTS = new Set([
+  'did-scott-yet-queens.trycloudflare.com',
+  'argon-demo.trycloudflare.com',
+]);
+
+const TRY_CLOUDFLARE_URL_SOURCE = 'https:\\/\\/[a-z0-9-]+\\.trycloudflare\\.com';
+
+const PARTY_CORS_HEADERS: Record<string, string> = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Accept',
+  'Access-Control-Max-Age': '86400',
+};
+
 /**
- * Detects an optional public tunnel URL from environment variables
- * (`PUBLIC_PARTY_URL`, `VITE_PUBLIC_PARTY_URL`, `TUNNEL_URL`) for venues with Wi-Fi AP isolation.
+ * Last live `https://*.trycloudflare.com` in a cloudflared log. Dead hosts that
+ * showed up in earlier playtests are skipped. Explicit env URLs are not filtered.
+ */
+export function extractTryCloudflareUrl(log: string): string | null {
+  const matches = log.match(new RegExp(TRY_CLOUDFLARE_URL_SOURCE, 'gi'));
+  if (!matches) return null;
+  for (let i = matches.length - 1; i >= 0; i--) {
+    const url = matches[i];
+    try {
+      const host = new URL(url).hostname.toLowerCase();
+      if (!DEAD_TUNNEL_HOSTS.has(host)) return url;
+    } catch {
+      // Ignore a truncated match.
+    }
+  }
+  return null;
+}
+
+function readTunnelLog(logPath: string): string | null {
+  try {
+    return extractTryCloudflareUrl(fs.readFileSync(logPath, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Public tunnel for the party room.
+ * `PUBLIC_PARTY_URL`, `VITE_PUBLIC_PARTY_URL`, or `TUNNEL_URL` wins so tests and
+ * an operator override stay stable. Otherwise the active Mac cloudflared log
+ * (`PARTY_TUNNEL_LOG` or `/tmp/marble-cf.log`) is read. Dead hosts are never
+ * taken from that log.
  */
 export function detectPublicTunnelUrl(
   env: Record<string, string | undefined> = process.env,
 ): string | null {
-  const raw =
-    env.PUBLIC_PARTY_URL ?? env.VITE_PUBLIC_PARTY_URL ?? env.TUNNEL_URL ?? null;
-  return raw && raw.trim().length > 0 ? raw.trim() : null;
+  const raw = env.PUBLIC_PARTY_URL ?? env.VITE_PUBLIC_PARTY_URL ?? env.TUNNEL_URL ?? null;
+  if (raw && raw.trim().length > 0) return raw.trim().replace(/\/+$/, '');
+
+  if (env.PARTY_TUNNEL_LOG && env.PARTY_TUNNEL_LOG.trim().length > 0) {
+    return readTunnelLog(env.PARTY_TUNNEL_LOG.trim());
+  }
+  if (env !== process.env) return null;
+  return readTunnelLog('/tmp/marble-cf.log');
 }
 
 export class PayloadTooLargeError extends Error {
@@ -139,9 +189,7 @@ function sendJson(res: ServerResponse, statusCode: number, payload: unknown): vo
   res.writeHead(statusCode, {
     'Content-Type': 'application/json; charset=utf-8',
     'Cache-Control': 'no-store',
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
+    ...PARTY_CORS_HEADERS,
   });
   res.end(body);
 }
@@ -227,12 +275,16 @@ export function createPartyRoomMiddleware(engine?: PartyRoomEngine) {
       return;
     }
 
+    const detectedTunnel = detectPublicTunnelUrl();
+    if (detectedTunnel) {
+      const current = room.getSnapshot().customTunnelUrl?.replace(/\/+$/, '') ?? null;
+      if (current !== detectedTunnel) {
+        room.setCustomTunnelUrl(detectedTunnel);
+      }
+    }
+
     if (req.method === 'OPTIONS') {
-      res.writeHead(204, {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type',
-      });
+      res.writeHead(204, PARTY_CORS_HEADERS);
       res.end();
       return;
     }
@@ -259,7 +311,7 @@ export function createPartyRoomMiddleware(engine?: PartyRoomEngine) {
           'Content-Type': 'text/event-stream; charset=utf-8',
           'Cache-Control': 'no-cache, no-transform',
           Connection: 'keep-alive',
-          'Access-Control-Allow-Origin': '*',
+          ...PARTY_CORS_HEADERS,
         });
         res.write(': heartbeat\n\n');
         res.write(`data: ${JSON.stringify(room.getSnapshot())}\n\n`);

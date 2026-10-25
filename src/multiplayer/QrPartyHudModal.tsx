@@ -8,8 +8,14 @@
  * - Live Arena Racers Roster (Up to 8 Marbles), Crowd CSG Toast Feed, and Argon 1M Twist Queue
  */
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { createPartyRoomClient, type PartyRoomClient } from './party-client';
+import React, { useCallback, useEffect, useState } from 'react';
+import {
+  createPartyRoomClient,
+  detectBrowserTunnelOrigin,
+  partyJoinUrlForViewer,
+  resolvePartyApiBase,
+  type PartyRoomClient,
+} from './party-client';
 import type { PartyRoomSnapshot } from './party-types';
 import { renderQrSvg } from './qr-svg';
 
@@ -58,17 +64,27 @@ export const QrPartyHudModal: React.FC<QrPartyHudModalProps> = ({
     return () => window.clearInterval(interval);
   }, [activeClient, simulatingCrowd]);
 
-  const qrSvgMarkup = useMemo(
-    () =>
-      renderQrSvg(snapshot.joinUrl, {
-        sizePx: 210,
-        marginModules: 3,
-        darkColor: '#050811',
-        lightColor: '#ffffff',
-        title: `Join Marble Madness Party Room ${snapshot.roomCode}`,
-      }),
-    [snapshot.joinUrl, snapshot.roomCode],
-  );
+  const displayJoinUrl = partyJoinUrlForViewer({
+    roomCode: snapshot.roomCode,
+    serverJoinUrl: snapshot.joinUrl,
+    tunnelOrigin:
+      snapshot.customTunnelUrl || resolvePartyApiBase() || detectBrowserTunnelOrigin(),
+  });
+  const [qrSvgMarkup, setQrSvgMarkup] = useState<string>('');
+
+  useEffect(() => {
+    let cancelled = false;
+    void renderQrSvg(displayJoinUrl, {
+      sizePx: 210,
+      marginModules: 4,
+      title: `Join Marble Madness Party Room ${snapshot.roomCode}`,
+    }).then((svg) => {
+      if (!cancelled) setQrSvgMarkup(svg);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [displayJoinUrl, snapshot.roomCode]);
 
   const handleApplyTunnelUrl = useCallback(
     async (e: React.FormEvent) => {
@@ -384,7 +400,7 @@ export const QrPartyHudModal: React.FC<QrPartyHudModalProps> = ({
                 wordBreak: 'break-all',
               }}
             >
-              {snapshot.joinUrl}
+              {displayJoinUrl}
             </div>
           </div>
 
