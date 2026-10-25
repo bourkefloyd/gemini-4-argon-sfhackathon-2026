@@ -33,7 +33,14 @@ Inspiration only: https://github.com/bourkefloyd/gamex
 
 Do not vendor it and do not paste its source into this repo. None of its files are included here.
 
-Checked on 2026-10-25 from this environment: the GitHub page, the API, and `raw.githubusercontent.com` paths for `README.md` and `LICENSE` on `main` and `master` all returned **404**. The public repo list for `bourkefloyd` did not include `gamex`. So this guide cannot say what the repo renders, how it does physics, whether it uses SDFs, how the tree is laid out, or what the **license** is. Do not assume a license. Until the repo is readable, there is no specific file or technique in it to copy a pattern from. If it becomes readable, use it to see how a game is factored, then write this project fresh under that repo’s license.
+This is a private repo Bourke owns. On 2026-10-25 it was still not readable from this environment, so this guide has **no concrete notes** on its rendering, physics, SDF use, architecture, or license. Do not assume a license or a technique.
+
+What was tried:
+
+- The VM `git` / `gh` token is scoped to `gemini-4-argon-sfhackathon-2026`. The public page, the API, and raw README/LICENSE URLs return **404**, which is what GitHub returns for a private repo that token cannot see.
+- The GitHub MCP server is logged in as **bourkefloyd**. After a re-auth, `get_file_contents` on `/`, `list_commits`, and a commit search for `repo:bourkefloyd/gamex` still failed. File and commit reads returned **404**. Commit search said the repository does not exist or the token does not have permission. A repository search as that user returned only public repos and did not include `gamex`.
+
+Until a token that can open `bourkefloyd/gamex` is available, there is nothing specific in it to take a pattern from. When it is readable, use it to see how the game is factored, then write this project fresh under that repo’s license. Do not copy its source into this public repo.
 
 ## What it is
 
@@ -262,6 +269,6 @@ Still absent after the event page and the builder guide. Do not fill these in fr
 - The Cerebral Valley upload itself: what a submission must contain, where the submit button lives, or whether code must be public. The builder guide adds a live-demo bar, not that form.
 - Numeric judging weights, and whether the builder guide’s four tests are the final-round rubric. `hackathonJudgingOpen` is still null on the event page.
 - A code-of-conduct document separate from the waiver section titled “Code of Conduct and Right to Refuse Participation.”
-- The `gamex` license and layout. That repo was not readable. See [Inspiration repo](#inspiration-repo).
+- The `gamex` license, layout, renderer, physics, and whether it uses SDFs. GitHub MCP as `bourkefloyd` still cannot read that private repo. See [Inspiration repo](#inspiration-repo).
 
 The builder guide does answer the earlier holes for Argon and Managed Agents docs, the 1M-token window, companion model IDs, the Interactions API, introductory pricing, and how credits are claimed (in person, no key printed in the Doc).
