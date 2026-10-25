@@ -79,7 +79,7 @@ export async function executeCliPlaytest() {
       });
 
       if (
-        (course.id === 'practice-race' || course.id === 'intermediate-madness') &&
+        BUILT_IN_COURSES.some((c) => c.id === course.id) &&
         (style === 'tourist' || style === 'speedrunner') &&
         !summary.reachedGoal
       ) {
