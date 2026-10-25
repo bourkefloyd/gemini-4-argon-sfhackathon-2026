@@ -7,6 +7,8 @@ const argonProxyPlugin = createArgonVitePlugin();
 const partyRoomPlugin = createPartyRoomVitePlugin();
 
 export default defineConfig({
+  // Relative assets work at the tunnel root and under the GitHub Pages project path.
+  base: './',
   plugins: [react(), argonProxyPlugin, partyRoomPlugin],
   build: {
     // Do not modulepreload the stage chunk. A phone opening ?party=1 downloads
