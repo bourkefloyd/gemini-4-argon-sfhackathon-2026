@@ -1,12 +1,20 @@
 /**
  * Retro-Futuristic Marble Madness Arcade HUD (`src/ui/ArcadeHud.tsx`)
  *
- * Displays:
- * - Rolling arcade countdown timer with `+BONUS SECONDS` carry-over banner
- * - Player score, course title, subtitle, and difficulty badge
- * - Live speed (m/s), slope angle (deg), surface material indicator, and occlusion reveal badge
- * - Course switcher (`1` Practice Race, `2` Intermediate Madness), Camera Zoom (`C`),
- *   Marble Shader Preset (`M`), Respawn (`R`), and AI Course Architect (`G`)
+ * Clean Fullscreen Default UI + Collapsible Debug Drawer + Multi-Player Perspective Grid Overlay:
+ * - Default Fullscreen Mode (`1×1`):
+ *   1. Sleek, compact Top Arcade Bar: Course Name (`COURSE 01: MARBLE RAMP GAUNTLET`),
+ *      large glowing Countdown Timer (`58.4s`), Score (`001420`), and active Portal / Powerup pill
+ *      (`[Q] Smart Portal · [F] Crater · [V] Bridge`).
+ *   2. Minimal Top-Right Pill Strip with 4 action buttons:
+ *      - `[Tab / V] View: Fullscreen 1×1 ↔ Player Grid (2×2)`
+ *      - `[Y] QR Party (Room ARGON-1)`
+ *      - `[G] Argon 1M`
+ *      - `[` / D] Debug & Controls` (opens collapsible Debug/Telemetry drawer)
+ * - Player Perspective Grid Mode (`2×2 / Multi-POV`):
+ *   - Overlays a minimal HUD badge on each grid cell (`P1: YOU (14.2 u/s)`, `P2: @MAYA / AI BOT (16.8 u/s)`,
+ *     `P3: @DAN / GHOST`, `P4: @ALEX`, plus room badge `ROOM ARGON-1`).
+ *   - Clicking any grid cell (or pressing `1`–`4` in grid mode) maximizes that player to Fullscreen.
  */
 
 import React from 'react';
@@ -26,6 +34,18 @@ import type { SplitDeltaSnapshot } from '../replay';
 import type { Ym2151SynthState } from '../audio';
 import type { BotPlayStyle } from '../bot';
 
+export type ViewportDisplayMode = 'fullscreen' | 'grid';
+
+export interface PlayerGridCellHudInfo {
+  readonly slotIndex: number;
+  readonly badgeTitle: string;
+  readonly subtitle: string;
+  readonly speedUps: number;
+  readonly roomCode: string;
+  readonly accentColor: string;
+  readonly status: MarbleState['status'];
+}
+
 export interface ArcadeHudProps {
   readonly courses: readonly CourseSpec[];
   readonly activeCourseIndex: number;
@@ -43,6 +63,12 @@ export interface ArcadeHudProps {
   readonly botEnabled?: boolean;
   readonly botStyle?: BotPlayStyle;
   readonly architectOpen: boolean;
+  readonly partyOpen?: boolean;
+  readonly partyRoomCode?: string;
+  readonly viewMode?: ViewportDisplayMode;
+  readonly focusedPlayerIndex?: number;
+  readonly debugDrawerOpen?: boolean;
+  readonly gridCells?: readonly PlayerGridCellHudInfo[];
   readonly portals?: readonly PortalPair[];
   readonly fieldMutations?: readonly FieldMutation[];
   readonly bridgeExtruderRemainingSec?: number;
@@ -58,6 +84,9 @@ export interface ArcadeHudProps {
   readonly onFirePortal?: (end: 'blue' | 'orange') => void;
   readonly onTriggerWeapon?: (ability: WeaponAbilityId) => void;
   readonly onToggleParty?: () => void;
+  readonly onToggleViewMode?: () => void;
+  readonly onToggleDebugDrawer?: () => void;
+  readonly onSelectGridPlayer?: (slotIndex: number) => void;
 }
 
 export const ArcadeHud: React.FC<ArcadeHudProps> = ({
@@ -77,6 +106,12 @@ export const ArcadeHud: React.FC<ArcadeHudProps> = ({
   botEnabled,
   botStyle,
   architectOpen,
+  partyOpen = false,
+  partyRoomCode = 'ARGON-1',
+  viewMode = 'fullscreen',
+  focusedPlayerIndex = 0,
+  debugDrawerOpen = false,
+  gridCells = [],
   portals = [],
   fieldMutations = [],
   bridgeExtruderRemainingSec = 0,
@@ -92,6 +127,9 @@ export const ArcadeHud: React.FC<ArcadeHudProps> = ({
   onFirePortal,
   onTriggerWeapon,
   onToggleParty,
+  onToggleViewMode,
+  onToggleDebugDrawer,
+  onSelectGridPlayer,
 }) => {
   const horizSpeed = Math.hypot(marble.velocity[0], marble.velocity[2]);
   const totalSpeed = Math.hypot(marble.velocity[0], marble.velocity[1], marble.velocity[2]);
@@ -112,132 +150,191 @@ export const ArcadeHud: React.FC<ArcadeHudProps> = ({
     MARBLE_VISUAL_PRESETS[0];
 
   const isLowTime = timeRemainingSec <= 12 && marble.status === 'racing';
+  const focusedCell = gridCells[focusedPlayerIndex];
 
   return (
     <div className="arcade-hud-overlay">
-      {/* TOP BAR: Score, Rolling Countdown Timer, Course Switcher */}
-      <header className="hud-top-bar">
-        <div className="hud-panel hud-brand-panel" data-hud-interactive="true">
-          <div className="hud-eyebrow">ATARI 1984 // SDF RAYMARCH REMAKE</div>
-          <div className="hud-brand-row">
-            <span className="hud-brand-title">MARBLE MADNESS</span>
-            <span className="hud-badge hud-badge-cyan">120Hz SDF</span>
-          </div>
-          <div className="hud-score-row">
-            <div>
-              <span className="hud-metric-label">SCORE</span>
-              <strong className="hud-score-value">
-                {score.toString().padStart(6, '0')}
-              </strong>
-            </div>
-            <div>
-              <span className="hud-metric-label">GOAL DIST</span>
-              <strong className="hud-metric-value">{distToGoal.toFixed(1)}m</strong>
-            </div>
-            <div>
-              <span className="hud-metric-label">FPS</span>
-              <strong className="hud-metric-value">{Math.round(fps)}</strong>
-            </div>
-          </div>
-        </div>
-
-        {/* CENTER: Classic Arcade Countdown Timer & Course Banner */}
-        <div className="hud-center-timer-stack">
-          <div className={`hud-timer-box ${isLowTime ? 'hud-timer-critical' : ''}`}>
-            <div className="hud-timer-label">TIME REMAINING</div>
-            <div className="hud-timer-digits">
-              {Math.max(0, Math.ceil(timeRemainingSec)).toString().padStart(2, '0')}
-              <span className="hud-timer-sub">
-                .{Math.floor((Math.max(0, timeRemainingSec) % 1) * 10)}s
-              </span>
-            </div>
-          </div>
-
-          <div className="hud-course-banner">
-            <span className="hud-course-index">COURSE 0{currentCourse.index}</span>
-            <span className="hud-course-name">{currentCourse.name}</span>
-            <span className="hud-course-diff">{currentCourse.difficulty}</span>
-          </div>
-
-          {ghostSplit && ghostSplit.hasReferenceGhost && (
-            <div
-              className={`hud-ghost-split-pill ${
-                ghostSplit.status === 'ahead'
-                  ? 'ghost-split-ahead'
-                  : ghostSplit.status === 'behind'
-                    ? 'ghost-split-behind'
-                    : 'ghost-split-even'
-              }`}
-              data-testid="ghost-split-timer"
-            >
-              <span className="hud-ghost-label">GHOST ({ghostSplit.referenceLabel}):</span>
-              <strong className="hud-ghost-delta">{ghostSplit.formattedDelta}</strong>
-            </div>
-          )}
-
-          {bonusBannerSec !== null && (
-            <div className="hud-bonus-carryover-banner">
-              +{bonusBannerSec} BONUS SECONDS CARRIED OVER!
-            </div>
-          )}
-        </div>
-
-        {/* RIGHT: Course Switcher & Quick Controls */}
-        <div className="hud-panel hud-controls-panel" data-hud-interactive="true">
-          <div className="hud-eyebrow">SELECT COURSE [1–6] & CAMERA [C]</div>
-          <div className="hud-course-tabs">
-            {courses.map((c, idx) => (
-              <button
-                key={c.id}
-                type="button"
-                className={`hud-btn ${idx === activeCourseIndex ? 'hud-btn-active' : ''}`}
-                title={c.name}
-                onClick={() => onSelectCourse(idx)}
-              >
-                [{idx + 1}] {c.name}
-              </button>
-            ))}
-          </div>
-          <div className="hud-action-row">
-            <button type="button" className="hud-btn hud-btn-sm" onClick={onCycleCameraZoom}>
-              CAM: {camera.zoomStopLabel} [C]
-            </button>
-            <button type="button" className="hud-btn hud-btn-sm" onClick={onCycleMarblePreset}>
-              MARBLE: {preset.name.toUpperCase()} [M]
-            </button>
-            <button type="button" className="hud-btn hud-btn-sm" onClick={onRespawn}>
-              RESPAWN [R]
-            </button>
-            {onToggleAudioMute && (
+      {/* SLEEK COMPACT TOP ARCADE BAR + TOP-RIGHT 4-PILL STRIP */}
+      <header className="hud-clean-top-strip">
+        <div className="hud-compact-arcade-bar" data-hud-interactive="true">
+          <div className="hud-compact-course-block">
+            <span className="hud-course-index">
+              COURSE 0{currentCourse.index}:
+            </span>
+            <span className="hud-course-name">
+              {currentCourse.name.toUpperCase()}
+            </span>
+            {focusedPlayerIndex > 0 && focusedCell && viewMode === 'fullscreen' && (
               <button
                 type="button"
-                className={`hud-btn hud-btn-sm ${synthTelemetry && !synthTelemetry.muted ? 'hud-btn-active' : ''}`}
-                onClick={onToggleAudioMute}
-                data-testid="hud-audio-toggle"
+                className="hud-focused-pov-pill"
+                onClick={() => onSelectGridPlayer?.(0)}
+                title="Click to return to P1: YOU"
               >
-                SYNTH: {synthTelemetry?.muted ? 'MUTED' : 'YM2151 FM'} [N]
+                POV: {focusedCell.badgeTitle} [1]
               </button>
             )}
-            {onToggleBotPlaytest && (
-              <button
-                type="button"
-                className={`hud-btn hud-btn-sm ${botEnabled ? 'hud-btn-active' : ''}`}
-                onClick={onToggleBotPlaytest}
-                data-testid="hud-bot-toggle"
-              >
-                AI BOT: {botEnabled ? (botStyle ?? 'tourist').toUpperCase() : 'OFF'} [P]
-              </button>
-            )}
+          </div>
+
+          <div
+            className={`hud-compact-timer ${isLowTime ? 'hud-timer-critical' : ''}`}
+            data-testid="hud-countdown-timer"
+          >
+            <span className="hud-compact-timer-digits">
+              {Math.max(0, timeRemainingSec).toFixed(1)}s
+            </span>
+          </div>
+
+          <div className="hud-compact-score">
+            <span className="hud-compact-score-label">SCORE</span>
+            <strong className="hud-compact-score-digits">
+              {score.toString().padStart(6, '0')}
+            </strong>
+          </div>
+
+          <div className="hud-compact-powerup-pill">
             <button
               type="button"
-              className={`hud-btn hud-btn-sm ${architectOpen ? 'hud-btn-accent' : ''}`}
-              onClick={onToggleArchitect}
+              className="hud-powerup-chip hud-powerup-portal"
+              onClick={() => onFirePortal?.('blue')}
+              title="Fire Smart SDF Portal [Q / E]"
             >
-              ARGON 1M ARCHITECT [G]
+              [Q] Smart Portal
+              {portals.length > 0 ? ' (A↔B)' : ''}
+            </button>
+            <span className="hud-powerup-sep">·</span>
+            <button
+              type="button"
+              className={`hud-powerup-chip ${lastActivatedAbility === 'matterBomb' ? 'active' : ''}`}
+              onClick={() => onTriggerWeapon?.('matterBomb')}
+              title="CSG Crater Bomb [F]"
+            >
+              [F] Crater
+            </button>
+            <span className="hud-powerup-sep">·</span>
+            <button
+              type="button"
+              className={`hud-powerup-chip ${bridgeExtruderRemainingSec > 0 ? 'active' : ''}`}
+              onClick={() => onTriggerWeapon?.('bridgeExtruder')}
+              title="Ferrofluid Bridge Extruder [V]"
+            >
+              [V] Bridge
+              {bridgeExtruderRemainingSec > 0
+                ? ` (${bridgeExtruderRemainingSec.toFixed(1)}s)`
+                : ''}
             </button>
           </div>
         </div>
+
+        {/* MINIMAL TOP-RIGHT 4-PILL STRIP */}
+        <nav
+          className="hud-top-right-pill-strip"
+          data-hud-interactive="true"
+          aria-label="Primary View and Arena Actions"
+        >
+          <button
+            type="button"
+            className={`hud-action-pill ${viewMode === 'grid' ? 'hud-action-pill-active' : ''}`}
+            onClick={() => onToggleViewMode?.()}
+            data-testid="hud-view-mode-toggle"
+            title="Toggle Fullscreen (1×1) vs Multi-Player Perspective Grid (2×2) [Tab]"
+          >
+            [Tab / V] View: {viewMode === 'grid' ? 'Player Grid (2×2)' : 'Fullscreen 1×1'}
+          </button>
+
+          <button
+            type="button"
+            className={`hud-action-pill ${partyOpen ? 'hud-action-pill-active' : ''}`}
+            onClick={() => onToggleParty?.()}
+            data-testid="hud-party-toggle"
+            title="Open QR Multiplayer Party Lobby [Y]"
+          >
+            [Y] QR Party (Room {partyRoomCode})
+          </button>
+
+          <button
+            type="button"
+            className={`hud-action-pill ${architectOpen ? 'hud-action-pill-accent' : ''}`}
+            onClick={onToggleArchitect}
+            data-testid="hud-architect-toggle"
+            title="Open Gemini 4 Argon 1M Course Architect [G]"
+          >
+            [G] Argon 1M
+          </button>
+
+          <button
+            type="button"
+            className={`hud-action-pill ${debugDrawerOpen ? 'hud-action-pill-active' : ''}`}
+            onClick={() => onToggleDebugDrawer?.()}
+            data-testid="hud-debug-toggle"
+            title="Toggle Collapsible Debug & Telemetry Drawer [`]"
+          >
+            [` / D] Debug &amp; Controls
+          </button>
+        </nav>
       </header>
+
+      {bonusBannerSec !== null && (
+        <div className="hud-bonus-carryover-banner hud-bonus-floating">
+          +{bonusBannerSec} BONUS SECONDS CARRIED OVER!
+        </div>
+      )}
+
+      {/* MULTI-PLAYER PERSPECTIVE 2×2 GRID OVERLAY BADGES */}
+      {viewMode === 'grid' && gridCells.length > 0 && (
+        <div
+          className="hud-player-grid-overlay"
+          data-testid="hud-player-grid-overlay"
+        >
+          {gridCells.slice(0, 4).map((cell, idx) => (
+            <div
+              key={cell.slotIndex}
+              className={`hud-grid-cell-frame ${focusedPlayerIndex === idx ? 'hud-grid-cell-focused' : ''}`}
+              data-hud-interactive="true"
+              data-testid={`hud-grid-cell-${idx}`}
+              onClick={() => onSelectGridPlayer?.(idx)}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  onSelectGridPlayer?.(idx);
+                }
+              }}
+              title={`Click or press [${idx + 1}] to maximize ${cell.badgeTitle} to Fullscreen`}
+            >
+              <div className="hud-grid-cell-top-row">
+                <div
+                  className="hud-grid-player-badge"
+                  style={{ borderColor: cell.accentColor }}
+                >
+                  <span
+                    className="hud-grid-player-dot"
+                    style={{ background: cell.accentColor }}
+                  />
+                  <strong className="hud-grid-player-title">
+                    {cell.badgeTitle}
+                  </strong>
+                  <span className="hud-grid-player-speed">
+                    ({cell.speedUps.toFixed(1)} u/s)
+                  </span>
+                </div>
+
+                <div className="hud-grid-room-badge">
+                  ROOM {cell.roomCode}
+                </div>
+              </div>
+
+              <div className="hud-grid-cell-bottom-row">
+                <span className="hud-grid-player-subtitle">{cell.subtitle}</span>
+                <span className="hud-grid-maximize-hint">
+                  [{idx + 1} / CLICK] FULLSCREEN
+                </span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* CENTER STATUS OVERLAY: Goal / Shattered / Sunk / Fell */}
       {marble.status !== 'racing' && (
@@ -248,7 +345,7 @@ export const ArcadeHud: React.FC<ArcadeHudProps> = ({
               <h2>{currentCourse.name} CLEARED</h2>
               <p>
                 Time Remaining: <strong>{timeRemainingSec.toFixed(1)}s</strong> + Next Stage Bonus:{' '}
-                <strong>+{ courses[(activeCourseIndex + 1) % courses.length].bonusTimeSec }s</strong>
+                <strong>+{courses[(activeCourseIndex + 1) % courses.length].bonusTimeSec}s</strong>
               </p>
               <button
                 type="button"
@@ -283,169 +380,257 @@ export const ArcadeHud: React.FC<ArcadeHudProps> = ({
         </div>
       )}
 
-      {/* BOTTOM BAR: Speed / Slope Gauge, Surface Material, Hazard Manifest, Trackball */}
-      <footer className="hud-bottom-bar">
-        <div className="hud-panel hud-telemetry-panel" data-hud-interactive="true">
-          <div className="hud-gauge-header">
-            <span className="hud-metric-label">VELOCITY & SLOPE TELEMETRY</span>
-            <span className={`hud-surface-pill surface-${marble.surfaceMaterial}`}>
-              SURFACE: {marble.surfaceMaterial.toUpperCase()}
-            </span>
-          </div>
-
-          <div className="hud-speed-bar-track">
-            <div
-              className="hud-speed-bar-fill"
-              style={{ width: `${speedPct.toFixed(1)}%` }}
-            />
-          </div>
-
-          <div className="hud-telemetry-grid">
+      {/* COLLAPSIBLE DEBUG & TELEMETRY DRAWER (`[` / Backquote / [D] button) */}
+      {debugDrawerOpen && (
+        <aside
+          className="hud-debug-drawer"
+          data-hud-interactive="true"
+          data-testid="hud-debug-drawer"
+          aria-label="Debug Telemetry and Controls Drawer"
+        >
+          <div className="hud-debug-drawer-header">
             <div>
-              <span className="hud-metric-label">SPEED</span>
-              <strong className="hud-metric-value">{totalSpeed.toFixed(1)} u/s</strong>
+              <div className="hud-eyebrow">120HZ SDF TELEMETRY &amp; CONTROLS DRAWER</div>
+              <h3 className="hud-debug-title">DEBUG &amp; ARCADE RIG CONTROLS</h3>
             </div>
-            <div>
-              <span className="hud-metric-label">SLOPE GRADE</span>
-              <strong className="hud-metric-value">{slopeDeg}°</strong>
-            </div>
-            <div>
-              <span className="hud-metric-label">CONTACT</span>
-              <strong className="hud-metric-value">
-                {marble.contact.grounded ? 'GROUNDED' : 'AIRBORNE'}
-              </strong>
-            </div>
-            <div>
-              <span className="hud-metric-label">X-RAY CUTOUT</span>
-              <strong className="hud-metric-value">
-                {camera.occlusionCutoutStrength > 0.05
-                  ? `${Math.round(camera.occlusionCutoutStrength * 100)}%`
-                  : 'CLEAR'}
-              </strong>
-            </div>
-          </div>
-
-          {feel && (
-            <div className="hud-feel-row" data-testid="hud-feel-telemetry">
-              <span className={`hud-stress-pill stress-${feel.stress.fractureStage}`}>
-                GLASS: {feel.stress.fractureStage.toUpperCase()} ({Math.round(feel.stress.glassStress * 100)}%)
-              </span>
-              {feel.rim.rimSaveActive && (
-                <span className="hud-rim-assist-pill">RIM-CATCH ASSIST</span>
-              )}
-              {feel.slip.backspinIntensity > 0.2 && (
-                <span className="hud-skid-pill">BACKSPIN SKID</span>
-              )}
-            </div>
-          )}
-        </div>
-
-        <div className="hud-panel hud-hazards-panel" data-hud-interactive="true">
-          <div className="hud-weapons-header">
-            <span className="hud-eyebrow">
-              RAYMARCHED SDF PORTALS [Q / E] &amp; REALTIME CSG WEAPONS [F / V / B / X]
-            </span>
-            <div className="hud-portal-status-badges">
-              <span className="hud-badge hud-badge-portal-blue">
-                PORTALS: {portals.length > 0 ? 'LINKED A↔B' : 'READY'}
-                {(marble.portalCrossings ?? 0) > 0
-                  ? ` (${marble.portalCrossings} FLINGS · ${(marble.lastPortalExitSpeed ?? 0).toFixed(1)} u/s)`
-                  : ''}
-              </span>
-              <span className="hud-badge hud-badge-cyan">
-                CSG BUFFER: {fieldMutations.length}/{MAX_FIELD_MUTATIONS}
-              </span>
-            </div>
-          </div>
-
-          <div className="hud-weapons-bar">
-            <button
-              type="button"
-              className="hud-btn hud-btn-sm hud-btn-portal-blue"
-              onClick={() => onFirePortal?.('blue')}
-              title="Fire Blue SDF Portal along aim direction [Q]"
-            >
-              [Q] BLUE PORTAL
-            </button>
-            <button
-              type="button"
-              className="hud-btn hud-btn-sm hud-btn-portal-orange"
-              onClick={() => onFirePortal?.('orange')}
-              title="Fire Orange SDF Portal along aim direction [E / Right-Click]"
-            >
-              [E / RMB] ORANGE PORTAL
-            </button>
-            <button
-              type="button"
-              className={`hud-btn hud-btn-sm ${lastActivatedAbility === 'matterBomb' ? 'hud-btn-active' : ''}`}
-              onClick={() => onTriggerWeapon?.('matterBomb')}
-              title="CSG Matter Bomb / Crater Cannon (smoothSubtract sphere) [F]"
-            >
-              [F] CRATER BOMB
-            </button>
-            <button
-              type="button"
-              className={`hud-btn hud-btn-sm ${bridgeExtruderRemainingSec > 0 ? 'hud-btn-active' : ''}`}
-              onClick={() => onTriggerWeapon?.('bridgeExtruder')}
-              title="Ferrofluid Bridge Extruder (3.5s smoothUnion capsule trail) [V]"
-            >
-              [V] BRIDGE EXTRUDER
-              {bridgeExtruderRemainingSec > 0 ? ` (${bridgeExtruderRemainingSec.toFixed(1)}s)` : ''}
-            </button>
-            <button
-              type="button"
-              className={`hud-btn hud-btn-sm ${lastActivatedAbility === 'popRamp' ? 'hud-btn-active' : ''}`}
-              onClick={() => onTriggerWeapon?.('popRamp')}
-              title="Tectonic Pop-Ramp (smoothUnion wedge + upward vault impulse) [B]"
-            >
-              [B] POP-RAMP
-            </button>
-            <button
-              type="button"
-              className={`hud-btn hud-btn-sm ${lastActivatedAbility === 'cryoFreeze' ? 'hud-btn-active' : ''}`}
-              onClick={() => onTriggerWeapon?.('cryoFreeze')}
-              title="Cryo Freeze Pulse (materialOverride acid/sticky -> fast ice) [X]"
-            >
-              [X] CRYO FREEZE
-            </button>
             <button
               type="button"
               className="hud-btn hud-btn-sm"
-              onClick={() => onToggleParty?.()}
-              title="Open the QR party arena for up to 8 phones [Y]"
+              onClick={() => onToggleDebugDrawer?.()}
             >
-              [Y] QR PARTY
+              CLOSE [`]
             </button>
           </div>
 
-          <div className="hud-keybind-hint">
-            <span>WASD / DRAG: Roll Trackball</span>
-            <span>SPACE: Hop</span>
-            <span>P: AI Bot</span>
-            <span>N: Synth</span>
-            <span>G: Argon 1M</span>
-            <span>Q / E: Blue &amp; Orange Portals</span>
-            <span>F / V / B / X: CSG Crater / Bridge / Ramp / Cryo</span>
-            <span>Y: QR Party</span>
-            <span>[ / ]: Orbit Cam</span>
+          {/* FPS, Goal Distance, Ghost Split */}
+          <div className="hud-debug-metrics-strip">
+            <div className="hud-debug-stat-card">
+              <span className="hud-metric-label">FPS</span>
+              <strong className="hud-metric-value">{Math.round(fps)}</strong>
+            </div>
+            <div className="hud-debug-stat-card">
+              <span className="hud-metric-label">GOAL DIST</span>
+              <strong className="hud-metric-value">{distToGoal.toFixed(1)}m</strong>
+            </div>
+            <div className="hud-debug-stat-card">
+              <span className="hud-metric-label">SPEED</span>
+              <strong className="hud-metric-value">{totalSpeed.toFixed(1)} u/s</strong>
+            </div>
+            <div className="hud-debug-stat-card">
+              <span className="hud-metric-label">SLOPE</span>
+              <strong className="hud-metric-value">{slopeDeg}°</strong>
+            </div>
           </div>
-        </div>
 
-        {/* Virtual Trackball Vector Disc */}
-        <div className="hud-panel hud-trackball-panel">
-          <div className="hud-eyebrow">TRACKBALL SPIN</div>
-          <div className="trackball-disc">
-            <div className="trackball-crosshair-h" />
-            <div className="trackball-crosshair-v" />
+          {ghostSplit && ghostSplit.hasReferenceGhost && (
             <div
-              className="trackball-puck"
-              style={{
-                transform: `translate(${(trackball.vector[0] * 24).toFixed(1)}px, ${(-trackball.vector[1] * 24).toFixed(1)}px)`,
-              }}
-            />
+              className={`hud-ghost-split-pill ${
+                ghostSplit.status === 'ahead'
+                  ? 'ghost-split-ahead'
+                  : ghostSplit.status === 'behind'
+                    ? 'ghost-split-behind'
+                    : 'ghost-split-even'
+              }`}
+              data-testid="ghost-split-timer"
+            >
+              <span className="hud-ghost-label">GHOST ({ghostSplit.referenceLabel}):</span>
+              <strong className="hud-ghost-delta">{ghostSplit.formattedDelta}</strong>
+            </div>
+          )}
+
+          {/* Velocity & Slope Gauge + Tactile Feel Stress */}
+          <div className="hud-debug-section">
+            <div className="hud-gauge-header">
+              <span className="hud-metric-label">VELOCITY, CONTACT &amp; GLASS STRESS</span>
+              <span className={`hud-surface-pill surface-${marble.surfaceMaterial}`}>
+                SURFACE: {marble.surfaceMaterial.toUpperCase()}
+              </span>
+            </div>
+            <div className="hud-speed-bar-track">
+              <div
+                className="hud-speed-bar-fill"
+                style={{ width: `${speedPct.toFixed(1)}%` }}
+              />
+            </div>
+            <div className="hud-telemetry-grid">
+              <div>
+                <span className="hud-metric-label">CONTACT</span>
+                <strong className="hud-metric-value">
+                  {marble.contact.grounded ? 'GROUNDED' : 'AIRBORNE'}
+                </strong>
+              </div>
+              <div>
+                <span className="hud-metric-label">X-RAY CUTOUT</span>
+                <strong className="hud-metric-value">
+                  {camera.occlusionCutoutStrength > 0.05
+                    ? `${Math.round(camera.occlusionCutoutStrength * 100)}%`
+                    : 'CLEAR'}
+                </strong>
+              </div>
+              <div>
+                <span className="hud-metric-label">PORTALS</span>
+                <strong className="hud-metric-value">
+                  {portals.length > 0 ? 'LINKED A↔B' : 'READY'}
+                </strong>
+              </div>
+              <div>
+                <span className="hud-metric-label">CSG BUFFER</span>
+                <strong className="hud-metric-value">
+                  {fieldMutations.length}/{MAX_FIELD_MUTATIONS}
+                </strong>
+              </div>
+            </div>
+
+            {feel && (
+              <div className="hud-feel-row" data-testid="hud-feel-telemetry">
+                <span className={`hud-stress-pill stress-${feel.stress.fractureStage}`}>
+                  GLASS: {feel.stress.fractureStage.toUpperCase()} ({Math.round(feel.stress.glassStress * 100)}%)
+                </span>
+                {feel.rim.rimSaveActive && (
+                  <span className="hud-rim-assist-pill">RIM-CATCH ASSIST</span>
+                )}
+                {feel.slip.backspinIntensity > 0.2 && (
+                  <span className="hud-skid-pill">BACKSPIN SKID</span>
+                )}
+              </div>
+            )}
           </div>
-        </div>
-      </footer>
+
+          {/* Course Switcher 1-6 */}
+          <div className="hud-debug-section">
+            <div className="hud-eyebrow">SELECT COURSE [1–6]</div>
+            <div className="hud-course-tabs">
+              {courses.map((c, idx) => (
+                <button
+                  key={c.id}
+                  type="button"
+                  className={`hud-btn hud-btn-sm ${idx === activeCourseIndex ? 'hud-btn-active' : ''}`}
+                  title={c.name}
+                  onClick={() => onSelectCourse(idx)}
+                >
+                  [{idx + 1}] {c.name}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Camera, Marble, Audio, Bot, Respawn */}
+          <div className="hud-debug-section">
+            <div className="hud-eyebrow">RIG, AUDIO &amp; AUTONOMOUS BOT</div>
+            <div className="hud-action-row">
+              <button type="button" className="hud-btn hud-btn-sm" onClick={onCycleCameraZoom}>
+                CAM: {camera.zoomStopLabel} [C]
+              </button>
+              <button type="button" className="hud-btn hud-btn-sm" onClick={onCycleMarblePreset}>
+                MARBLE: {preset.name.toUpperCase()} [M]
+              </button>
+              <button type="button" className="hud-btn hud-btn-sm" onClick={onRespawn}>
+                RESPAWN [R]
+              </button>
+              {onToggleAudioMute && (
+                <button
+                  type="button"
+                  className={`hud-btn hud-btn-sm ${synthTelemetry && !synthTelemetry.muted ? 'hud-btn-active' : ''}`}
+                  onClick={onToggleAudioMute}
+                  data-testid="hud-audio-toggle"
+                >
+                  SYNTH: {synthTelemetry?.muted ? 'MUTED' : 'YM2151 FM'} [N]
+                </button>
+              )}
+              {onToggleBotPlaytest && (
+                <button
+                  type="button"
+                  className={`hud-btn hud-btn-sm ${botEnabled ? 'hud-btn-active' : ''}`}
+                  onClick={onToggleBotPlaytest}
+                  data-testid="hud-bot-toggle"
+                >
+                  AI BOT: {botEnabled ? (botStyle ?? 'tourist').toUpperCase() : 'OFF'} [P]
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Portals & CSG Weapons */}
+          <div className="hud-debug-section">
+            <div className="hud-eyebrow">RAYMARCHED PORTALS &amp; REALTIME CSG WEAPONS</div>
+            <div className="hud-weapons-bar">
+              <button
+                type="button"
+                className="hud-btn hud-btn-sm hud-btn-portal-blue"
+                onClick={() => onFirePortal?.('blue')}
+              >
+                [Q] BLUE PORTAL
+              </button>
+              <button
+                type="button"
+                className="hud-btn hud-btn-sm hud-btn-portal-orange"
+                onClick={() => onFirePortal?.('orange')}
+              >
+                [E / RMB] ORANGE PORTAL
+              </button>
+              <button
+                type="button"
+                className={`hud-btn hud-btn-sm ${lastActivatedAbility === 'matterBomb' ? 'hud-btn-active' : ''}`}
+                onClick={() => onTriggerWeapon?.('matterBomb')}
+              >
+                [F] CRATER BOMB
+              </button>
+              <button
+                type="button"
+                className={`hud-btn hud-btn-sm ${bridgeExtruderRemainingSec > 0 ? 'hud-btn-active' : ''}`}
+                onClick={() => onTriggerWeapon?.('bridgeExtruder')}
+              >
+                [V] BRIDGE
+              </button>
+              <button
+                type="button"
+                className={`hud-btn hud-btn-sm ${lastActivatedAbility === 'popRamp' ? 'hud-btn-active' : ''}`}
+                onClick={() => onTriggerWeapon?.('popRamp')}
+              >
+                [B] POP-RAMP
+              </button>
+              <button
+                type="button"
+                className={`hud-btn hud-btn-sm ${lastActivatedAbility === 'cryoFreeze' ? 'hud-btn-active' : ''}`}
+                onClick={() => onTriggerWeapon?.('cryoFreeze')}
+              >
+                [X] CRYO FREEZE
+              </button>
+            </div>
+          </div>
+
+          {/* Virtual Trackball Spin Radar + Keybind Legend */}
+          <div className="hud-debug-bottom-row">
+            <div className="hud-trackball-panel">
+              <div className="hud-eyebrow">TRACKBALL SPIN</div>
+              <div className="trackball-disc">
+                <div className="trackball-crosshair-h" />
+                <div className="trackball-crosshair-v" />
+                <div
+                  className="trackball-puck"
+                  style={{
+                    transform: `translate(${(trackball.vector[0] * 24).toFixed(1)}px, ${(-trackball.vector[1] * 24).toFixed(1)}px)`,
+                  }}
+                />
+              </div>
+            </div>
+
+            <div className="hud-keybind-hint">
+              <span>WASD / DRAG: Roll Trackball</span>
+              <span>SPACE: Hop</span>
+              <span>TAB: 1×1 ↔ 2×2 Grid</span>
+              <span>P: AI Bot</span>
+              <span>N: Synth</span>
+              <span>G: Argon 1M</span>
+              <span>Q / E: Portals</span>
+              <span>F / V / B / X: CSG Weapons</span>
+              <span>Y: QR Party</span>
+              <span>[ / ]: Orbit Cam</span>
+              <span>`: Debug Drawer</span>
+            </div>
+          </div>
+        </aside>
+      )}
     </div>
   );
 };

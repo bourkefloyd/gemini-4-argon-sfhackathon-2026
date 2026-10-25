@@ -44,6 +44,24 @@ const STATUS_TO_INT: Record<MarbleLifecycleStatus, number> = {
   fell: 4,
 };
 
+export interface GridTileViewInput {
+  readonly tileIndex: number;
+  readonly viewport: {
+    readonly x: number;
+    readonly y: number;
+    readonly width: number;
+    readonly height: number;
+  };
+  readonly camera: CameraState;
+  readonly marble: MarbleState;
+  readonly renderPosition: readonly [number, number, number];
+  readonly renderOrientation: readonly [number, number, number, number];
+  readonly ghostActive?: boolean;
+  readonly ghostPos?: readonly [number, number, number];
+  readonly ghostQuat?: readonly [number, number, number, number];
+  readonly ghostColor?: readonly [number, number, number];
+}
+
 export interface RenderFrameInput {
   readonly course: CourseSpec;
   readonly marble: MarbleState;
@@ -65,6 +83,8 @@ export interface RenderFrameInput {
   readonly rimDanger?: Float32Array;
   readonly fieldMutations?: readonly FieldMutation[];
   readonly portals?: readonly PortalPair[];
+  /** Optional multi-POV grid tiles; when provided with length > 0, renders each tile with WebGL2 scissor + viewport */
+  readonly gridTiles?: readonly GridTileViewInput[];
 }
 
 export interface RaymarchRenderer {
@@ -449,7 +469,71 @@ export function createRaymarchRenderer(
     gl.uniform4fv(locations.uPortalNormalB, portalNormalBData);
     gl.uniform4fv(locations.uPortalUpB, portalUpBData);
 
-    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    const gridTiles = frame.gridTiles;
+    if (gridTiles && gridTiles.length > 0) {
+      gl.enable(gl.SCISSOR_TEST);
+      for (const tile of gridTiles) {
+        const vx = Math.max(0, Math.floor(tile.viewport.x));
+        const vy = Math.max(0, Math.floor(tile.viewport.y));
+        const vw = Math.max(1, Math.floor(tile.viewport.width));
+        const vh = Math.max(1, Math.floor(tile.viewport.height));
+
+        gl.viewport(vx, vy, vw, vh);
+        gl.scissor(vx, vy, vw, vh);
+
+        const tileCam = tile.camera;
+        const tileMarble = tile.marble;
+        const tilePreset =
+          MARBLE_VISUAL_PRESETS[tileMarble.marblePresetIndex % MARBLE_VISUAL_PRESETS.length] ??
+          MARBLE_VISUAL_PRESETS[0];
+        const tileTanHalfFov = Math.tan((tileCam.fovDeg * Math.PI) / 360);
+
+        gl.uniform2f(locations.uResolution, vw, vh);
+        gl.uniform3f(locations.uCameraPos, tileCam.position[0], tileCam.position[1], tileCam.position[2]);
+        gl.uniform3f(locations.uCameraForward, tileCam.forward[0], tileCam.forward[1], tileCam.forward[2]);
+        gl.uniform3f(locations.uCameraRight, tileCam.right[0], tileCam.right[1], tileCam.right[2]);
+        gl.uniform3f(locations.uCameraUp, tileCam.up[0], tileCam.up[1], tileCam.up[2]);
+        gl.uniform1f(locations.uCameraTanHalfFov, tileTanHalfFov);
+        gl.uniform1f(locations.uOcclusionStrength, tileCam.occlusionCutoutStrength);
+
+        gl.uniform3f(
+          locations.uMarblePos,
+          tile.renderPosition[0],
+          tile.renderPosition[1],
+          tile.renderPosition[2],
+        );
+        gl.uniform4f(
+          locations.uMarbleQuat,
+          tile.renderOrientation[0],
+          tile.renderOrientation[1],
+          tile.renderOrientation[2],
+          tile.renderOrientation[3],
+        );
+        gl.uniform1f(locations.uMarbleRadius, tileMarble.radius);
+        gl.uniform1i(locations.uMarbleStatus, STATUS_TO_INT[tileMarble.status] ?? 0);
+        gl.uniform1f(locations.uMarbleStatusTimer, tileMarble.statusTimer);
+
+        gl.uniform3f(locations.uMarbleBaseColor, tilePreset.baseColor[0], tilePreset.baseColor[1], tilePreset.baseColor[2]);
+        gl.uniform3f(locations.uMarbleVeinColor, tilePreset.veinColor[0], tilePreset.veinColor[1], tilePreset.veinColor[2]);
+        gl.uniform3f(locations.uMarbleGlowColor, tilePreset.coreGlowColor[0], tilePreset.coreGlowColor[1], tilePreset.coreGlowColor[2]);
+        gl.uniform1f(locations.uMarbleIridescence, tilePreset.iridescence);
+
+        const tGhostActive = tile.ghostActive ?? frame.ghostActive ?? false;
+        const tGhostPos = tile.ghostPos ?? gPos;
+        const tGhostQuat = tile.ghostQuat ?? gQuat;
+        const tGhostCol = tile.ghostColor ?? gCol;
+        gl.uniform1i(locations.uGhostActive, tGhostActive ? 1 : 0);
+        gl.uniform3f(locations.uGhostPos, tGhostPos[0], tGhostPos[1], tGhostPos[2]);
+        gl.uniform4f(locations.uGhostQuat, tGhostQuat[0], tGhostQuat[1], tGhostQuat[2], tGhostQuat[3]);
+        gl.uniform3f(locations.uGhostColor, tGhostCol[0], tGhostCol[1], tGhostCol[2]);
+
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+      }
+      gl.disable(gl.SCISSOR_TEST);
+    } else {
+      gl.disable(gl.SCISSOR_TEST);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+    }
   }
 
   function renderCpuFallback(targetCanvas: HTMLCanvasElement, frame: RenderFrameInput) {

@@ -37,6 +37,8 @@ export interface ArcadeInputCallbacks {
   onFirePortal?: (end: 'blue' | 'orange', pointerNdc?: readonly [number, number]) => void;
   onTriggerWeapon?: (ability: WeaponAbilityId) => void;
   onToggleParty?: () => void;
+  onToggleViewMode?: () => void;
+  onToggleDebugDrawer?: () => void;
 }
 
 export interface ArcadeInputController {
@@ -91,6 +93,12 @@ export function createArcadeInputController(
     if (code === 'Space') {
       ev.preventDefault();
       jumpQueued = true;
+    } else if (code === 'Tab' && !isRepeat) {
+      ev.preventDefault();
+      callbacks.onToggleViewMode?.();
+    } else if (code === 'Backquote' && !isRepeat) {
+      ev.preventDefault();
+      callbacks.onToggleDebugDrawer?.();
     } else if (code === 'KeyR') {
       respawnQueued = true;
       callbacks.onRespawn?.();
