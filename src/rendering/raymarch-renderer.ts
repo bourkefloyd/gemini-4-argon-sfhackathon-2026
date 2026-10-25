@@ -65,6 +65,13 @@ export interface RenderFrameInput {
   readonly rimDanger?: Float32Array;
   readonly fieldMutations?: readonly FieldMutation[];
   readonly portals?: readonly PortalPair[];
+  readonly portalAimPreview?: {
+    readonly active: boolean;
+    readonly end: 'blue' | 'orange';
+    readonly position: readonly [number, number, number];
+    readonly normal: readonly [number, number, number];
+    readonly radius: number;
+  };
 }
 
 export interface RaymarchRenderer {
@@ -126,6 +133,8 @@ interface UniformLocations {
   uPortalPosB: WebGLUniformLocation | null;
   uPortalNormalB: WebGLUniformLocation | null;
   uPortalUpB: WebGLUniformLocation | null;
+  uPortalAimPos: WebGLUniformLocation | null;
+  uPortalAimNormal: WebGLUniformLocation | null;
 }
 
 function compileShader(gl: WebGL2RenderingContext, type: number, source: string): WebGLShader {
@@ -243,6 +252,8 @@ export function createRaymarchRenderer(
       uPortalPosB: u('uPortalPosB[0]'),
       uPortalNormalB: u('uPortalNormalB[0]'),
       uPortalUpB: u('uPortalUpB[0]'),
+      uPortalAimPos: u('uPortalAimPos'),
+      uPortalAimNormal: u('uPortalAimNormal'),
     };
   }
 
@@ -448,6 +459,27 @@ export function createRaymarchRenderer(
     gl.uniform4fv(locations.uPortalPosB, portalPosBData);
     gl.uniform4fv(locations.uPortalNormalB, portalNormalBData);
     gl.uniform4fv(locations.uPortalUpB, portalUpBData);
+
+    const aim = frame.portalAimPreview;
+    if (aim && aim.active) {
+      gl.uniform4f(
+        locations.uPortalAimPos,
+        aim.position[0],
+        aim.position[1],
+        aim.position[2],
+        aim.radius,
+      );
+      gl.uniform4f(
+        locations.uPortalAimNormal,
+        aim.normal[0],
+        aim.normal[1],
+        aim.normal[2],
+        aim.end === 'blue' ? 2.0 : 1.0,
+      );
+    } else {
+      gl.uniform4f(locations.uPortalAimPos, 0, -100, 0, 0);
+      gl.uniform4f(locations.uPortalAimNormal, 0, 1, 0, 0);
+    }
 
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }

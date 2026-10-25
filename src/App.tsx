@@ -29,7 +29,16 @@ import type {
 } from './contracts';
 import { BUILT_IN_COURSES } from './courses';
 import { createMarbleSimulation } from './physics';
-import { type PortalEnd, raycastAndPlacePortal } from './portals';
+import {
+  DEFAULT_PORTAL_FLING_BOOST,
+  DEFAULT_PORTAL_RADIUS,
+  getDefaultCoursePortals,
+  placeSmartPortalBridge,
+  type PortalAimPreview,
+  type PortalEnd,
+  raycastAndPlacePortal,
+  raycastPortalAimPreview,
+} from './portals';
 import { createRaymarchRenderer } from './rendering';
 import { createCpuWorldEvaluator } from './sdf/eval-cpu';
 import { ArcadeHud, ArchitectHookPanel } from './ui';
@@ -84,6 +93,7 @@ export interface MarblePlaytestTelemetry {
   readonly botStyle?: BotPlayStyle;
   readonly botLatestSummary?: RunTelemetrySummary | null;
   readonly portals: readonly PortalPair[];
+  readonly portalAimPreview?: PortalAimPreview;
   readonly fieldMutations: readonly FieldMutation[];
   readonly bridgeExtruderRemainingSec: number;
 }
@@ -111,6 +121,7 @@ export interface MarblePlaytestApi {
   loadCourseSpec: (spec: CourseSpec) => MarblePlaytestTelemetry;
   getCompiledShaders: () => { glsl: string; wgsl: string; backend: string };
   firePortal: (end: PortalEnd, aimDir?: Vec3, origin?: Vec3) => MarblePlaytestTelemetry;
+  placeSmartPortalBridge: () => MarblePlaytestTelemetry;
   setPortals: (portals: readonly PortalPair[]) => MarblePlaytestTelemetry;
   getPortals: () => readonly PortalPair[];
   triggerWeapon: (
@@ -177,7 +188,7 @@ export const App: React.FC = () => {
     keyVector: [0, 0],
   });
   const [uiPortals, setUiPortals] = useState<readonly PortalPair[]>(
-    () => currentCourse.portals ?? [],
+    () => getDefaultCoursePortals(currentCourse),
   );
   const [uiWeaponState, setUiWeaponState] = useState<WeaponControllerState>(
     createInitialWeaponState,
@@ -193,7 +204,8 @@ export const App: React.FC = () => {
   const activeIdxRef = useRef<number>(activeCourseIndex);
   const goalAwardedRef = useRef<boolean>(false);
   const prevMarbleRef = useRef<MarbleState>(simRef.current.getState());
-  const portalsRef = useRef<readonly PortalPair[]>(currentCourse.portals ?? []);
+  const portalsRef = useRef<readonly PortalPair[]>(getDefaultCoursePortals(currentCourse));
+  const portalAimPreviewRef = useRef<PortalAimPreview | undefined>(undefined);
   const weaponStateRef = useRef<WeaponControllerState>(createInitialWeaponState());
 
   // Programmatic bot override state for `window.__MARBLE_PLAYTEST__`
@@ -214,9 +226,10 @@ export const App: React.FC = () => {
   const activateCourse = useCallback(
     (nextCourse: CourseSpec, nextIndex: number, carryOverBonusSec: number | null) => {
       const nextEval = createCpuWorldEvaluator(nextCourse);
-      const initialPortals = nextCourse.portals ? [...nextCourse.portals] : [];
+      const initialPortals = [...getDefaultCoursePortals(nextCourse)];
       const initialWeapons = createInitialWeaponState();
       portalsRef.current = initialPortals;
+      portalAimPreviewRef.current = undefined;
       weaponStateRef.current = initialWeapons;
       nextEval.setPortals?.(initialPortals);
       nextEval.setFieldMutations?.([]);
@@ -324,6 +337,25 @@ export const App: React.FC = () => {
     rendererRef.current = renderer;
     setCompiledShaders(renderer.getCompiledShaders());
 
+    const computeCameraCursorRay = (pointerNdc: readonly [number, number]): { origin: Vec3; aimDir: Vec3 } => {
+      const cam = cameraRigRef.current.getState();
+      const aspect = Math.max(1, window.innerWidth) / Math.max(1, window.innerHeight);
+      const tanHalfFov = Math.tan((cam.fovDeg * Math.PI) / 360);
+      const rx =
+        cam.forward[0] +
+        pointerNdc[0] * aspect * tanHalfFov * cam.right[0] +
+        pointerNdc[1] * tanHalfFov * cam.up[0];
+      const ry =
+        cam.forward[1] +
+        pointerNdc[0] * aspect * tanHalfFov * cam.right[1] +
+        pointerNdc[1] * tanHalfFov * cam.up[1];
+      const rz =
+        cam.forward[2] +
+        pointerNdc[0] * aspect * tanHalfFov * cam.right[2] +
+        pointerNdc[1] * tanHalfFov * cam.up[2];
+      return { origin: cam.position, aimDir: [rx, ry, rz] };
+    };
+
     const firePortalInternal = (
       end: PortalEnd,
       pointerNdc?: readonly [number, number],
@@ -331,8 +363,29 @@ export const App: React.FC = () => {
       explicitOrigin?: Vec3,
     ) => {
       const mState = simRef.current.getState();
-      const cam = cameraRigRef.current.getState();
       const fwdXZ = cameraRigRef.current.projectInputToWorldXZ(0, 1);
+
+      // 1-Key "Smart Portal Bridge" (`[Q]`): when firing Blue without an explicit ray,
+      // automatically place Blue Entry 3.5m ahead on the track (facing the marble!)
+      // and Orange Exit on the next elevated terrace / checkpoint ahead (angled toward the goal!)
+      if (end === 'blue' && !explicitAimDir && !explicitOrigin) {
+        const smartPair = placeSmartPortalBridge(
+          mState,
+          activeCourseRef.current,
+          evaluatorRef.current,
+          fwdXZ,
+          simTimeRef.current,
+          portalsRef.current[0],
+        );
+        const nextPortals: readonly PortalPair[] = [
+          smartPair,
+          ...portalsRef.current.slice(1),
+        ];
+        portalsRef.current = nextPortals;
+        evaluatorRef.current.setPortals?.(nextPortals);
+        setUiPortals(nextPortals);
+        return;
+      }
 
       let origin: Vec3 = explicitOrigin ?? mState.position;
       let aimDir: Vec3 =
@@ -342,36 +395,23 @@ export const App: React.FC = () => {
           : [fwdXZ[0], -0.25, fwdXZ[1]]);
 
       if (!explicitAimDir && !explicitOrigin && pointerNdc) {
-        const aspect = Math.max(1, window.innerWidth) / Math.max(1, window.innerHeight);
-        const tanHalfFov = Math.tan((cam.fovDeg * Math.PI) / 360);
-        const rx =
-          cam.forward[0] +
-          pointerNdc[0] * aspect * tanHalfFov * cam.right[0] +
-          pointerNdc[1] * tanHalfFov * cam.up[0];
-        const ry =
-          cam.forward[1] +
-          pointerNdc[0] * aspect * tanHalfFov * cam.right[1] +
-          pointerNdc[1] * tanHalfFov * cam.up[1];
-        const rz =
-          cam.forward[2] +
-          pointerNdc[0] * aspect * tanHalfFov * cam.right[2] +
-          pointerNdc[1] * tanHalfFov * cam.up[2];
-        origin = cam.position;
-        aimDir = [rx, ry, rz];
+        const ray = computeCameraCursorRay(pointerNdc);
+        origin = ray.origin;
+        aimDir = ray.aimDir;
       }
 
       const existing = portalsRef.current[0] ?? {
         id: 'player-portal-pair',
-        posA: [mState.position[0], mState.position[1], mState.position[2] - 4],
-        normalA: [0, 1, 0] as Vec3,
-        upA: [0, 0, -1] as Vec3,
+        posA: [mState.position[0], mState.position[1], mState.position[2] - 3.5],
+        normalA: [0, 0.38, 0.92] as Vec3,
+        upA: [0, 0.92, -0.38] as Vec3,
         posB: [mState.position[0] + 6, mState.position[1], mState.position[2] - 10],
-        normalB: [0, 1, 0] as Vec3,
-        upB: [0, 0, -1] as Vec3,
-        radius: 1.38,
+        normalB: [0, 0.7071, -0.7071] as Vec3,
+        upB: [0, 0.7071, 0.7071] as Vec3,
+        radius: DEFAULT_PORTAL_RADIUS,
         activeA: true,
         activeB: true,
-        flingBoost: 1.0,
+        flingBoost: DEFAULT_PORTAL_FLING_BOOST,
       };
 
       const placed = raycastAndPlacePortal(
@@ -443,6 +483,16 @@ export const App: React.FC = () => {
       onFirePortal: (end, pointerNdc) => {
         firePortalInternal(end, pointerNdc);
       },
+      onPointerHoverNdc: (pointerNdc) => {
+        const ray = computeCameraCursorRay(pointerNdc);
+        portalAimPreviewRef.current = raycastPortalAimPreview(
+          'orange',
+          ray.origin,
+          ray.aimDir,
+          evaluatorRef.current,
+          simTimeRef.current,
+        );
+      },
       onTriggerWeapon: (ability) => {
         triggerWeaponInternal(ability);
       },
@@ -499,6 +549,7 @@ export const App: React.FC = () => {
         botStyle: botControllerRef.current?.getStyle() ?? 'tourist',
         botLatestSummary: botControllerRef.current?.getLatestSummary() ?? null,
         portals: portalsRef.current,
+        portalAimPreview: portalAimPreviewRef.current,
         fieldMutations: weaponStateRef.current.mutations,
         bridgeExtruderRemainingSec: weaponStateRef.current.bridgeExtruderRemainingSec,
       };
@@ -650,6 +701,7 @@ export const App: React.FC = () => {
           rimDanger: shockUniforms.uRimDanger,
           fieldMutations: weaponStateRef.current.mutations,
           portals: portalsRef.current,
+          portalAimPreview: portalAimPreviewRef.current,
         });
         setUiMarble(mState);
         setUiCamera(camState);
@@ -694,6 +746,10 @@ export const App: React.FC = () => {
       getCompiledShaders: () => renderer.getCompiledShaders(),
       firePortal: (end, aimDir, origin) => {
         firePortalInternal(end, undefined, aimDir, origin);
+        return buildTelemetrySnapshot();
+      },
+      placeSmartPortalBridge: () => {
+        firePortalInternal('blue');
         return buildTelemetrySnapshot();
       },
       setPortals: (nextPortals) => {
@@ -887,6 +943,7 @@ export const App: React.FC = () => {
         rimDanger: shockUniforms.uRimDanger,
         fieldMutations: weaponStateRef.current.mutations,
         portals: portalsRef.current,
+        portalAimPreview: portalAimPreviewRef.current,
       });
 
       uiSyncAccumulator += rawDt;

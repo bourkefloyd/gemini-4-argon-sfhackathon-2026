@@ -363,17 +363,17 @@ export const ArcadeHud: React.FC<ArcadeHudProps> = ({
               type="button"
               className="hud-btn hud-btn-sm hud-btn-portal-blue"
               onClick={() => onFirePortal?.('blue')}
-              title="Fire Blue SDF Portal along aim direction [Q]"
+              title="1-Key Smart Portal Bridge: places Blue Entry 3.5m ahead & Orange Exit on next terrace [Q]"
             >
-              [Q] BLUE PORTAL
+              [Q] SMART PORTAL BRIDGE
             </button>
             <button
               type="button"
               className="hud-btn hud-btn-sm hud-btn-portal-orange"
               onClick={() => onFirePortal?.('orange')}
-              title="Fire Orange SDF Portal along aim direction [E / Right-Click]"
+              title="Aim & place Orange Exit Portal under cursor [E / Right-Click / Alt+Click]"
             >
-              [E / RMB] ORANGE PORTAL
+              [E / RMB] AIM EXIT PORTAL
             </button>
             <button
               type="button"

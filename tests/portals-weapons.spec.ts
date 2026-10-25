@@ -1,14 +1,22 @@
 import { describe, expect, it } from 'vitest';
 import type { PortalPair } from '../src/contracts';
 import {
+  BUILT_IN_COURSES,
   COURSE_1_PRACTICE_RACE,
   COURSE_2_INTERMEDIATE_MADNESS,
 } from '../src/courses';
 import { createMarbleSimulation } from '../src/physics';
 import {
+  DEFAULT_PORTAL_COOLDOWN_SEC,
+  DEFAULT_PORTAL_FLING_BOOST,
+  DEFAULT_PORTAL_MIN_EXIT_SPEED,
+  DEFAULT_PORTAL_RADIUS,
   computePortalBasis,
   evaluatePortalThroatCarve,
+  getDefaultCoursePortals,
+  placeSmartPortalBridge,
   raycastAndPlacePortal,
+  raycastPortalAimPreview,
   tracePortalRayCpu,
   transformPointAcrossPortal,
   transformQuatAcrossPortal,
@@ -19,7 +27,7 @@ import { createCpuWorldEvaluator, vec3Length } from '../src/sdf/eval-cpu';
 import {
   appendFieldMutation,
   createInitialWeaponState,
-   stepWeaponController,
+  stepWeaponController,
   triggerWeaponAbility,
 } from '../src/weapons';
 
@@ -276,9 +284,112 @@ describe('Stage 2 Worker 2 — Raymarched SDF Portals & Realtime CSG Level-Mutat
     expect(glsl).toContain('uPortalPairCount');
     expect(glsl).toContain('evalPortalApertures');
     expect(glsl).toContain('portalHops');
+    expect(glsl).toContain('uPortalAimPos');
+    expect(glsl).toContain('uPortalAimNormal');
+    expect(glsl).toContain('vortexChevron');
 
     expect(wgsl).toContain('uMutationsPosA');
     expect(wgsl).toContain('fn applyFieldMutations');
     expect(wgsl).toContain('fn transformPortalRay');
+  });
+
+  it('spawns pre-placed always-on landmark portal pairs (getDefaultCoursePortals) on every course with r=1.55 and 1.25x fling boost', () => {
+    for (const course of BUILT_IN_COURSES) {
+      const portals = getDefaultCoursePortals(course);
+      expect(portals.length).toBeGreaterThanOrEqual(1);
+      const primary = portals[0];
+      expect(primary.activeA).toBe(true);
+      expect(primary.activeB).toBe(true);
+      expect(primary.radius).toBeGreaterThanOrEqual(DEFAULT_PORTAL_RADIUS);
+      expect(primary.flingBoost).toBeGreaterThanOrEqual(DEFAULT_PORTAL_FLING_BOOST);
+
+      // CpuWorldEvaluator also auto-populates landmark portals
+      const evaluator = createCpuWorldEvaluator(course);
+      const evalPortals = evaluator.getPortals?.() ?? [];
+      expect(evalPortals.length).toBeGreaterThanOrEqual(1);
+      expect(evalPortals[0].radius).toBeGreaterThanOrEqual(1.55);
+    }
+  });
+
+  it('supports 1-key Smart Portal Bridge ([Q]), live 3D cursor raycast aim preview ([E]), 2.5R Magnetic Capture Funnel, and guaranteed 14.5+ u/s fling', () => {
+    const evaluator = createCpuWorldEvaluator(COURSE_1_PRACTICE_RACE);
+    const sim = createMarbleSimulation(COURSE_1_PRACTICE_RACE, evaluator);
+
+    // 1. [Q] 1-Key Smart Portal Bridge places Blue Entry ~3.5m ahead facing the marble and Orange Exit on the next checkpoint angled toward goal
+    const smartPair = placeSmartPortalBridge(
+      sim.getState(),
+      COURSE_1_PRACTICE_RACE,
+      evaluator,
+      [0, -1],
+      0,
+      evaluator.getPortals?.()[0],
+    );
+    expect(smartPair.activeA).toBe(true);
+    expect(smartPair.activeB).toBe(true);
+    expect(smartPair.radius).toBeCloseTo(DEFAULT_PORTAL_RADIUS, 3);
+    expect(smartPair.flingBoost).toBeCloseTo(DEFAULT_PORTAL_FLING_BOOST, 3);
+    // Blue Entry placed ~3.5m ahead along -Z from start [0, 8.75, 0]
+    expect(smartPair.posA[2]).toBeLessThan(-2.0);
+    // Orange Exit placed ahead near checkpoint 1 / next terrace and angled upward + toward goal
+    expect(smartPair.posB[2]).toBeLessThan(-15.0);
+    expect(smartPair.normalB[1]).toBeGreaterThan(0.5);
+
+    // 2. Live 3D Cursor Raycast Aim Preview ([E] / Right-Click / Alt+Click)
+    const preview = raycastPortalAimPreview(
+      'orange',
+      [0, 12.0, -2.0],
+      [0, -1, 0],
+      evaluator,
+      0,
+    );
+    expect(preview.active).toBe(true);
+    expect(preview.radius).toBeCloseTo(DEFAULT_PORTAL_RADIUS, 3);
+    expect(preview.position[1]).toBeCloseTo(8.24, 1);
+    expect(preview.normal[1]).toBeGreaterThan(0.9);
+
+    // 3. Magnetic Capture Funnel (within 2.5R) & Guaranteed Minimum Exit Speed (14.5+ u/s even from a slow 2.0 u/s roll)
+    const testPair: PortalPair = {
+      id: 'funnel-and-min-speed-test',
+      posA: [0, 8.75, -4.0],
+      normalA: [0, 0, 1], // Facing +Z toward the marble at z = 0
+      upA: [0, 1, 0],
+      posB: [24.6, 5.0, -22.0],
+      normalB: [0, Math.SQRT1_2, -Math.SQRT1_2],
+      upB: [0, Math.SQRT1_2, Math.SQRT1_2],
+      radius: DEFAULT_PORTAL_RADIUS,
+      activeA: true,
+      activeB: true,
+      flingBoost: DEFAULT_PORTAL_FLING_BOOST,
+    };
+    evaluator.setPortals?.([testPair]);
+
+    // Start marble off-center at x = +1.85 (outside 1.55R aperture, inside 2.5R = 3.875m magnetic funnel) rolling slowly at 2.5 u/s toward -Z
+    sim.setState({
+      ...sim.getState(),
+      position: [1.85, 8.75, -1.6],
+      prevPosition: [1.85, 8.75, -1.6],
+      velocity: [0, 0, -2.5],
+      portalCrossings: 0,
+      portalCooldown: 0,
+    });
+
+    let crossed = false;
+    for (let step = 0; step < 140; step++) {
+      const s = sim.stepFixed(
+        1 / 120,
+        { moveXZ: [0, -0.4], jumpPressed: false, respawnPressed: false },
+        (step + 1) / 120,
+      );
+      if ((s.portalCrossings ?? 0) > 0) {
+        crossed = true;
+        break;
+      }
+    }
+
+    // Magnetic capture funnel pulled the off-center marble into the aperture and flung it out at >= 14.5 u/s!
+    expect(crossed).toBe(true);
+    const flungState = sim.getState();
+    expect(vec3Length(flungState.velocity)).toBeGreaterThanOrEqual(DEFAULT_PORTAL_MIN_EXIT_SPEED - 0.5);
+    expect(flungState.portalCooldown).toBeGreaterThanOrEqual(DEFAULT_PORTAL_COOLDOWN_SEC - 0.02);
   });
 });

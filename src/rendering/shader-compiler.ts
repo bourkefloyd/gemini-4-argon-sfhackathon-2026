@@ -275,6 +275,8 @@ uniform vec4 uPortalUpA[2];     // xyz = upA, w = flingBoost
 uniform vec4 uPortalPosB[2];    // xyz = posB, w = radius
 uniform vec4 uPortalNormalB[2]; // xyz = normalB, w = activeB
 uniform vec4 uPortalUpB[2];     // xyz = upB, w = 0.0
+uniform vec4 uPortalAimPos;     // xyz = aimPos, w = radius (0 if inactive)
+uniform vec4 uPortalAimNormal;  // xyz = aimNormal, w = active (1 = orange, 2 = blue, 0 = off)
 
 vec3 rotateByQuatInverse(vec3 d, vec4 q) {
   vec3 t = 2.0 * cross(q.xyz, d);
@@ -547,7 +549,7 @@ vec2 evalWorldSdf(vec3 p) {
 float sdPortalRing(vec3 p, vec3 pos, vec3 normal, vec3 up, float radius) {
   vec3 dp = p - pos;
   float dist = length(dp);
-  if (dist > radius + 1.2) return dist - (radius + 0.16);
+  if (dist > radius + 1.35) return dist - (radius + 0.18);
   vec3 n = normalize(normal);
   vec3 u = normalize(up - dot(up, n) * n);
   vec3 r = normalize(cross(u, n));
@@ -555,7 +557,25 @@ float sdPortalRing(vec3 p, vec3 pos, vec3 normal, vec3 up, float radius) {
   float ly = dot(dp, u);
   float lz = dot(dp, n);
   float rPlanar = length(vec2(lx, ly));
-  return length(vec2(rPlanar - radius, lz)) - 0.14;
+  return length(vec2(rPlanar - radius, lz)) - 0.17;
+}
+
+float sdPortalAimRing(vec3 p) {
+  if (uPortalAimNormal.w < 0.5 || uPortalAimPos.w < 0.1) return 1000.0;
+  vec3 dp = p - uPortalAimPos.xyz;
+  float dist = length(dp);
+  if (dist > uPortalAimPos.w + 1.2) return dist - (uPortalAimPos.w + 0.12);
+  vec3 n = normalize(uPortalAimNormal.xyz);
+  vec3 upHint = abs(n.y) < 0.85 ? vec3(0.0, 1.0, 0.0) : vec3(0.0, 0.0, -1.0);
+  vec3 u = normalize(upHint - dot(upHint, n) * n);
+  vec3 r = normalize(cross(u, n));
+  float lx = dot(dp, r);
+  float ly = dot(dp, u);
+  float lz = dot(dp, n);
+  float rPlanar = length(vec2(lx, ly));
+  float dOuter = length(vec2(rPlanar - uPortalAimPos.w, lz)) - 0.095;
+  float dBeacon = sdCapsule(p, uPortalAimPos.xyz, uPortalAimPos.xyz + n * 2.1, 0.055);
+  return min(dOuter, dBeacon);
 }
 
 float sdPortalApertureDisc(vec3 p, vec3 pos, vec3 normal, vec3 up, float radius) {
@@ -637,7 +657,7 @@ vec2 evalSceneSdf(vec3 p) {
     res = vec2(dGoalHalo, 101.0);
   }
 
-  // Glowing Blue (104.0) & Orange (105.0) SDF Portal Torus Frames
+  // Glowing Blue (104.0) & Orange (105.0) SDF Portal Torus Frames + Live 3D Aim Preview Ring (106.0)
   // (102 = shatter shards, 103 = holographic ghost marble)
   if (uPortalPairCount > 0) {
     if (uPortalNormalA[0].w > 0.5) {
@@ -651,6 +671,12 @@ vec2 evalSceneSdf(vec3 p) {
       if (dRingB < res.x) {
         res = vec2(dRingB, 105.0);
       }
+    }
+  }
+  if (uPortalAimNormal.w > 0.5) {
+    float dAim = sdPortalAimRing(p);
+    if (dAim < res.x) {
+      res = vec2(dAim, 106.0);
     }
   }
 
@@ -1033,9 +1059,12 @@ void main() {
         float lz = dot(dp, inN);
 
         float radialNorm = clamp(length(vec2(lx, ly)) / max(pA.w, 0.05), 0.0, 1.0);
-        vec3 rimCol = enteredA ? vec3(0.12, 0.78, 1.0) : vec3(1.0, 0.52, 0.08);
-        float swirl = 0.5 + 0.5 * sin(atan(ly, lx) * 5.0 - uTime * 6.5 + radialNorm * 8.0);
-        portalEdgeGlow += rimCol * (pow(radialNorm, 2.6) * (0.55 + 0.45 * swirl) + 0.08);
+        // Unmistakable #00d8ff Blue and #ff7b00 Orange portal aperture vortex chevron ring
+        vec3 rimCol = enteredA ? vec3(0.0, 0.847, 1.0) : vec3(1.0, 0.482, 0.0);
+        float angle = atan(ly, lx);
+        float vortexChevron = 0.5 + 0.5 * sin(angle * 8.0 - uTime * 9.0 + radialNorm * 14.0);
+        float innerHalo = smoothstep(0.58, 0.99, radialNorm);
+        portalEdgeGlow += rimCol * (innerHalo * (0.65 + 0.55 * vortexChevron) + 0.14);
 
         ro = outPos - lx * outR + ly * outU - lz * outN + outN * 0.05;
         float dx = dot(rd, inR);
@@ -1067,16 +1096,33 @@ void main() {
     vec3 normal = calcWorldNormal(hitPos);
     vec3 V = -rd;
 
-    if (hit.y > 104.5) {
-      // Glowing Orange SDF Portal Torus Frame (105.0)
-      float swirl = 0.5 + 0.5 * sin((hitPos.x + hitPos.y + hitPos.z) * 7.5 - uTime * 8.0);
-      float rim = pow(1.0 - clamp(dot(normal, V), 0.0, 1.0), 1.8);
-      color = mix(vec3(1.0, 0.36, 0.04), vec3(1.0, 0.88, 0.28), swirl * 0.65 + rim * 0.5) * 1.65;
+    if (hit.y > 105.5) {
+      // Live 3D Aim Ring / Trajectory Preview (106.0)
+      vec3 aimBase = uPortalAimNormal.w > 1.5 ? vec3(0.0, 0.847, 1.0) : vec3(1.0, 0.482, 0.0);
+      float dash = 0.5 + 0.5 * sin((hitPos.x + hitPos.y + hitPos.z) * 10.0 - uTime * 12.0);
+      color = mix(aimBase, vec3(1.0, 0.96, 0.82), 0.35 + 0.45 * dash) * 1.95;
+    } else if (hit.y > 104.5) {
+      // Glowing Orange (#ff7b00) SDF Portal Torus Frame with directional vortex chevrons (105.0)
+      vec3 dpB = hitPos - uPortalPosB[0].xyz;
+      vec3 nB = normalize(uPortalNormalB[0].xyz);
+      vec3 uB = normalize(uPortalUpB[0].xyz - dot(uPortalUpB[0].xyz, nB) * nB);
+      vec3 rB = normalize(cross(uB, nB));
+      float angB = atan(dot(dpB, uB), dot(dpB, rB));
+      float zB = dot(dpB, nB);
+      float chevronB = smoothstep(-0.2, 0.75, sin(angB * 10.0 - abs(zB) * 18.0 - uTime * 9.5));
+      float rim = pow(1.0 - clamp(dot(normal, V), 0.0, 1.0), 1.6);
+      color = mix(vec3(1.0, 0.482, 0.0), vec3(1.0, 0.92, 0.42), chevronB * 0.68 + rim * 0.55) * 1.95;
     } else if (hit.y > 103.5) {
-      // Glowing Blue SDF Portal Torus Frame (104.0)
-      float swirl = 0.5 + 0.5 * sin((hitPos.x - hitPos.y + hitPos.z) * 7.5 + uTime * 8.0);
-      float rim = pow(1.0 - clamp(dot(normal, V), 0.0, 1.0), 1.8);
-      color = mix(vec3(0.04, 0.56, 1.0), vec3(0.45, 0.98, 1.0), swirl * 0.65 + rim * 0.5) * 1.65;
+      // Glowing Blue (#00d8ff) SDF Portal Torus Frame with directional vortex chevrons (104.0)
+      vec3 dpA = hitPos - uPortalPosA[0].xyz;
+      vec3 nA = normalize(uPortalNormalA[0].xyz);
+      vec3 uA = normalize(uPortalUpA[0].xyz - dot(uPortalUpA[0].xyz, nA) * nA);
+      vec3 rA = normalize(cross(uA, nA));
+      float angA = atan(dot(dpA, uA), dot(dpA, rA));
+      float zA = dot(dpA, nA);
+      float chevronA = smoothstep(-0.2, 0.75, sin(angA * 10.0 + abs(zA) * 18.0 + uTime * 9.5));
+      float rim = pow(1.0 - clamp(dot(normal, V), 0.0, 1.0), 1.6);
+      color = mix(vec3(0.0, 0.847, 1.0), vec3(0.65, 0.99, 1.0), chevronA * 0.68 + rim * 0.55) * 1.95;
     } else if (hit.y > 102.5) {
       // 120 Hz Holographic Ghost Marble (103.0)
       color = shadeGhostMarble(hitPos, normal, V, ro);
@@ -1098,6 +1144,11 @@ void main() {
     float heightFog = clamp((-hitPos.y - 4.0) / 14.0, 0.0, 1.0) * 0.65;
     float fogFactor = clamp(max(distFog, heightFog), 0.0, 0.92);
     color = mix(color, mix(uAbyssFogColor, skyCol, 0.5), fogFactor);
+  }
+
+  // Boost see-through portal interior exposure by 1.35x so the destination room is crystal clear inside the portal disc
+  if (portalHops > 0) {
+    color *= 1.35;
   }
 
   color += portalEdgeGlow;

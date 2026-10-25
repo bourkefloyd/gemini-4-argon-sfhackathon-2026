@@ -50,6 +50,21 @@ export const COURSE_4_AERIAL_CATWALKS: CourseSpec = {
       radius: 4.2,
     },
   ],
+  portals: [
+    {
+      id: 'aerial-chasm-fling-portal',
+      posA: [-2.4, 10.65, -24.8],
+      normalA: [0.0, 0.32, 0.9474],
+      upA: [0.0, 0.9474, -0.32],
+      posB: [6.2, 7.65, -39.2],
+      normalB: [0.7071, 0.7071, 0.0],
+      upB: [-0.7071, 0.7071, 0.0],
+      radius: 1.55,
+      activeA: true,
+      activeB: true,
+      flingBoost: 1.25,
+    },
+  ],
   hazardManifest: [
     {
       id: 'suspended-narrow-ridges',

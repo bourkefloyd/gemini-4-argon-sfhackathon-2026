@@ -26,7 +26,10 @@ import {
   type SurfaceMaterial,
   type Vec3,
 } from '../contracts';
-import { applyPortalThroatCarveToDistance } from '../portals';
+import {
+  applyPortalThroatCarveToDistance,
+  getDefaultCoursePortals,
+} from '../portals';
 import { applyFieldMutationsToSample } from '../weapons';
 
 const ZERO_VEC3: Vec3 = [0, 0, 0];
@@ -642,7 +645,7 @@ export function createCpuWorldEvaluator(course: CourseSpec): CpuWorldEvaluator {
   const rootTree = buildCourseSceneTree(course);
   const flatPrimitives: SdfPrimitiveNode[] = [...course.nodes, ...course.hazards];
   let fieldMutations: readonly FieldMutation[] = [];
-  let portals: readonly PortalPair[] = course.portals ? [...course.portals] : [];
+  let portals: readonly PortalPair[] = [...getDefaultCoursePortals(course)];
 
   function sample(p: Vec3, time: number): SdfSample {
     let s = evaluateSdfTree(rootTree, p, time);

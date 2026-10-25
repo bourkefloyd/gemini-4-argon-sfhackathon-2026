@@ -59,10 +59,10 @@ export const COURSE_3_INTERMEDIATE_MADNESS: CourseSpec = {
       posB: [20.2, 4.65, -28.6],
       normalB: [0.14, 0.52, -0.842],
       upB: [0.0, 0.85, 0.52],
-      radius: 1.38,
+      radius: 1.55,
       activeA: true,
       activeB: true,
-      flingBoost: 1.0,
+      flingBoost: 1.25,
     },
   ],
   hazardManifest: [

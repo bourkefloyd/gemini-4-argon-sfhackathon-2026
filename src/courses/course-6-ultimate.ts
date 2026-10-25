@@ -51,6 +51,21 @@ export const COURSE_6_ULTIMATE_ARGON_CORE: CourseSpec = {
       radius: 4.5,
     },
   ],
+  portals: [
+    {
+      id: 'ultimate-reactor-fling-portal',
+      posA: [0.0, 10.85, -24.2],
+      normalA: [0.0, 0.32, 0.9474],
+      upA: [0.0, 0.9474, -0.32],
+      posB: [0.0, 7.05, -43.5],
+      normalB: [0.0, 0.7071, -0.7071],
+      upB: [0.0, 0.7071, 0.7071],
+      radius: 1.55,
+      activeA: true,
+      activeB: true,
+      flingBoost: 1.25,
+    },
+  ],
   hazardManifest: [
     {
       id: 'high-speed-banked-chute',
