@@ -33,12 +33,28 @@ import type { TactileFeelState } from '../feel';
 import type { SplitDeltaSnapshot } from '../replay';
 import type { Ym2151SynthState } from '../audio';
 import type { BotPlayStyle } from '../bot';
+import type { ShaderPixelEvaluationBenchmark } from '../rendering';
 import {
   type EngineComparisonMode,
   getEngineModeSpec,
 } from '../physics/basic-polygon-mode';
 
 export type ViewportDisplayMode = 'fullscreen' | 'grid';
+
+export interface LiveProfilerTelemetry {
+  readonly fps: number;
+  readonly frameTimeMs: number;
+  readonly emaFrameMs: number;
+  readonly gpuPassMs: number;
+  readonly gpuTimerQueryAvailable: boolean;
+  readonly physicsStepMs: number;
+  readonly effectiveDpr: number;
+  readonly adaptiveScale: number;
+  readonly initialDprCap: number;
+  readonly renderResolution: readonly [number, number];
+  readonly hudSyncHz: number;
+  readonly pixelEvalBenchmark: ShaderPixelEvaluationBenchmark;
+}
 
 export interface PlayerGridCellHudInfo {
   readonly slotIndex: number;
@@ -78,6 +94,7 @@ export interface ArcadeHudProps {
   readonly fieldMutations?: readonly FieldMutation[];
   readonly bridgeExtruderRemainingSec?: number;
   readonly lastActivatedAbility?: WeaponAbilityId | null;
+  readonly profilerMetrics?: LiveProfilerTelemetry;
   readonly onSelectCourse: (index: number) => void;
   readonly onCycleCameraZoom: () => void;
   readonly onCycleMarblePreset: () => void;
@@ -124,6 +141,7 @@ export const ArcadeHud: React.FC<ArcadeHudProps> = ({
   fieldMutations = [],
   bridgeExtruderRemainingSec = 0,
   lastActivatedAbility = null,
+  profilerMetrics,
   onSelectCourse,
   onCycleCameraZoom,
   onCycleMarblePreset,
@@ -515,6 +533,63 @@ export const ArcadeHud: React.FC<ArcadeHudProps> = ({
             >
               <span className="hud-ghost-label">GHOST ({ghostSplit.referenceLabel}):</span>
               <strong className="hud-ghost-delta">{ghostSplit.formattedDelta}</strong>
+            </div>
+          )}
+
+          {/* LIVE FRAME-TIME & STEP PROFILER BREAKDOWN (`window.__MARBLE_PROFILER__`) */}
+          {profilerMetrics && (
+            <div
+              className="hud-debug-section"
+              data-testid="hud-profiler-breakdown"
+            >
+              <div className="hud-gauge-header">
+                <span className="hud-metric-label">
+                  FRAME-TIME &amp; STEP PROFILER (60+ FPS AUTO-GOVERNOR)
+                </span>
+                <span className="hud-surface-pill surface-stone">
+                  SDF EVALS: -{profilerMetrics.pixelEvalBenchmark.primitiveEvalReductionPercent.toFixed(1)}%
+                </span>
+              </div>
+              <div className="hud-telemetry-grid">
+                <div>
+                  <span className="hud-metric-label">FRAME / EMA</span>
+                  <strong className="hud-metric-value" data-testid="profiler-frame-ms">
+                    {profilerMetrics.frameTimeMs.toFixed(1)}ms / {profilerMetrics.emaFrameMs.toFixed(1)}ms
+                  </strong>
+                </div>
+                <div>
+                  <span className="hud-metric-label">
+                    GPU PASS {profilerMetrics.gpuTimerQueryAvailable ? '(HW)' : '(EST)'}
+                  </span>
+                  <strong className="hud-metric-value" data-testid="profiler-gpu-ms">
+                    {profilerMetrics.gpuPassMs.toFixed(2)}ms
+                  </strong>
+                </div>
+                <div>
+                  <span className="hud-metric-label">PHYSICS STEP</span>
+                  <strong className="hud-metric-value" data-testid="profiler-physics-ms">
+                    {profilerMetrics.physicsStepMs.toFixed(2)}ms
+                  </strong>
+                </div>
+                <div>
+                  <span className="hud-metric-label">DPR / SCALE</span>
+                  <strong className="hud-metric-value" data-testid="profiler-effective-dpr">
+                    {profilerMetrics.effectiveDpr.toFixed(2)}× ({Math.round(profilerMetrics.adaptiveScale * 100)}%)
+                  </strong>
+                </div>
+                <div>
+                  <span className="hud-metric-label">RESOLUTION</span>
+                  <strong className="hud-metric-value" data-testid="profiler-resolution">
+                    {profilerMetrics.renderResolution[0]}×{profilerMetrics.renderResolution[1]}
+                  </strong>
+                </div>
+                <div>
+                  <span className="hud-metric-label">HUD SYNC</span>
+                  <strong className="hud-metric-value" data-testid="profiler-hud-hz">
+                    {profilerMetrics.hudSyncHz}Hz (50ms)
+                  </strong>
+                </div>
+              </div>
             </div>
           )}
 

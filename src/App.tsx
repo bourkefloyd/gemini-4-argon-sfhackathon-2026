@@ -44,8 +44,13 @@ import {
   raycastAndPlacePortal,
   raycastPortalAimPreview,
 } from './portals';
-import { createRaymarchRenderer } from './rendering';
-import { ArcadeHud, ArchitectHookPanel } from './ui';
+import {
+  benchmarkShaderPixelEvaluations,
+  createRaymarchRenderer,
+  INITIAL_DPR_CAP,
+  type ShaderPixelEvaluationBenchmark,
+} from './rendering';
+import { ArcadeHud, ArchitectHookPanel, type LiveProfilerTelemetry } from './ui';
 import {
   createArcadeSensorySession,
   type TactileFeelState,
@@ -113,7 +118,21 @@ export interface MarblePlaytestTelemetry {
   readonly debugDrawerOpen?: boolean;
   readonly engineMode?: EngineComparisonMode;
   readonly gridCells?: readonly PlayerGridCellHudInfo[];
+  readonly profiler?: LiveProfilerTelemetry;
 }
+
+export interface MarbleProfilerApi {
+  getMetrics: () => LiveProfilerTelemetry;
+  benchmarkPixelEvaluations: (
+    course?: CourseSpec,
+    gridWidth?: number,
+    gridHeight?: number,
+  ) => ShaderPixelEvaluationBenchmark;
+  setAdaptiveScale: (scale: number) => LiveProfilerTelemetry;
+}
+
+export const HUD_SYNC_INTERVAL_SEC = 0.05; // 20 Hz (every 50 ms)
+export const HUD_SYNC_HZ = 20;
 
 export interface MarblePlaytestApi {
   getState: () => MarblePlaytestTelemetry;
@@ -154,12 +173,14 @@ export interface MarblePlaytestApi {
   setEngineMode?: (mode: EngineComparisonMode) => MarblePlaytestTelemetry;
   cycleEngineMode?: () => MarblePlaytestTelemetry;
   getEngineMode?: () => EngineComparisonMode;
+  getProfilerMetrics?: () => LiveProfilerTelemetry;
 }
 
 declare global {
   interface Window {
     __MARBLE_PLAYTEST__?: MarblePlaytestApi;
     __MARBLE_MADNESS_ARCHITECT__?: MarblePlaytestApi;
+    __MARBLE_PROFILER__?: MarbleProfilerApi;
   }
 }
 
@@ -276,12 +297,28 @@ export const App: React.FC = () => {
   const [uiWeaponState, setUiWeaponState] = useState<WeaponControllerState>(
     createInitialWeaponState,
   );
+  const [uiProfiler, setUiProfiler] = useState<LiveProfilerTelemetry>(() => ({
+    fps: 60,
+    frameTimeMs: 16.67,
+    emaFrameMs: 16.67,
+    gpuPassMs: 2.4,
+    gpuTimerQueryAvailable: false,
+    physicsStepMs: 0.45,
+    effectiveDpr: INITIAL_DPR_CAP,
+    adaptiveScale: 1.0,
+    initialDprCap: INITIAL_DPR_CAP,
+    renderResolution: [1280, 720],
+    hudSyncHz: HUD_SYNC_HZ,
+    pixelEvalBenchmark: benchmarkShaderPixelEvaluations(currentCourse, 12, 8),
+  }));
 
   const timeRemainingRef = useRef<number>(currentCourse.parTimeSec);
   const runElapsedRef = useRef<number>(0);
   const scoreRef = useRef<number>(0);
   const scoreAccumulatorRef = useRef<number>(0);
   const fpsRef = useRef<number>(60);
+  const physicsStepMsRef = useRef<number>(0.45);
+  const pixelEvalCacheRef = useRef<Map<string, ShaderPixelEvaluationBenchmark>>(new Map());
   const simTimeRef = useRef<number>(0);
   const activeCourseRef = useRef<CourseSpec>(currentCourse);
   const coursesRef = useRef<readonly CourseSpec[]>(courses);
@@ -636,8 +673,8 @@ export const App: React.FC = () => {
       onFirePortal: (end, pointerNdc) => {
         firePortalInternal(end, pointerNdc);
       },
-      onPointerHoverNdc: (pointerNdc) => {
-        if (!pointerNdc) {
+      onPointerHoverNdc: (pointerNdc, altKey) => {
+        if (!altKey) {
           portalAimPreviewRef.current = undefined;
           return;
         }
@@ -666,6 +703,33 @@ export const App: React.FC = () => {
         cycleEngineModeInternal();
       },
     });
+
+    const getCoursePixelBenchmark = (course: CourseSpec): ShaderPixelEvaluationBenchmark => {
+      const cached = pixelEvalCacheRef.current.get(course.id);
+      if (cached) return cached;
+      const computed = benchmarkShaderPixelEvaluations(course, 12, 8);
+      pixelEvalCacheRef.current.set(course.id, computed);
+      return computed;
+    };
+
+    const buildProfilerSnapshot = (): LiveProfilerTelemetry => {
+      const rMetrics = renderer.getProfilerMetrics();
+      const course = activeCourseRef.current;
+      return {
+        fps: Number(fpsRef.current.toFixed(1)),
+        frameTimeMs: rMetrics.frameTimeMs,
+        emaFrameMs: rMetrics.emaFrameMs,
+        gpuPassMs: rMetrics.gpuPassMs,
+        gpuTimerQueryAvailable: rMetrics.gpuTimerQueryAvailable,
+        physicsStepMs: Number(physicsStepMsRef.current.toFixed(2)),
+        effectiveDpr: rMetrics.effectiveDpr,
+        adaptiveScale: rMetrics.adaptiveScale,
+        initialDprCap: rMetrics.initialDprCap,
+        renderResolution: rMetrics.renderResolution,
+        hudSyncHz: HUD_SYNC_HZ,
+        pixelEvalBenchmark: getCoursePixelBenchmark(course),
+      };
+    };
 
     const buildTelemetrySnapshot = (): MarblePlaytestTelemetry => {
       const course = activeCourseRef.current;
@@ -723,6 +787,7 @@ export const App: React.FC = () => {
         debugDrawerOpen: debugDrawerOpenRef.current,
         engineMode: engineModeRef.current,
         gridCells: gridCellsRef.current,
+        profiler: buildProfilerSnapshot(),
       };
     };
 
@@ -969,10 +1034,27 @@ export const App: React.FC = () => {
         return buildTelemetrySnapshot();
       },
       getEngineMode: () => engineModeRef.current,
+      getProfilerMetrics: buildProfilerSnapshot,
+    };
+
+    const profilerApi: MarbleProfilerApi = {
+      getMetrics: buildProfilerSnapshot,
+      benchmarkPixelEvaluations: (
+        targetCourse = activeCourseRef.current,
+        gridWidth = 12,
+        gridHeight = 8,
+      ) => benchmarkShaderPixelEvaluations(targetCourse, gridWidth, gridHeight),
+      setAdaptiveScale: (scale: number) => {
+        renderer.setAdaptiveScale(scale);
+        const snap = buildProfilerSnapshot();
+        setUiProfiler(snap);
+        return snap;
+      },
     };
 
     window.__MARBLE_PLAYTEST__ = playtestApi;
     window.__MARBLE_MADNESS_ARCHITECT__ = playtestApi;
+    window.__MARBLE_PROFILER__ = profilerApi;
 
     const botController = createBotPlaytestController(() => window.__MARBLE_PLAYTEST__, {
       initialStyle: 'tourist',
@@ -984,9 +1066,15 @@ export const App: React.FC = () => {
     let rafId = 0;
     let lastTimeMs = performance.now();
     let uiSyncAccumulator = 0;
+    let lastSyncedCourseIdx = activeIdxRef.current;
+    let lastSyncedArchitectOpen = architectOpenRef.current;
+    let lastSyncedPartyOpen = partyOpenRef.current;
+    let lastSyncedDebugOpen = debugDrawerOpenRef.current;
+    let lastSyncedViewMode = viewModeRef.current;
 
     const tick = (nowMs: number) => {
       try {
+        const physicsStartMs = performance.now();
         const rawDt = Math.max(0.001, Math.min(0.08, (nowMs - lastTimeMs) / 1000));
         lastTimeMs = nowMs;
         simTimeRef.current += rawDt;
@@ -1171,259 +1259,295 @@ export const App: React.FC = () => {
           }
         }
 
-        multiMarbleSimRef.current.syncPlayersFromRoom(partySnap);
-        const partyRacerSource = partySnap.roomPlayers ?? partySnap.players;
-        const partyInputs = new Map<
-          string,
-          { moveXZ: readonly [number, number]; jumpPressed: boolean; respawnPressed: boolean }
-        >();
-        for (const p of partyRacerSource) {
-          if (p.role === 'racer') {
-            partyInputs.set(p.playerId, {
-              moveXZ: p.input.moveXZ,
-              jumpPressed: p.input.jumpPressed,
-              respawnPressed: false,
-            });
+        const needMultiPov =
+          viewModeRef.current === 'grid' || focusedPlayerIdxRef.current > 0;
+
+        let tileDefs: readonly GridTileViewInput[] | undefined;
+        let nextGridCells = gridCellsRef.current;
+        let activeMarble = marbleState;
+        let activePos = renderPosition;
+        let activeQuat = renderOrientation;
+        let activeCam = camState;
+
+        if (needMultiPov) {
+          multiMarbleSimRef.current.syncPlayersFromRoom(partySnap);
+          const partyRacerSource = partySnap.roomPlayers ?? partySnap.players;
+          const partyInputs = new Map<
+            string,
+            { moveXZ: readonly [number, number]; jumpPressed: boolean; respawnPressed: boolean }
+          >();
+          for (const p of partyRacerSource) {
+            if (p.role === 'racer') {
+              partyInputs.set(p.playerId, {
+                moveXZ: p.input.moveXZ,
+                jumpPressed: p.input.jumpPressed,
+                respawnPressed: false,
+              });
+            }
           }
+          const partyStep = multiMarbleSimRef.current.stepFixed(
+            rawDt,
+            partyInputs,
+            simTimeRef.current,
+          );
+          const activePartyMarbles = partyStep.marbles;
+
+          const rival2Cur = aiRivalSim2Ref.current.getState();
+          if (rival2Cur.status === 'goal') {
+            aiRivalSim2Ref.current.respawn(false);
+            aiRivalDriver2Ref.current.reset(course, evaluatorRef.current);
+          }
+          const dec2 = aiRivalDriver2Ref.current.stepDecision(
+            aiRivalSim2Ref.current.getState(),
+            simTimeRef.current,
+            rawDt,
+          );
+          const rival2Out = aiRivalSim2Ref.current.update(
+            rawDt,
+            dec2.commands,
+            simTimeRef.current,
+          );
+
+          const rival4Cur = aiRivalSim4Ref.current.getState();
+          if (rival4Cur.status === 'goal') {
+            aiRivalSim4Ref.current.respawn(false);
+            aiRivalDriver4Ref.current.reset(course, evaluatorRef.current);
+          }
+          const dec4 = aiRivalDriver4Ref.current.stepDecision(
+            aiRivalSim4Ref.current.getState(),
+            simTimeRef.current,
+            rawDt,
+          );
+          const rival4Out = aiRivalSim4Ref.current.update(
+            rawDt,
+            dec4.commands,
+            simTimeRef.current,
+          );
+
+          // Build 4 POV slots (binding to QR Party racers when connected, or AI Bot / Ghost / Aerial POVs)
+          const ghostPose = sensoryStep.ghostPose;
+          const ghostMarbleState: MarbleState = {
+            ...marbleState,
+            position: ghostPose.position,
+            prevPosition: ghostPose.position,
+            velocity: ghostPose.velocity,
+            orientation: ghostPose.orientation,
+            prevOrientation: ghostPose.orientation,
+            marblePresetIndex: 2,
+            status: 'racing',
+          };
+
+          const slot0Party = activePartyMarbles[0];
+          const slot1Party = activePartyMarbles[1];
+          const slot2Party = activePartyMarbles[2];
+          const slot3Party = activePartyMarbles[3];
+
+          const p1Marble = marbleState;
+          const p1Pos = renderPosition;
+          const p1Quat = renderOrientation;
+          const p1Speed = Math.hypot(p1Marble.velocity[0], p1Marble.velocity[1], p1Marble.velocity[2]);
+
+          const p2Marble = slot1Party ? slot1Party.state : rival2Out.state;
+          const p2Pos = slot1Party ? slot1Party.state.position : rival2Out.renderPosition;
+          const p2Quat = slot1Party ? slot1Party.state.orientation : rival2Out.renderOrientation;
+          const p2Speed = Math.hypot(p2Marble.velocity[0], p2Marble.velocity[1], p2Marble.velocity[2]);
+
+          const p3Marble = slot2Party ? slot2Party.state : ghostMarbleState;
+          const p3Pos = slot2Party ? slot2Party.state.position : ghostPose.position;
+          const p3Quat = slot2Party ? slot2Party.state.orientation : ghostPose.orientation;
+          const p3Speed = Math.hypot(p3Marble.velocity[0], p3Marble.velocity[1], p3Marble.velocity[2]);
+
+          const p4Marble = slot3Party ? slot3Party.state : rival4Out.state;
+          const p4Pos = slot3Party ? slot3Party.state.position : rival4Out.renderPosition;
+          const p4Quat = slot3Party ? slot3Party.state.orientation : rival4Out.renderOrientation;
+          const p4Speed = Math.hypot(p4Marble.velocity[0], p4Marble.velocity[1], p4Marble.velocity[2]);
+
+          const rigs = tileCameraRigsRef.current;
+          rigs[0].setZoomStop(cameraRigRef.current.getState().zoomStopIndex);
+          rigs[1].setZoomStop('close');
+          rigs[2].setZoomStop('isometric');
+          rigs[3].setZoomStop(slot3Party ? 'close' : 'overview');
+
+          const cam0 = camState;
+          const cam1 = rigs[1].update(rawDt, course, p2Marble, p2Pos, evaluatorRef.current, simTimeRef.current);
+          const cam2 = rigs[2].update(rawDt, course, p3Marble, p3Pos, evaluatorRef.current, simTimeRef.current);
+          const cam3 = rigs[3].update(rawDt, course, p4Marble, p4Pos, evaluatorRef.current, simTimeRef.current);
+
+          const dpr = renderer.getProfilerMetrics().effectiveDpr || INITIAL_DPR_CAP;
+          const fullW = Math.max(2, Math.floor((canvas.clientWidth || window.innerWidth) * dpr));
+          const fullH = Math.max(2, Math.floor((canvas.clientHeight || window.innerHeight) * dpr));
+          const halfW = Math.floor(fullW / 2);
+          const halfH = Math.floor(fullH / 2);
+
+          tileDefs = [
+            {
+              tileIndex: 0,
+              viewport: { x: 0, y: halfH, width: halfW, height: fullH - halfH },
+              camera: cam0,
+              marble: p1Marble,
+              renderPosition: p1Pos,
+              renderOrientation: p1Quat,
+              ghostActive: true,
+              ghostPos: p2Pos,
+              ghostQuat: p2Quat,
+              ghostColor: [0.24, 0.91, 1.0],
+            },
+            {
+              tileIndex: 1,
+              viewport: { x: halfW, y: halfH, width: fullW - halfW, height: fullH - halfH },
+              camera: cam1,
+              marble: p2Marble,
+              renderPosition: p2Pos,
+              renderOrientation: p2Quat,
+              ghostActive: true,
+              ghostPos: p1Pos,
+              ghostQuat: p1Quat,
+              ghostColor: [1.0, 0.82, 0.25],
+            },
+            {
+              tileIndex: 2,
+              viewport: { x: 0, y: 0, width: halfW, height: halfH },
+              camera: cam2,
+              marble: p3Marble,
+              renderPosition: p3Pos,
+              renderOrientation: p3Quat,
+              ghostActive: true,
+              ghostPos: p1Pos,
+              ghostQuat: p1Quat,
+              ghostColor: [0.16, 0.97, 0.61],
+            },
+            {
+              tileIndex: 3,
+              viewport: { x: halfW, y: 0, width: fullW - halfW, height: halfH },
+              camera: cam3,
+              marble: p4Marble,
+              renderPosition: p4Pos,
+              renderOrientation: p4Quat,
+              ghostActive: true,
+              ghostPos: p1Pos,
+              ghostQuat: p1Quat,
+              ghostColor: [0.85, 0.42, 1.0],
+            },
+          ];
+
+          nextGridCells = [
+            {
+              slotIndex: 0,
+              badgeTitle: slot0Party ? `P1: @${slot0Party.handle.toUpperCase()}` : 'P1: YOU',
+              subtitle: `${cam0.zoomStopLabel} · LOCAL TRACKBALL`,
+              speedUps: p1Speed,
+              roomCode: currentRoomCode,
+              accentColor: '#3ce8ff',
+              status: p1Marble.status,
+            },
+            {
+              slotIndex: 1,
+              badgeTitle: slot1Party ? `P2: @${slot1Party.handle.toUpperCase()}` : 'P2: @MAYA / AI BOT',
+              subtitle: slot1Party ? 'QR PARTY RACER #2' : 'SPEEDRUNNER BOT POV',
+              speedUps: p2Speed,
+              roomCode: currentRoomCode,
+              accentColor: '#28f79c',
+              status: p2Marble.status,
+            },
+            {
+              slotIndex: 2,
+              badgeTitle: slot2Party ? `P3: @${slot2Party.handle.toUpperCase()}` : 'P3: @DAN / GHOST',
+              subtitle: slot2Party ? 'QR PARTY RACER #3' : 'ARGON PRO PAR GHOST POV',
+              speedUps: p3Speed,
+              roomCode: currentRoomCode,
+              accentColor: '#ffd23f',
+              status: p3Marble.status,
+            },
+            {
+              slotIndex: 3,
+              badgeTitle: slot3Party ? `P4: @${slot3Party.handle.toUpperCase()}` : 'P4: @ALEX',
+              subtitle: slot3Party ? 'QR PARTY RACER #4' : 'TACTICAL AERIAL / RIVAL POV',
+              speedUps: p4Speed,
+              roomCode: currentRoomCode,
+              accentColor: '#d96bff',
+              status: p4Marble.status,
+            },
+          ];
+          gridCellsRef.current = nextGridCells;
+
+          const focusedTile = tileDefs[focusedPlayerIdxRef.current] ?? tileDefs[0];
+          activeMarble = focusedTile.marble;
+          activePos = focusedTile.renderPosition;
+          activeQuat = focusedTile.renderOrientation;
+          activeCam = focusedTile.camera;
         }
-        const partyStep = multiMarbleSimRef.current.stepFixed(
-          rawDt,
-          partyInputs,
-          simTimeRef.current,
-        );
-        const activePartyMarbles = partyStep.marbles;
 
-      const rival2Cur = aiRivalSim2Ref.current.getState();
-      if (rival2Cur.status === 'goal') {
-        aiRivalSim2Ref.current.respawn(false);
-        aiRivalDriver2Ref.current.reset(course, evaluatorRef.current);
-      }
-      const dec2 = aiRivalDriver2Ref.current.stepDecision(
-        aiRivalSim2Ref.current.getState(),
-        simTimeRef.current,
-        rawDt,
-      );
-      const rival2Out = aiRivalSim2Ref.current.update(
-        rawDt,
-        dec2.commands,
-        simTimeRef.current,
-      );
+        const rawPhysStepMs = Math.max(0.05, performance.now() - physicsStartMs);
+        physicsStepMsRef.current = physicsStepMsRef.current * 0.85 + rawPhysStepMs * 0.15;
 
-      const rival4Cur = aiRivalSim4Ref.current.getState();
-      if (rival4Cur.status === 'goal') {
-        aiRivalSim4Ref.current.respawn(false);
-        aiRivalDriver4Ref.current.reset(course, evaluatorRef.current);
-      }
-      const dec4 = aiRivalDriver4Ref.current.stepDecision(
-        aiRivalSim4Ref.current.getState(),
-        simTimeRef.current,
-        rawDt,
-      );
-      const rival4Out = aiRivalSim4Ref.current.update(
-        rawDt,
-        dec4.commands,
-        simTimeRef.current,
-      );
+        renderer.render({
+          course,
+          marble: viewModeRef.current === 'fullscreen' ? activeMarble : marbleState,
+          renderPosition: viewModeRef.current === 'fullscreen' ? activePos : renderPosition,
+          renderOrientation: viewModeRef.current === 'fullscreen' ? activeQuat : renderOrientation,
+          camera: viewModeRef.current === 'fullscreen' ? activeCam : camState,
+          time: simTimeRef.current,
+          glassStress: sensoryStep.feel.stress.glassStress,
+          crackVisibility: sensoryStep.feel.stress.crackVisibility,
+          stressGlow: sensoryStep.feel.stress.stressGlowIntensity,
+          ghostActive: sensoryStep.ghostPose.active,
+          ghostPos: sensoryStep.ghostPose.position,
+          ghostQuat: sensoryStep.ghostPose.orientation,
+          ghostColor: [
+            sensoryStep.ghostPose.holoColorRgba[0],
+            sensoryStep.ghostPose.holoColorRgba[1],
+            sensoryStep.ghostPose.holoColorRgba[2],
+          ],
+          shatterShards: shatterSimRef.current.packUniforms(),
+          shatterShardCount: shatterSimRef.current.getState().active
+            ? shatterSimRef.current.getState().shards.length
+            : 0,
+          shockwaveRings: shockUniforms.uShockwaveRings,
+          shockwaveParams: shockUniforms.uShockwaveParams,
+          rimDanger: shockUniforms.uRimDanger,
+          fieldMutations: weaponStateRef.current.mutations,
+          portals: portalsRef.current,
+          portalAimPreview: portalAimPreviewRef.current,
+          engineMode: engineModeRef.current,
+          gridTiles: viewModeRef.current === 'grid' ? tileDefs : undefined,
+        });
 
-      // Build 4 POV slots (binding to QR Party racers when connected, or AI Bot / Ghost / Aerial POVs)
-      const ghostPose = sensoryStep.ghostPose;
-      const ghostMarbleState: MarbleState = {
-        ...marbleState,
-        position: ghostPose.position,
-        prevPosition: ghostPose.position,
-        velocity: ghostPose.velocity,
-        orientation: ghostPose.orientation,
-        prevOrientation: ghostPose.orientation,
-        marblePresetIndex: 2,
-        status: 'racing',
-      };
+        // Throttle React HUD state updates to 20 Hz (every 50 ms), or flush immediately
+        // when lifecycle status, course selection, or modal/drawer state changes.
+        uiSyncAccumulator += rawDt;
+        const immediateStateChange =
+          marbleState.status !== prevMarble.status ||
+          activeIdxRef.current !== lastSyncedCourseIdx ||
+          architectOpenRef.current !== lastSyncedArchitectOpen ||
+          partyOpenRef.current !== lastSyncedPartyOpen ||
+          debugDrawerOpenRef.current !== lastSyncedDebugOpen ||
+          viewModeRef.current !== lastSyncedViewMode;
 
-      const slot0Party = activePartyMarbles[0];
-      const slot1Party = activePartyMarbles[1];
-      const slot2Party = activePartyMarbles[2];
-      const slot3Party = activePartyMarbles[3];
+        if (uiSyncAccumulator >= HUD_SYNC_INTERVAL_SEC || immediateStateChange) {
+          uiSyncAccumulator = 0;
+          lastSyncedCourseIdx = activeIdxRef.current;
+          lastSyncedArchitectOpen = architectOpenRef.current;
+          lastSyncedPartyOpen = partyOpenRef.current;
+          lastSyncedDebugOpen = debugDrawerOpenRef.current;
+          lastSyncedViewMode = viewModeRef.current;
 
-      const p1Marble = marbleState;
-      const p1Pos = renderPosition;
-      const p1Quat = renderOrientation;
-      const p1Speed = Math.hypot(p1Marble.velocity[0], p1Marble.velocity[1], p1Marble.velocity[2]);
-
-      const p2Marble = slot1Party ? slot1Party.state : rival2Out.state;
-      const p2Pos = slot1Party ? slot1Party.state.position : rival2Out.renderPosition;
-      const p2Quat = slot1Party ? slot1Party.state.orientation : rival2Out.renderOrientation;
-      const p2Speed = Math.hypot(p2Marble.velocity[0], p2Marble.velocity[1], p2Marble.velocity[2]);
-
-      const p3Marble = slot2Party ? slot2Party.state : ghostMarbleState;
-      const p3Pos = slot2Party ? slot2Party.state.position : ghostPose.position;
-      const p3Quat = slot2Party ? slot2Party.state.orientation : ghostPose.orientation;
-      const p3Speed = Math.hypot(p3Marble.velocity[0], p3Marble.velocity[1], p3Marble.velocity[2]);
-
-      const p4Marble = slot3Party ? slot3Party.state : rival4Out.state;
-      const p4Pos = slot3Party ? slot3Party.state.position : rival4Out.renderPosition;
-      const p4Quat = slot3Party ? slot3Party.state.orientation : rival4Out.renderOrientation;
-      const p4Speed = Math.hypot(p4Marble.velocity[0], p4Marble.velocity[1], p4Marble.velocity[2]);
-
-      const rigs = tileCameraRigsRef.current;
-      rigs[0].setZoomStop(cameraRigRef.current.getState().zoomStopIndex);
-      rigs[1].setZoomStop('close');
-      rigs[2].setZoomStop('isometric');
-      rigs[3].setZoomStop(slot3Party ? 'close' : 'overview');
-
-      const cam0 = camState;
-      const cam1 = rigs[1].update(rawDt, course, p2Marble, p2Pos, evaluatorRef.current, simTimeRef.current);
-      const cam2 = rigs[2].update(rawDt, course, p3Marble, p3Pos, evaluatorRef.current, simTimeRef.current);
-      const cam3 = rigs[3].update(rawDt, course, p4Marble, p4Pos, evaluatorRef.current, simTimeRef.current);
-
-      const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
-      const fullW = Math.max(2, Math.floor((canvas.clientWidth || window.innerWidth) * dpr));
-      const fullH = Math.max(2, Math.floor((canvas.clientHeight || window.innerHeight) * dpr));
-      const halfW = Math.floor(fullW / 2);
-      const halfH = Math.floor(fullH / 2);
-
-      const tileDefs: readonly GridTileViewInput[] = [
-        {
-          tileIndex: 0,
-          viewport: { x: 0, y: halfH, width: halfW, height: fullH - halfH },
-          camera: cam0,
-          marble: p1Marble,
-          renderPosition: p1Pos,
-          renderOrientation: p1Quat,
-          ghostActive: true,
-          ghostPos: p2Pos,
-          ghostQuat: p2Quat,
-          ghostColor: [0.24, 0.91, 1.0],
-        },
-        {
-          tileIndex: 1,
-          viewport: { x: halfW, y: halfH, width: fullW - halfW, height: fullH - halfH },
-          camera: cam1,
-          marble: p2Marble,
-          renderPosition: p2Pos,
-          renderOrientation: p2Quat,
-          ghostActive: true,
-          ghostPos: p1Pos,
-          ghostQuat: p1Quat,
-          ghostColor: [1.0, 0.82, 0.25],
-        },
-        {
-          tileIndex: 2,
-          viewport: { x: 0, y: 0, width: halfW, height: halfH },
-          camera: cam2,
-          marble: p3Marble,
-          renderPosition: p3Pos,
-          renderOrientation: p3Quat,
-          ghostActive: true,
-          ghostPos: p1Pos,
-          ghostQuat: p1Quat,
-          ghostColor: [0.16, 0.97, 0.61],
-        },
-        {
-          tileIndex: 3,
-          viewport: { x: halfW, y: 0, width: fullW - halfW, height: halfH },
-          camera: cam3,
-          marble: p4Marble,
-          renderPosition: p4Pos,
-          renderOrientation: p4Quat,
-          ghostActive: true,
-          ghostPos: p1Pos,
-          ghostQuat: p1Quat,
-          ghostColor: [0.85, 0.42, 1.0],
-        },
-      ];
-
-      const nextGridCells: readonly PlayerGridCellHudInfo[] = [
-        {
-          slotIndex: 0,
-          badgeTitle: slot0Party ? `P1: @${slot0Party.handle.toUpperCase()}` : 'P1: YOU',
-          subtitle: `${cam0.zoomStopLabel} · LOCAL TRACKBALL`,
-          speedUps: p1Speed,
-          roomCode: currentRoomCode,
-          accentColor: '#3ce8ff',
-          status: p1Marble.status,
-        },
-        {
-          slotIndex: 1,
-          badgeTitle: slot1Party ? `P2: @${slot1Party.handle.toUpperCase()}` : 'P2: @MAYA / AI BOT',
-          subtitle: slot1Party ? 'QR PARTY RACER #2' : 'SPEEDRUNNER BOT POV',
-          speedUps: p2Speed,
-          roomCode: currentRoomCode,
-          accentColor: '#28f79c',
-          status: p2Marble.status,
-        },
-        {
-          slotIndex: 2,
-          badgeTitle: slot2Party ? `P3: @${slot2Party.handle.toUpperCase()}` : 'P3: @DAN / GHOST',
-          subtitle: slot2Party ? 'QR PARTY RACER #3' : 'ARGON PRO PAR GHOST POV',
-          speedUps: p3Speed,
-          roomCode: currentRoomCode,
-          accentColor: '#ffd23f',
-          status: p3Marble.status,
-        },
-        {
-          slotIndex: 3,
-          badgeTitle: slot3Party ? `P4: @${slot3Party.handle.toUpperCase()}` : 'P4: @ALEX',
-          subtitle: slot3Party ? 'QR PARTY RACER #4' : 'TACTICAL AERIAL / RIVAL POV',
-          speedUps: p4Speed,
-          roomCode: currentRoomCode,
-          accentColor: '#d96bff',
-          status: p4Marble.status,
-        },
-      ];
-      gridCellsRef.current = nextGridCells;
-
-      const focusedTile = tileDefs[focusedPlayerIdxRef.current] ?? tileDefs[0];
-
-      renderer.render({
-        course,
-        marble: viewModeRef.current === 'fullscreen' ? focusedTile.marble : marbleState,
-        renderPosition: viewModeRef.current === 'fullscreen' ? focusedTile.renderPosition : renderPosition,
-        renderOrientation: viewModeRef.current === 'fullscreen' ? focusedTile.renderOrientation : renderOrientation,
-        camera: viewModeRef.current === 'fullscreen' ? focusedTile.camera : camState,
-        time: simTimeRef.current,
-        glassStress: sensoryStep.feel.stress.glassStress,
-        crackVisibility: sensoryStep.feel.stress.crackVisibility,
-        stressGlow: sensoryStep.feel.stress.stressGlowIntensity,
-        ghostActive: sensoryStep.ghostPose.active,
-        ghostPos: sensoryStep.ghostPose.position,
-        ghostQuat: sensoryStep.ghostPose.orientation,
-        ghostColor: [
-          sensoryStep.ghostPose.holoColorRgba[0],
-          sensoryStep.ghostPose.holoColorRgba[1],
-          sensoryStep.ghostPose.holoColorRgba[2],
-        ],
-        shatterShards: shatterSimRef.current.packUniforms(),
-        shatterShardCount: shatterSimRef.current.getState().active
-          ? shatterSimRef.current.getState().shards.length
-          : 0,
-        shockwaveRings: shockUniforms.uShockwaveRings,
-        shockwaveParams: shockUniforms.uShockwaveParams,
-        rimDanger: shockUniforms.uRimDanger,
-        fieldMutations: weaponStateRef.current.mutations,
-        portals: portalsRef.current,
-        portalAimPreview: portalAimPreviewRef.current,
-        engineMode: engineModeRef.current,
-        gridTiles: viewModeRef.current === 'grid' ? tileDefs : undefined,
-      });
-
-      uiSyncAccumulator += rawDt;
-      if (uiSyncAccumulator >= 1 / 30) {
-        uiSyncAccumulator = 0;
-        setUiMarble(marbleState);
-        setUiCamera(camState);
-        setUiFeel(sensoryStep.feel);
-        setUiGhostSplit(sensoryStep.split);
-        setUiSynth(sensoryStep.synth);
-        setBotEnabled(botController.isEnabled());
-        setBotStyle(botController.getStyle());
-        setTimeRemainingSec(timeRemainingRef.current);
-        setScore(scoreRef.current);
-        setFps(fpsRef.current);
-        setTrackball(sampled.telemetry);
-        setUiPortals(portalsRef.current);
-        setUiWeaponState(weaponStateRef.current);
-        setUiGridCells(nextGridCells);
-        setPartyRoomCode(currentRoomCode);
-      }
+          setUiMarble(marbleState);
+          setUiCamera(camState);
+          setUiFeel(sensoryStep.feel);
+          setUiGhostSplit(sensoryStep.split);
+          setUiSynth(sensoryStep.synth);
+          setBotEnabled(botController.isEnabled());
+          setBotStyle(botController.getStyle());
+          setTimeRemainingSec(timeRemainingRef.current);
+          setScore(scoreRef.current);
+          setFps(fpsRef.current);
+          setTrackball(sampled.telemetry);
+          setUiPortals(portalsRef.current);
+          setUiWeaponState(weaponStateRef.current);
+          setUiGridCells(nextGridCells);
+          setPartyRoomCode(currentRoomCode);
+          setUiProfiler(buildProfilerSnapshot());
+        }
       } catch (err) {
         console.error('Frame tick error:', err);
       }
@@ -1437,6 +1561,7 @@ export const App: React.FC = () => {
       window.cancelAnimationFrame(rafId);
       botController.dispose();
       botControllerRef.current = null;
+      delete window.__MARBLE_PROFILER__;
       inputCtrl.dispose();
       renderer.dispose();
     };
@@ -1479,6 +1604,7 @@ export const App: React.FC = () => {
           fieldMutations={uiWeaponState.mutations}
           bridgeExtruderRemainingSec={uiWeaponState.bridgeExtruderRemainingSec}
           lastActivatedAbility={uiWeaponState.lastActivatedAbility}
+          profilerMetrics={uiProfiler}
           onSelectCourse={handleSelectCourse}
           onCycleCameraZoom={() => {
             cameraRigRef.current.cycleZoomStop();

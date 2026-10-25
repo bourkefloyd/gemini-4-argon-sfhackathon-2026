@@ -372,6 +372,7 @@ function compileExtractedShaderEvaluator(
   for (const rawLine of rawLines) {
     let line = rawLine.trim();
     if (!line) continue;
+    if (line.includes('sdCourseBounds') || line.includes('dBounds')) continue;
 
     // Normalize WGSL syntax to GLSL-like tokens before lowering
     if (lang === 'wgsl') {
