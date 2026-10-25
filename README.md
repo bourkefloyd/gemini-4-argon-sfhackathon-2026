@@ -13,7 +13,7 @@ The [project section](#the-hack-project-intent) is Bourke’s concept for this r
 
 **Build a remake of Marble Madness using signed distance fields (SDFs).** That choice is this project’s intent. The event page does not name Marble Madness, SDFs, or this repo.
 
-A marble-on-a-course game is a ball moving through one continuous solid: banks, gaps, tubes, rails. An SDF is a function from a point to the signed distance to that solid. **Project intent:** use that one description for both the picture and the motion. Raymarch the field to draw the course. Use the distance, and the gradient as a surface normal, to keep the marble from sinking through it. The level can stay a spec plus a shader-sized function instead of a mesh plus a separate collider. That is why an SDF fits this game. None of that rationale is stated on the event page, and it was not read out of the inspiration repo.
+A marble-on-a-course game is a ball moving through one continuous solid: banks, gaps, tubes, rails. An SDF is a function from a point to the signed distance to that solid. **Project intent:** use that one description for both the picture and the motion. Raymarch the field to draw the course. Use the distance, and the gradient as a surface normal, to keep the marble from sinking through it. The level can stay a spec plus a shader-sized function instead of a mesh plus a separate collider. The event page does not state that rationale. [gamex](#inspiration-repo) is already built that way: one scene specification, a GPU raymarch to draw it, and a CPU evaluation of the same scene for physics.
 
 ### Hard-problem bet
 
@@ -31,16 +31,24 @@ Working agreement for the team, not a design spec:
 
 Inspiration only: https://github.com/bourkefloyd/gamex
 
-Do not vendor it and do not paste its source into this repo. None of its files are included here.
+Do not vendor it and do not paste its source into this repo. None of its files are included here. This is a **clean-room** remake: use the ideas below, then write our own code. The notes are the public-safe summary of a direct read of that private repo (`SDF Marble`, v1.0.0) on 2026-10-25.
 
-This is a private repo Bourke owns. On 2026-10-25 it was still not readable from this environment, so this guide has **no concrete notes** on its rendering, physics, SDF use, architecture, or license. Do not assume a license or a technique.
+**What it is.** A browser marble-course game and procedural world sandbox. The course, terrain, volumetric fog, and marble bodies are signed distance fields, not triangle meshes. You roll and jump a marble along elevated tracks, slopes, and procedural terrain toward a goal pad. A node-graph editor and a session server support live authoring and multiplayer.
 
-What was tried:
+**License.** `package.json` declares **ISC** (`"license": "ISC"`). There is no root `LICENSE` file. The GitHub repo is private. Inspiration only.
 
-- The VM `git` / `gh` token is scoped to `gemini-4-argon-sfhackathon-2026`. The public page, the API, and raw README/LICENSE URLs return **404**, which is what GitHub returns for a private repo that token cannot see.
-- The GitHub MCP server is logged in as **bourkefloyd**. After a re-auth, `get_file_contents` on `/`, `list_commits`, and a commit search for `repo:bourkefloyd/gamex` still failed. File and commit reads returned **404**. Commit search said the repository does not exist or the token does not have permission. A repository search as that user returned only public repos and did not include `gamex`.
+**Stack.** Three.js `^0.183.2` with **`WebGPURenderer` and TSL** node shaders that sphere-trace the course (WebGPU/WGSL). Post uses Three.js `RenderPipeline`, ACES Filmic, and optional HDR bloom. UI is React 19, `@xyflow/react` for the graph editor, and Vite 8. The session server is Node.js HTTP, WebSocket (`ws`), and server-sent events, with `node:sqlite` in WAL mode and optional `@simplewebauthn` passkeys. Tests are Vitest, plus Playwright on headed Chromium with `--enable-unsafe-webgpu`.
 
-Until a token that can open `bourkefloyd/gamex` is available, there is nothing specific in it to take a pattern from. When it is readable, use it to see how the game is factored, then write this project fresh under that repo’s license. Do not copy its source into this public repo.
+Patterns worth using, without copying the implementation:
+
+1. **Lockstep CPU/GPU SDF evaluation.** Each primitive (boxes, rounded boxes, spheres, cylinders, capsules, tori, cones, axial ramps, 8-corner boxes, baked 3D volume grids) and each CSG op (union, smooth union, subtract, intersect) exists twice: a GPU sphere-trace that returns distance and material id, and a CPU evaluation at the marble that returns distance, normal, and contact material. One scene specification feeds both, so rendering and collision do not drift the way a mesh and a separate collider do.
+2. **Fullscreen sphere trace, then polish.** World, goal, local marble, and remote marbles are traced in one pass. Add soft shadows, a few ambient-occlusion taps, subsurface marble veins, and branch-scoped volumetric fog. **Occlusion reveal tunnel:** if the course blocks the camera, subtract a smooth capsule from the world field along the camera-to-marble line so the marble stays visible.
+3. **Fixed 120 Hz SDF physics.** Step at 120 Hz and interpolate the pose for rendering. Cast the sphere along the velocity before integrating so it does not tunnel through thin ramps. Resolve penetration a few times per step. Surface materials carry restitution and friction (`track`, `wall`, `goalPad`, `ice`, `sticky`, `bouncePad`, `ground`). **Seam-biased normals** prefer an upward support at hard unions so modular track joints do not snag.
+4. **Arcade follow camera.** Map WASD, pointer, and touch onto the camera’s ground axes. Use a few zoom stops from close follow to a full-course view, with velocity lead.
+5. **Procedural graph and level compilation.** Author a DAG of shapes, CSG, repeats, modifiers, and noise terrain. Compile it either to a CSG tree or to a flat entity list. Bake heavy noise into a 3D volume in a worker.
+6. **Headed WebGPU checks.** WebGPU needs a real GPU, so smoke tests run in headed Chromium. A perf-log query flag emits structured console lines, and resolution scales when the GPU falls behind.
+
+Our agent split (level, physics, camera, rules) stays [project intent](#hard-problem-bet). It lines up with this factoring. It is not a layout copied from `gamex`.
 
 ## What it is
 
@@ -269,6 +277,6 @@ Still absent after the event page and the builder guide. Do not fill these in fr
 - The Cerebral Valley upload itself: what a submission must contain, where the submit button lives, or whether code must be public. The builder guide adds a live-demo bar, not that form.
 - Numeric judging weights, and whether the builder guide’s four tests are the final-round rubric. `hackathonJudgingOpen` is still null on the event page.
 - A code-of-conduct document separate from the waiver section titled “Code of Conduct and Right to Refuse Participation.”
-- The `gamex` license, layout, renderer, physics, and whether it uses SDFs. GitHub MCP as `bourkefloyd` still cannot read that private repo. See [Inspiration repo](#inspiration-repo).
+- A grant to reuse `gamex` source. The private repo is inspiration only. `package.json` says ISC and there is no root `LICENSE` file. See [Inspiration repo](#inspiration-repo).
 
 The builder guide does answer the earlier holes for Argon and Managed Agents docs, the 1M-token window, companion model IDs, the Interactions API, introductory pricing, and how credits are claimed (in person, no key printed in the Doc).
