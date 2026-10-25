@@ -238,7 +238,7 @@ export const ArcadeHud: React.FC<ArcadeHudProps> = ({
               onClick={() => onToggleParty?.()}
               data-testid="hud-party-toggle"
             >
-              [Y] QR Join ({partyConnectedCount}/{MAX_PLAYERS})
+              [Y] QR: Play on Phone
             </button>
             <span className="hud-slim-sep">·</span>
             <button
@@ -397,9 +397,9 @@ export const ArcadeHud: React.FC<ArcadeHudProps> = ({
               className={`hud-action-pill ${partyOpen ? 'hud-action-pill-active' : ''}`}
               onClick={() => onToggleParty?.()}
               data-testid="hud-party-toggle"
-              title="Open 6-Player QR Party Join Modal [Y]"
+              title="Open QR Code to Play on Phone [Y]"
             >
-              [Y] Join Party ({partyConnectedCount}/{MAX_PLAYERS})
+              [Y] QR: Play on Phone
             </button>
 
             <button

@@ -1,29 +1,17 @@
 /**
- * Couch / Stage 6-Player QR Join Modal (`src/multiplayer/QrPartyHudModal.tsx`)
+ * Clean, Instant "Scan to Play on Your Phone" QR Modal (`src/multiplayer/QrPartyHudModal.tsx`)
  *
- * Simple, single-room multiplayer lobby:
- * - Whoever runs the server owns THE room.
- * - Up to 6 players (P1–P6) scan the QR code on their phone to claim their own colored marble
- *   and play using their phone while viewing the game on the main screen (1x1 or 3x2 Split-Screen).
- * - Shows the big scannable QR code + the 6 Marble Slots (P1–P6) showing Connected Phone vs AI Bot vs Open Slot,
- *   plus individual "+ Add AI Bot" buttons and a 1-click "Fill Open Slots with AI Bots (6 Marbles)" button.
+ * Displays a crisp black-on-white SVG QR code pointing directly to the permanent
+ * public GitHub Pages game link so anyone can scan and play Marble Madness SDF
+ * directly on their phone with zero install.
  */
 
 import React, { useCallback, useEffect, useState } from 'react';
-import {
-  createPartyRoomClient,
-  detectBrowserTunnelOrigin,
-  partyJoinUrlForViewer,
-  resolvePartyApiBase,
-  type PartyRoomClient,
-} from './party-client';
-import {
-  MAX_PLAYERS,
-  PLAYER_MARBLE_PALETTE,
-  type PartyPlayerState,
-  type PartyRoomSnapshot,
-} from './party-types';
+import type { PartyRoomClient } from './party-client';
 import { renderQrSvg } from './qr-svg';
+
+export const PERMANENT_GAME_URL =
+  'https://bourkefloyd.github.io/gemini-4-argon-sfhackathon-2026/';
 
 export interface QrPartyHudModalProps {
   readonly isOpen: boolean;
@@ -33,488 +21,197 @@ export interface QrPartyHudModalProps {
   readonly onSynthesizeCrowdTwist?: (combinedPrompt: string) => void;
 }
 
-const BOT_NAMES_BY_SLOT = [
-  'bot_cobalt',
-  'bot_maya',
-  'bot_dan',
-  'bot_alex',
-  'bot_zoe',
-  'bot_kai',
-] as const;
-
 export const QrPartyHudModal: React.FC<QrPartyHudModalProps> = ({
   isOpen,
   onClose,
-  client: externalClient,
-  roomCode = 'ARGON',
 }) => {
-  const [internalClient] = useState<PartyRoomClient>(() =>
-    externalClient ?? createPartyRoomClient({ roomCode }),
-  );
-  const activeClient = externalClient ?? internalClient;
-
-  const [snapshot, setSnapshot] = useState<PartyRoomSnapshot>(() =>
-    activeClient.getSnapshot(),
-  );
-  const [tunnelInput, setTunnelInput] = useState<string>(
-    () => activeClient.getSnapshot().customTunnelUrl ?? '',
-  );
-  const [simulatingBots, setSimulatingBots] = useState<boolean>(false);
-
-  useEffect(() => {
-    const unsub = activeClient.subscribe((snap) => {
-      setSnapshot(snap);
-    });
-    return () => {
-      unsub();
-    };
-  }, [activeClient]);
-
-  useEffect(() => {
-    const hasBots = snapshot.players.some((p) => p.isSimulated);
-    if (!simulatingBots && !hasBots) return;
-    const interval = window.setInterval(() => {
-      void activeClient.simulateCrowdPhones(MAX_PLAYERS, true);
-    }, 350);
-    return () => window.clearInterval(interval);
-  }, [activeClient, simulatingBots, snapshot.players]);
-
-  const displayJoinUrl = partyJoinUrlForViewer({
-    roomCode: snapshot.roomCode,
-    serverJoinUrl: snapshot.joinUrl,
-    tunnelOrigin:
-      snapshot.customTunnelUrl || resolvePartyApiBase() || detectBrowserTunnelOrigin(),
-  });
   const [qrSvgMarkup, setQrSvgMarkup] = useState<string>('');
+  const [copied, setCopied] = useState<boolean>(false);
 
   useEffect(() => {
     let cancelled = false;
-    void renderQrSvg(displayJoinUrl, {
-      sizePx: 220,
+    void renderQrSvg(PERMANENT_GAME_URL, {
+      sizePx: 280,
       marginModules: 4,
-      title: `Scan to Join 6-Player Marble Room`,
+      title: 'SCAN TO PLAY MARBLE MADNESS SDF ON YOUR PHONE',
     }).then((svg) => {
       if (!cancelled) setQrSvgMarkup(svg);
     });
     return () => {
       cancelled = true;
     };
-  }, [displayJoinUrl]);
+  }, []);
 
-  const handleApplyTunnelUrl = useCallback(
-    async (e: React.FormEvent) => {
-      e.preventDefault();
-      const cleaned = tunnelInput.trim();
-      await activeClient.setCustomTunnelUrl(cleaned.length > 0 ? cleaned : null);
-    },
-    [activeClient, tunnelInput],
-  );
-
-  const handleFillOpenSlotsWithBots = useCallback(async () => {
-    await activeClient.simulateCrowdPhones(MAX_PLAYERS, false);
-    setSimulatingBots(true);
-  }, [activeClient]);
-
-  const handleAddBotToSlot = useCallback(
-    async (slotIndex: number) => {
-      const botHandle = BOT_NAMES_BY_SLOT[slotIndex] ?? `bot_p${slotIndex + 1}`;
-      await activeClient.join({
-        roomCode: snapshot.roomCode,
-        playerId: `sim_phone_${slotIndex + 1}`,
-        handle: botHandle,
-        preferredRole: 'racer',
-        preferredSlot: slotIndex,
-        isSimulated: true,
-      });
-      setSimulatingBots(true);
-    },
-    [activeClient, snapshot.roomCode],
-  );
+  const handleCopyUrl = useCallback(async () => {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(PERMANENT_GAME_URL);
+        setCopied(true);
+        window.setTimeout(() => setCopied(false), 2000);
+      }
+    } catch {
+      // Clipboard fallback ignored
+    }
+  }, []);
 
   if (!isOpen) return null;
-
-  const racersBySlot = new Map<number, PartyPlayerState>();
-  for (const p of snapshot.players) {
-    if (p.role === 'racer' && p.racerSlot !== null && p.racerSlot >= 0 && p.racerSlot < MAX_PLAYERS) {
-      racersBySlot.set(p.racerSlot, p);
-    }
-  }
-
-  const connectedCount = racersBySlot.size;
 
   return (
     <aside
       className="qr-party-hud-modal"
       data-testid="qr-party-hud-modal"
       role="dialog"
-      aria-label="6-Player QR Split-Screen Party Lobby"
+      aria-label="Scan to Play Marble Madness SDF on Your Phone"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
       style={{
         position: 'fixed',
-        inset: '24px',
+        inset: 0,
         zIndex: 60,
-        background: 'rgba(7, 11, 22, 0.95)',
-        backdropFilter: 'blur(16px)',
-        border: '1.5px solid rgba(56, 189, 248, 0.45)',
-        borderRadius: '18px',
-        boxShadow: '0 24px 64px rgba(0, 0, 0, 0.85)',
+        background: 'rgba(5, 9, 20, 0.85)',
+        backdropFilter: 'blur(14px)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: '24px',
         color: '#f8fafc',
         fontFamily: "'Inter', system-ui, -apple-system, sans-serif",
-        display: 'flex',
-        flexDirection: 'column',
-        overflow: 'hidden',
       }}
     >
-      {/* Top Header */}
-      <header
+      <div
         style={{
+          width: '100%',
+          maxWidth: '540px',
+          background: 'rgba(11, 18, 34, 0.96)',
+          border: '1.5px solid rgba(56, 189, 248, 0.5)',
+          borderRadius: '20px',
+          boxShadow: '0 24px 64px rgba(0, 0, 0, 0.88), 0 0 40px rgba(56, 189, 248, 0.18)',
+          padding: '28px 32px',
           display: 'flex',
-          flexWrap: 'wrap',
+          flexDirection: 'column',
           alignItems: 'center',
-          justifyContent: 'space-between',
-          gap: '12px',
-          padding: '16px 22px',
-          borderBottom: '1px solid rgba(148, 163, 184, 0.2)',
-          background: 'rgba(15, 23, 42, 0.92)',
+          textAlign: 'center',
+          gap: '18px',
         }}
       >
         <div>
-          <div
+          <h2
             style={{
-              fontSize: '11px',
-              fontWeight: 800,
-              letterSpacing: '0.09em',
-              color: '#38bdf8',
-              textTransform: 'uppercase',
+              margin: 0,
+              fontSize: '21px',
+              fontWeight: 900,
+              letterSpacing: '0.04em',
+              color: '#f8fafc',
             }}
           >
-            SERVER-OWNED COUCH / STAGE ROOM • UP TO {MAX_PLAYERS} MARBLES ({connectedCount}/{MAX_PLAYERS} ACTIVE)
-          </div>
-          <h2 style={{ margin: '3px 0 0', fontSize: '20px', fontWeight: 800 }}>
-            Scan QR on Your Phone to Claim a Colored Marble &amp; Play on This Screen!
+            SCAN TO PLAY MARBLE MADNESS SDF ON YOUR PHONE
           </h2>
+          <p
+            style={{
+              margin: '8px 0 0',
+              fontSize: '13px',
+              fontWeight: 600,
+              color: '#38bdf8',
+              letterSpacing: '0.02em',
+            }}
+          >
+            Instant Zero-Install WebGL2 SDF Game • Drag Anywhere as a Virtual Trackball
+          </p>
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-          <button
-            type="button"
-            data-testid="simulate-crowd-phones-btn"
-            onClick={() => void handleFillOpenSlotsWithBots()}
-            style={{
-              background: simulatingBots
-                ? 'linear-gradient(135deg, #059669, #10b981)'
-                : 'linear-gradient(135deg, #f59e0b, #ea580c)',
-              color: '#ffffff',
-              border: 'none',
-              borderRadius: '10px',
-              padding: '10px 16px',
-              fontSize: '13px',
-              fontWeight: 800,
-              cursor: 'pointer',
-              boxShadow: '0 4px 14px rgba(245, 158, 11, 0.35)',
-            }}
-          >
-            Fill Open Slots with AI Bots (6 Marbles)
-          </button>
+        <div
+          data-testid="qr-svg-container"
+          style={{
+            background: '#ffffff',
+            padding: '16px',
+            borderRadius: '16px',
+            boxShadow: '0 10px 30px rgba(56, 189, 248, 0.3)',
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+          dangerouslySetInnerHTML={{ __html: qrSvgMarkup }}
+        />
 
-          <button
-            type="button"
-            data-testid="close-qr-party-modal"
-            onClick={onClose}
+        <div
+          style={{
+            width: '100%',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '8px',
+          }}
+        >
+          <a
+            href={PERMANENT_GAME_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            data-testid="party-join-url"
             style={{
-              background: '#1e293b',
-              color: '#e2e8f0',
-              border: '1px solid #475569',
+              display: 'block',
+              padding: '10px 12px',
+              background: '#070b14',
+              border: '1px solid rgba(56, 189, 248, 0.4)',
               borderRadius: '10px',
-              padding: '9px 14px',
+              fontFamily: 'monospace',
               fontSize: '13px',
               fontWeight: 700,
-              cursor: 'pointer',
+              color: '#38bdf8',
+              textDecoration: 'none',
+              wordBreak: 'break-all',
             }}
           >
-            Back to Game [ESC]
-          </button>
-        </div>
-      </header>
+            {PERMANENT_GAME_URL}
+          </a>
 
-      {/* Main 2-Column Layout: Left = Scannable QR Code, Right = 6 Marble Slots (P1..P6) */}
-      <div
-        style={{
-          flex: 1,
-          display: 'grid',
-          gridTemplateColumns: 'minmax(280px, 340px) 1fr',
-          gap: '18px',
-          padding: '18px 22px',
-          overflowY: 'auto',
-        }}
-      >
-        {/* Column 1: Big Scannable QR Code & Join URL */}
-        <section
-          style={{
-            background: 'rgba(15, 23, 42, 0.78)',
-            border: '1px solid rgba(56, 189, 248, 0.28)',
-            borderRadius: '14px',
-            padding: '18px',
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-            gap: '14px',
-          }}
-        >
-          <div
-            data-testid="qr-svg-container"
-            style={{
-              background: '#ffffff',
-              padding: '12px',
-              borderRadius: '14px',
-              boxShadow: '0 8px 24px rgba(56, 189, 248, 0.25)',
-            }}
-            dangerouslySetInnerHTML={{ __html: qrSvgMarkup }}
-          />
-
-          <div style={{ textAlign: 'center', width: '100%' }}>
-            <div style={{ fontSize: '11px', color: '#94a3b8', fontWeight: 700 }}>
-              PHONE CONTROLLER URL (PLAY ON PHONE, WATCH MAIN SCREEN)
-            </div>
-            <div
-              data-testid="party-join-url"
-              style={{
-                marginTop: '5px',
-                padding: '7px 9px',
-                background: '#090d16',
-                border: '1px solid #334155',
-                borderRadius: '8px',
-                fontFamily: 'monospace',
-                fontSize: '12px',
-                color: '#38bdf8',
-                wordBreak: 'break-all',
-              }}
-            >
-              {displayJoinUrl}
-            </div>
-          </div>
-
-          <form
-            onSubmit={(e) => void handleApplyTunnelUrl(e)}
-            style={{
-              width: '100%',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '6px',
-              marginTop: 'auto',
-            }}
-          >
-            <label
-              htmlFor="party-tunnel-url-input"
-              style={{ fontSize: '11px', color: '#cbd5e1', fontWeight: 600 }}
-            >
-              5G / Venue Tunnel Override (Optional):
-            </label>
-            <div style={{ display: 'flex', gap: '6px' }}>
-              <input
-                id="party-tunnel-url-input"
-                data-testid="party-tunnel-url-input"
-                type="text"
-                placeholder="https://your-tunnel.trycloudflare.com"
-                value={tunnelInput}
-                onChange={(e) => setTunnelInput(e.target.value)}
-                style={{
-                  flex: 1,
-                  background: '#090d16',
-                  color: '#f8fafc',
-                  border: '1px solid #475569',
-                  borderRadius: '8px',
-                  padding: '6px 8px',
-                  fontSize: '12px',
-                }}
-              />
-              <button
-                type="submit"
-                data-testid="apply-tunnel-url-btn"
-                style={{
-                  background: '#0284c7',
-                  color: '#ffffff',
-                  border: 'none',
-                  borderRadius: '8px',
-                  padding: '6px 10px',
-                  fontSize: '12px',
-                  fontWeight: 700,
-                  cursor: 'pointer',
-                }}
-              >
-                Set URL
-              </button>
-            </div>
-          </form>
-        </section>
-
-        {/* Column 2: 6 Marble Slots (P1 to P6) */}
-        <section
-          style={{
-            background: 'rgba(15, 23, 42, 0.78)',
-            border: '1px solid rgba(148, 163, 184, 0.22)',
-            borderRadius: '14px',
-            padding: '18px',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '14px',
-          }}
-        >
           <div
             style={{
               display: 'flex',
-              justifyContent: 'space-between',
               alignItems: 'center',
+              justifyContent: 'center',
+              gap: '10px',
+              marginTop: '4px',
             }}
           >
-            <span
+            <button
+              type="button"
+              data-testid="copy-permanent-url-btn"
+              onClick={() => void handleCopyUrl()}
               style={{
+                background: copied
+                  ? 'linear-gradient(135deg, #059669, #10b981)'
+                  : 'linear-gradient(135deg, #0284c7, #2563eb)',
+                color: '#ffffff',
+                border: 'none',
+                borderRadius: '10px',
+                padding: '9px 18px',
                 fontSize: '13px',
                 fontWeight: 800,
-                color: '#38bdf8',
-                letterSpacing: '0.06em',
+                cursor: 'pointer',
               }}
             >
-              6 MARBLE SLOTS (P1–P6) • 3×2 SPLIT-SCREEN READY
-            </span>
-            <span style={{ fontSize: '12px', color: '#94a3b8' }}>
-              Press <strong>[Tab]</strong> for 6-Player Split-Screen Grid
-            </span>
+              {copied ? 'Copied Link!' : 'Copy Game Link'}
+            </button>
+
+            <button
+              type="button"
+              data-testid="close-qr-party-modal"
+              onClick={onClose}
+              style={{
+                background: '#1e293b',
+                color: '#e2e8f0',
+                border: '1px solid #475569',
+                borderRadius: '10px',
+                padding: '9px 18px',
+                fontSize: '13px',
+                fontWeight: 700,
+                cursor: 'pointer',
+              }}
+            >
+              Back to Game [ESC]
+            </button>
           </div>
-
-          <div
-            data-testid="party-racer-roster"
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))',
-              gap: '12px',
-              flex: 1,
-            }}
-          >
-            {PLAYER_MARBLE_PALETTE.map((palette) => {
-              const slotIndex = palette.slotIndex;
-              const occupant = racersBySlot.get(slotIndex);
-              const isHuman = Boolean(occupant && !occupant.isSimulated);
-              const isBot = Boolean(occupant && occupant.isSimulated);
-
-              return (
-                <div
-                  key={palette.slotId}
-                  data-testid={`party-marble-slot-${slotIndex}`}
-                  style={{
-                    display: 'flex',
-                    flexDirection: 'column',
-                    justifyContent: 'space-between',
-                    padding: '14px',
-                    background: occupant
-                      ? 'rgba(30, 41, 59, 0.82)'
-                      : 'rgba(15, 23, 42, 0.55)',
-                    border: `2px solid ${occupant ? palette.hex : 'rgba(71, 85, 105, 0.45)'}`,
-                    borderRadius: '12px',
-                    boxShadow: occupant ? `0 0 20px ${palette.hex}25` : 'none',
-                  }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                      <span
-                        style={{
-                          width: '18px',
-                          height: '18px',
-                          borderRadius: '50%',
-                          background: `radial-gradient(circle at 32% 32%, #ffffff, ${palette.hex} 55%, #090d16)`,
-                          boxShadow: `0 0 10px ${palette.hex}`,
-                          display: 'inline-block',
-                          flexShrink: 0,
-                        }}
-                      />
-                      <div>
-                        <div style={{ fontSize: '14px', fontWeight: 900, color: '#f8fafc' }}>
-                          {palette.slotId} • {palette.name}
-                        </div>
-                        <div style={{ fontSize: '11px', color: palette.hex, fontWeight: 700 }}>
-                          {palette.marbleTitle}
-                        </div>
-                      </div>
-                    </div>
-
-                    <span
-                      style={{
-                        fontSize: '10px',
-                        fontWeight: 800,
-                        padding: '3px 8px',
-                        borderRadius: '999px',
-                        background: isHuman
-                          ? 'rgba(16, 185, 129, 0.2)'
-                          : isBot
-                            ? 'rgba(245, 158, 11, 0.2)'
-                            : 'rgba(51, 65, 85, 0.45)',
-                        color: isHuman
-                          ? '#34d399'
-                          : isBot
-                            ? '#fbbf24'
-                            : '#94a3b8',
-                        border: `1px solid ${
-                          isHuman ? '#10b981' : isBot ? '#f59e0b' : '#475569'
-                        }`,
-                      }}
-                    >
-                      {isHuman
-                        ? 'Connected Phone'
-                        : isBot
-                          ? 'AI Bot'
-                          : 'Open Slot — Scan QR'}
-                    </span>
-                  </div>
-
-                  <div
-                    style={{
-                      marginTop: '12px',
-                      paddingTop: '10px',
-                      borderTop: '1px solid rgba(148, 163, 184, 0.14)',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                      gap: '8px',
-                    }}
-                  >
-                    {occupant ? (
-                      <>
-                        <div style={{ fontSize: '13px', fontWeight: 700, color: '#e2e8f0' }}>
-                          @{occupant.handle}
-                        </div>
-                        <div style={{ fontSize: '11px', color: '#94a3b8', fontFamily: 'monospace' }}>
-                          Tilt: ({occupant.input.moveXZ[0].toFixed(1)}, {occupant.input.moveXZ[1].toFixed(1)})
-                        </div>
-                      </>
-                    ) : (
-                      <>
-                        <span style={{ fontSize: '12px', color: '#64748b' }}>
-                          Waiting for phone scan...
-                        </span>
-                        <button
-                          type="button"
-                          data-testid={`add-ai-bot-slot-${slotIndex}`}
-                          onClick={() => void handleAddBotToSlot(slotIndex)}
-                          style={{
-                            background: 'rgba(56, 189, 248, 0.14)',
-                            color: '#38bdf8',
-                            border: '1px solid rgba(56, 189, 248, 0.4)',
-                            borderRadius: '8px',
-                            padding: '5px 10px',
-                            fontSize: '11px',
-                            fontWeight: 800,
-                            cursor: 'pointer',
-                          }}
-                        >
-                          + Add AI Bot
-                        </button>
-                      </>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </section>
+        </div>
       </div>
     </aside>
   );

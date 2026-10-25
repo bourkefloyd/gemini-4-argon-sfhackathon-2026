@@ -258,7 +258,9 @@ export const App: React.FC = () => {
   const shatterSimRef = useLazyRef(() => createShatterSimulator());
   const shockwaveMgrRef = useLazyRef(() => createShockwaveManager());
   const botControllerRef = useRef<BotPlaytestController | null>(null);
-  const partyClientRef = useLazyRef(() => createPartyRoomClient({ roomCode: 'ARGON' }));
+  const partyClientRef = useLazyRef(() =>
+    createPartyRoomClient({ roomCode: 'ARGON', enableNetwork: false }),
+  );
   const multiMarbleSimRef = useLazyRef(() => createMultiMarbleArenaSimulation(currentCourse));
   const aiRivalsRef = useLazyRef(() => {
     const styles: readonly BotPlayStyle[] = [
