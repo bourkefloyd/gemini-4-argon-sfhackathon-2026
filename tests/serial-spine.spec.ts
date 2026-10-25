@@ -181,4 +181,29 @@ describe('Stage 1 Serial Spine — SDF Primitives, CSG, Shader Parity & 120 Hz P
     expect(camState.zoomStopId).toBe('isometric');
     expect(camState.fovDeg).toBeCloseTo(34, 1);
   });
+
+  it('delivers snappy first-push acceleration and hard reverse backspin braking', () => {
+    const eval1 = createCpuWorldEvaluator(COURSE_1_PRACTICE_RACE);
+    const simBrake = createMarbleSimulation(COURSE_1_PRACTICE_RACE, eval1);
+    const simCoast = createMarbleSimulation(COURSE_1_PRACTICE_RACE, eval1);
+
+    // Push forward along +X on the flat start podium for 24 frames (0.2s)
+    for (let i = 0; i < 24; i++) {
+      simBrake.stepFixed(1 / 120, { moveXZ: [1, 0], jumpPressed: false, respawnPressed: false }, i / 120);
+      simCoast.stepFixed(1 / 120, { moveXZ: [1, 0], jumpPressed: false, respawnPressed: false }, i / 120);
+    }
+
+    const launchSpeed = simBrake.getState().velocity[0];
+    expect(launchSpeed).toBeGreaterThan(6.0);
+
+    // Now apply full reverse backspin brake [-1, 0] on simBrake vs zero input on simCoast for 18 frames (0.15s)
+    for (let i = 0; i < 18; i++) {
+      const t = (24 + i) / 120;
+      simBrake.stepFixed(1 / 120, { moveXZ: [-1, 0], jumpPressed: false, respawnPressed: false }, t);
+      simCoast.stepFixed(1 / 120, { moveXZ: [0, 0], jumpPressed: false, respawnPressed: false }, t);
+    }
+
+    expect(simBrake.getState().velocity[0]).toBeLessThan(0.5);
+    expect(simCoast.getState().velocity[0]).toBeGreaterThan(4.5);
+  });
 });

@@ -573,7 +573,32 @@ export function buildCourseSceneTree(course: CourseSpec): SdfNode {
   if (course.scene) {
     children.push(course.scene);
   }
+
+  const smoothTrackNodes: SdfPrimitiveNode[] = [];
+  const crispFeatureNodes: SdfPrimitiveNode[] = [];
+
   for (const n of course.nodes) {
+    if (n.supportBias && n.material === 'standard' && !n.kinematic) {
+      smoothTrackNodes.push(n);
+    } else {
+      crispFeatureNodes.push(n);
+    }
+  }
+
+  if (smoothTrackNodes.length > 1) {
+    children.push({
+      id: `${course.id}-smooth-track`,
+      kind: 'smoothUnion',
+      smoothRadius: 0.14,
+      children: smoothTrackNodes,
+    });
+  } else {
+    for (const n of smoothTrackNodes) {
+      children.push(n);
+    }
+  }
+
+  for (const n of crispFeatureNodes) {
     children.push(n);
   }
   for (const h of course.hazards) {

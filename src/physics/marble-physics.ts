@@ -233,11 +233,53 @@ export function createMarbleSimulation(
     // 1. Gravity
     vy -= config.gravity * dt;
 
-    // 2. Grounded vs. Airborne forces
+    // 2. Grounded vs. Airborne forces (with Snappy Launch, Backspin Brake & Lateral Carve)
     const [inX, inZ] = input.moveXZ;
+    const inMag = Math.hypot(inX, inZ);
     if (state.contact.grounded) {
-      vx += inX * config.rollAcceleration * dt;
-      vz += inZ * config.rollAcceleration * dt;
+      const surfVx = state.contact.surfaceVelocity[0];
+      const surfVz = state.contact.surfaceVelocity[2];
+      const relVx = vx - surfVx;
+      const relVz = vz - surfVz;
+      const relSpeed = Math.hypot(relVx, relVz);
+
+      let accelX = inX * config.rollAcceleration;
+      let accelZ = inZ * config.rollAcceleration;
+
+      if (inMag > 0.01) {
+        // Snappy first-push trackball launch impulse when starting from rest or low speed
+        const launchBoost = 1.0 + 0.65 * (1.0 - Math.min(1.0, relSpeed / 5.5));
+        accelX *= launchBoost;
+        accelZ *= launchBoost;
+
+        if (relSpeed > 0.35) {
+          const velDirX = relVx / relSpeed;
+          const velDirZ = relVz / relSpeed;
+          const inDirX = inX / inMag;
+          const inDirZ = inZ / inMag;
+          const alignment = velDirX * inDirX + velDirZ * inDirZ;
+
+          // Grip factor scales with surface friction so standard/sticky grip hard while ice still slides
+          const gripFactor = Math.min(1.6, Math.max(0.22, matProps.friction / 1.85));
+
+          if (alignment < -0.1) {
+            // HARD BACKSPIN BRAKE: reverse counter-spin catches the marble at ledge lips
+            const brakeMult = 1.0 + (-alignment) * 1.45 * gripFactor;
+            accelX *= brakeMult;
+            accelZ *= brakeMult;
+          } else {
+            // LATERAL CARVE ASSIST: perpendicular steering tightens cornering lines
+            const lateralFraction = Math.sqrt(Math.max(0, 1.0 - alignment * alignment));
+            const lateralComponent = -velDirZ * inDirX + velDirX * inDirZ;
+            const carveBoost = lateralFraction * 0.45 * gripFactor * config.rollAcceleration * inMag;
+            accelX += -velDirZ * Math.sign(lateralComponent) * carveBoost;
+            accelZ += velDirX * Math.sign(lateralComponent) * carveBoost;
+          }
+        }
+      }
+
+      vx += accelX * dt;
+      vz += accelZ * dt;
 
       // Downhill slope boost
       const nx = state.contact.normal[0];
@@ -250,16 +292,14 @@ export function createMarbleSimulation(
       }
 
       // Conveyor & kinematic surface velocity coupling
-      const surfVx = state.contact.surfaceVelocity[0];
-      const surfVz = state.contact.surfaceVelocity[2];
-      const relVx = vx - surfVx;
-      const relVz = vz - surfVz;
+      const updatedRelVx = vx - surfVx;
+      const updatedRelVz = vz - surfVz;
       const damp = 1.0 / (1.0 + matProps.friction * dt);
-      vx = surfVx + relVx * damp;
-      vz = surfVz + relVz * damp;
+      vx = surfVx + updatedRelVx * damp;
+      vz = surfVz + updatedRelVz * damp;
 
       // Sleep tiny creep when no input and flat ground
-      if (Math.hypot(inX, inZ) < 0.01 && slopeMag < 0.025 && Math.hypot(vx - surfVx, vz - surfVz) < 0.12) {
+      if (inMag < 0.01 && slopeMag < 0.025 && Math.hypot(vx - surfVx, vz - surfVz) < 0.12) {
         vx = surfVx;
         vz = surfVz;
       }

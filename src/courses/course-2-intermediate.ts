@@ -158,6 +158,23 @@ export const COURSE_2_INTERMEDIATE_MADNESS: CourseSpec = {
       supportBias: true,
     },
 
+    // --- SPEEDRUN SHORTCUT: HIGH-RISK ICE-TO-WAVE SKY RAIL ---
+    // Skilled players who drift the eastern rim of the Ice Slick Plaza can thread
+    // this narrow railless conveyor sky-beam directly onto the Wave Floor, skipping the Pistons!
+    {
+      id: 'c2-speedrun-sky-rail',
+      kind: 'sweptTrack',
+      material: 'conveyor',
+      center: [0, 0, 0],
+      start: [4.8, 6.75, -18.2],
+      end: [11.8, 3.85, -24.2],
+      halfWidth: 1.15,
+      thickness: 0.65,
+      railHeight: 0.0,
+      conveyorDirection: [5.5, -1.6, -4.8],
+      supportBias: true,
+    },
+
     // --- TIER 4: SINUSOIDAL WAVE FLOOR (+X) ---
     {
       id: 'c2-wave-floor',

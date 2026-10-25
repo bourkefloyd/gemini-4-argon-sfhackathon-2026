@@ -57,7 +57,13 @@ export const COURSE_1_PRACTICE_RACE: CourseSpec = {
       id: 'banked-chute',
       label: 'Banked Downhill Chute',
       kind: 'conveyor',
-      description: 'Steep isometric chute with raised containment rails and slope boost.',
+      description: 'Fillet-smoothed CSG chute with raised containment rails and slope boost.',
+    },
+    {
+      id: 'speedrun-sky-jump',
+      label: 'Speedrun Diagonal Vault',
+      kind: 'conveyor',
+      description: 'Risk/reward diagonal boost ramp cutting across the abyss straight to the Goal Podium.',
     },
     {
       id: 'plaza-bumpers',
@@ -210,6 +216,32 @@ export const COURSE_1_PRACTICE_RACE: CourseSpec = {
       center: [26.8, 3.4, -14.2],
       halfExtents: [1.3, 2.8, 1.1],
       radius: 0.12,
+    },
+
+    // --- SPEEDRUN SHORTCUT: DIAGONAL SKY-CHUTE & BOUNCE VAULT ACROSS ABYSS ---
+    // Allows skilled players who carve hard right at the bottom of Ramp 1 to launch
+    // diagonally across the void toward the Goal Podium, bypassing the outer bridge!
+    {
+      id: 'speedrun-diagonal-chute',
+      kind: 'sweptTrack',
+      material: 'conveyor',
+      center: [0, 0, 0],
+      start: [8.4, 4.45, -19.6],
+      end: [17.8, 1.45, -29.2],
+      halfWidth: 1.35,
+      thickness: 0.75,
+      railHeight: 0.28,
+      railThickness: 0.22,
+      conveyorDirection: [5.2, -1.2, -5.2],
+      supportBias: true,
+    },
+    {
+      id: 'speedrun-kicker-pad',
+      kind: 'cylinder',
+      material: 'bounce',
+      center: [18.4, 1.05, -29.8],
+      radius: 1.15,
+      halfHeight: 0.45,
     },
 
     // --- NARROW CATWALK BRIDGE OVER THE ABYSS (-Z) ---
