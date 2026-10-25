@@ -363,6 +363,62 @@ export interface SphereCastHit {
   readonly material: SurfaceMaterial;
 }
 
+export const MAX_FIELD_MUTATIONS = 16;
+export const MAX_PORTAL_PAIRS = 2;
+
+export type FieldMutationKind =
+  | 'subtractSphere'
+  | 'unionCapsule'
+  | 'unionRamp'
+  | 'materialOverride';
+
+export const FIELD_MUTATION_KIND_CODES: Record<FieldMutationKind, number> = {
+  subtractSphere: 1,
+  unionCapsule: 2,
+  unionRamp: 3,
+  materialOverride: 4,
+};
+
+export interface FieldMutation {
+  readonly id: string;
+  readonly kind: FieldMutationKind;
+  /** Primary position: sphere center, capsule start A, or ramp center */
+  readonly posA: Vec3;
+  /** Secondary vector: capsule end B, or ramp forward/rise [dirX, rise, dirZ] */
+  readonly posB: Vec3;
+  /** Sphere/capsule radius or ramp half-length */
+  readonly radius: number;
+  /** Smooth CSG fillet radius k */
+  readonly blendK: number;
+  /** Target surface material */
+  readonly material: SurfaceMaterial;
+  /** Simulation timestamp (seconds) when spawned */
+  readonly spawnTime: number;
+  /** Time-to-live (seconds) */
+  readonly ttl: number;
+}
+
+export interface PortalPair {
+  readonly id: string;
+  readonly posA: Vec3;
+  readonly normalA: Vec3;
+  readonly upA: Vec3;
+  readonly posB: Vec3;
+  readonly normalB: Vec3;
+  readonly upB: Vec3;
+  readonly radius: number;
+  readonly activeA?: boolean;
+  readonly activeB?: boolean;
+  /** Optional exit speed multiplier (1.0 = exact 100% momentum preservation, >1.0 = fling boost) */
+  readonly flingBoost?: number;
+}
+
+export type WeaponAbilityId =
+  | 'matterBomb'
+  | 'bridgeExtruder'
+  | 'popRamp'
+  | 'cryoFreeze';
+
 export interface CpuWorldEvaluator {
   /** Evaluate signed distance, material, and surface velocity at world point `p` and simulation time `time` */
   sample(p: Vec3, time: number): SdfSample;
@@ -376,4 +432,12 @@ export interface CpuWorldEvaluator {
   sphereCast(origin: Vec3, radius: number, displacement: Vec3, time: number, maxSteps?: number): SphereCastHit;
   /** Check if the line-of-sight from `cameraPos` to `marblePos` is occluded by world geometry */
   isOccluded(cameraPos: Vec3, marblePos: Vec3, marbleRadius: number, time: number): boolean;
+  /** Update active realtime CSG field mutations (up to MAX_FIELD_MUTATIONS = 16) */
+  setFieldMutations?(mutations: readonly FieldMutation[]): void;
+  /** Read active realtime CSG field mutations */
+  getFieldMutations?(): readonly FieldMutation[];
+  /** Update active linked SDF portal pairs */
+  setPortals?(portals: readonly PortalPair[]): void;
+  /** Read active linked SDF portal pairs */
+  getPortals?(): readonly PortalPair[];
 }

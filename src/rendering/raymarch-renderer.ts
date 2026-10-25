@@ -9,9 +9,15 @@
 import {
   type CameraState,
   type CourseSpec,
+  FIELD_MUTATION_KIND_CODES,
+  type FieldMutation,
   MARBLE_VISUAL_PRESETS,
+  MATERIAL_IDS,
+  MAX_FIELD_MUTATIONS,
+  MAX_PORTAL_PAIRS,
   type MarbleLifecycleStatus,
   type MarbleState,
+  type PortalPair,
 } from '../contracts';
 import { createCpuWorldEvaluator } from '../sdf/eval-cpu';
 import { compileCourseToGlsl, compileCourseToWgsl } from './shader-compiler';
@@ -45,6 +51,8 @@ export interface RenderFrameInput {
   readonly renderOrientation: readonly [number, number, number, number];
   readonly camera: CameraState;
   readonly time: number;
+  readonly fieldMutations?: readonly FieldMutation[];
+  readonly portals?: readonly PortalPair[];
 }
 
 export interface RaymarchRenderer {
@@ -83,6 +91,17 @@ interface UniformLocations {
   uAbyssFogColor: WebGLUniformLocation | null;
   uAbyssFogDensity: WebGLUniformLocation | null;
   uSunDir: WebGLUniformLocation | null;
+  uMutationCount: WebGLUniformLocation | null;
+  uMutationsPosA: WebGLUniformLocation | null;
+  uMutationsPosB: WebGLUniformLocation | null;
+  uMutationsMeta: WebGLUniformLocation | null;
+  uPortalPairCount: WebGLUniformLocation | null;
+  uPortalPosA: WebGLUniformLocation | null;
+  uPortalNormalA: WebGLUniformLocation | null;
+  uPortalUpA: WebGLUniformLocation | null;
+  uPortalPosB: WebGLUniformLocation | null;
+  uPortalNormalB: WebGLUniformLocation | null;
+  uPortalUpB: WebGLUniformLocation | null;
 }
 
 function compileShader(gl: WebGL2RenderingContext, type: number, source: string): WebGLShader {
@@ -177,6 +196,17 @@ export function createRaymarchRenderer(
       uAbyssFogColor: u('uAbyssFogColor'),
       uAbyssFogDensity: u('uAbyssFogDensity'),
       uSunDir: u('uSunDir'),
+      uMutationCount: u('uMutationCount'),
+      uMutationsPosA: u('uMutationsPosA[0]'),
+      uMutationsPosB: u('uMutationsPosB[0]'),
+      uMutationsMeta: u('uMutationsMeta[0]'),
+      uPortalPairCount: u('uPortalPairCount'),
+      uPortalPosA: u('uPortalPosA[0]'),
+      uPortalNormalA: u('uPortalNormalA[0]'),
+      uPortalUpA: u('uPortalUpA[0]'),
+      uPortalPosB: u('uPortalPosB[0]'),
+      uPortalNormalB: u('uPortalNormalB[0]'),
+      uPortalUpB: u('uPortalUpB[0]'),
     };
   }
 
@@ -274,6 +304,85 @@ export function createRaymarchRenderer(
     gl.uniform3f(locations.uAbyssFogColor, theme.abyssFogColor[0], theme.abyssFogColor[1], theme.abyssFogColor[2]);
     gl.uniform1f(locations.uAbyssFogDensity, theme.abyssFogDensity);
     gl.uniform3f(locations.uSunDir, theme.sunDirection[0], theme.sunDirection[1], theme.sunDirection[2]);
+
+    // Upload Realtime CSG FieldMutation Ring Buffer (MAX_FIELD_MUTATIONS = 16)
+    const mutations = frame.fieldMutations ?? [];
+    const mutCount = Math.min(mutations.length, MAX_FIELD_MUTATIONS);
+    const mutPosAData = new Float32Array(MAX_FIELD_MUTATIONS * 4);
+    const mutPosBData = new Float32Array(MAX_FIELD_MUTATIONS * 4);
+    const mutMetaData = new Float32Array(MAX_FIELD_MUTATIONS * 4);
+    for (let i = 0; i < mutCount; i++) {
+      const m = mutations[i];
+      const base = i * 4;
+      mutPosAData[base + 0] = m.posA[0];
+      mutPosAData[base + 1] = m.posA[1];
+      mutPosAData[base + 2] = m.posA[2];
+      mutPosAData[base + 3] = m.radius;
+
+      mutPosBData[base + 0] = m.posB[0];
+      mutPosBData[base + 1] = m.posB[1];
+      mutPosBData[base + 2] = m.posB[2];
+      mutPosBData[base + 3] = m.blendK;
+
+      mutMetaData[base + 0] = FIELD_MUTATION_KIND_CODES[m.kind] ?? 1;
+      mutMetaData[base + 1] = MATERIAL_IDS[m.material] ?? 0;
+      mutMetaData[base + 2] = m.spawnTime;
+      mutMetaData[base + 3] = m.ttl;
+    }
+    gl.uniform1i(locations.uMutationCount, mutCount);
+    gl.uniform4fv(locations.uMutationsPosA, mutPosAData);
+    gl.uniform4fv(locations.uMutationsPosB, mutPosBData);
+    gl.uniform4fv(locations.uMutationsMeta, mutMetaData);
+
+    // Upload Non-Euclidean SDF Portal Pairs (MAX_PORTAL_PAIRS = 2)
+    const portals = frame.portals ?? course.portals ?? [];
+    const portalCount = Math.min(portals.length, MAX_PORTAL_PAIRS);
+    const portalPosAData = new Float32Array(MAX_PORTAL_PAIRS * 4);
+    const portalNormalAData = new Float32Array(MAX_PORTAL_PAIRS * 4);
+    const portalUpAData = new Float32Array(MAX_PORTAL_PAIRS * 4);
+    const portalPosBData = new Float32Array(MAX_PORTAL_PAIRS * 4);
+    const portalNormalBData = new Float32Array(MAX_PORTAL_PAIRS * 4);
+    const portalUpBData = new Float32Array(MAX_PORTAL_PAIRS * 4);
+    for (let i = 0; i < portalCount; i++) {
+      const p = portals[i];
+      const base = i * 4;
+      portalPosAData[base + 0] = p.posA[0];
+      portalPosAData[base + 1] = p.posA[1];
+      portalPosAData[base + 2] = p.posA[2];
+      portalPosAData[base + 3] = p.radius;
+
+      portalNormalAData[base + 0] = p.normalA[0];
+      portalNormalAData[base + 1] = p.normalA[1];
+      portalNormalAData[base + 2] = p.normalA[2];
+      portalNormalAData[base + 3] = (p.activeA ?? true) ? 1.0 : 0.0;
+
+      portalUpAData[base + 0] = p.upA[0];
+      portalUpAData[base + 1] = p.upA[1];
+      portalUpAData[base + 2] = p.upA[2];
+      portalUpAData[base + 3] = p.flingBoost ?? 1.0;
+
+      portalPosBData[base + 0] = p.posB[0];
+      portalPosBData[base + 1] = p.posB[1];
+      portalPosBData[base + 2] = p.posB[2];
+      portalPosBData[base + 3] = p.radius;
+
+      portalNormalBData[base + 0] = p.normalB[0];
+      portalNormalBData[base + 1] = p.normalB[1];
+      portalNormalBData[base + 2] = p.normalB[2];
+      portalNormalBData[base + 3] = (p.activeB ?? true) ? 1.0 : 0.0;
+
+      portalUpBData[base + 0] = p.upB[0];
+      portalUpBData[base + 1] = p.upB[1];
+      portalUpBData[base + 2] = p.upB[2];
+      portalUpBData[base + 3] = 0.0;
+    }
+    gl.uniform1i(locations.uPortalPairCount, portalCount);
+    gl.uniform4fv(locations.uPortalPosA, portalPosAData);
+    gl.uniform4fv(locations.uPortalNormalA, portalNormalAData);
+    gl.uniform4fv(locations.uPortalUpA, portalUpAData);
+    gl.uniform4fv(locations.uPortalPosB, portalPosBData);
+    gl.uniform4fv(locations.uPortalNormalB, portalNormalBData);
+    gl.uniform4fv(locations.uPortalUpB, portalUpBData);
 
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }

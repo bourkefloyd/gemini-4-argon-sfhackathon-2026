@@ -12,8 +12,10 @@
 import {
   type CourseSpec,
   type CpuWorldEvaluator,
+  type FieldMutation,
   type KinematicSpec,
   MATERIAL_IDS,
+  type PortalPair,
   type Quat,
   type SdfContactQuery,
   type SdfCsgNode,
@@ -24,6 +26,8 @@ import {
   type SurfaceMaterial,
   type Vec3,
 } from '../contracts';
+import { evaluatePortalThroatCarve } from '../portals';
+import { applyFieldMutationsToSample } from '../weapons';
 
 const ZERO_VEC3: Vec3 = [0, 0, 0];
 const SEAM_BIAS_EPS = 0.03;
@@ -637,13 +641,28 @@ function tetrahedralNormalFromFn(
 export function createCpuWorldEvaluator(course: CourseSpec): CpuWorldEvaluator {
   const rootTree = buildCourseSceneTree(course);
   const flatPrimitives: SdfPrimitiveNode[] = [...course.nodes, ...course.hazards];
+  let fieldMutations: readonly FieldMutation[] = [];
+  let portals: readonly PortalPair[] = course.portals ? [...course.portals] : [];
 
   function sample(p: Vec3, time: number): SdfSample {
-    return evaluateSdfTree(rootTree, p, time);
+    let s = evaluateSdfTree(rootTree, p, time);
+    if (fieldMutations.length > 0) {
+      s = applyFieldMutationsToSample(s, p, fieldMutations, time);
+    }
+    if (portals.length > 0) {
+      const dThroat = evaluatePortalThroatCarve(p, portals);
+      if (dThroat < 100 && -dThroat > s.distance) {
+        s = {
+          ...s,
+          distance: -dThroat,
+        };
+      }
+    }
+    return s;
   }
 
   function distance(p: Vec3, time: number): number {
-    return evaluateSdfTree(rootTree, p, time).distance;
+    return sample(p, time).distance;
   }
 
   /**
@@ -807,6 +826,22 @@ export function createCpuWorldEvaluator(course: CourseSpec): CpuWorldEvaluator {
     return false;
   }
 
+  function setFieldMutations(mutations: readonly FieldMutation[]) {
+    fieldMutations = mutations;
+  }
+
+  function getFieldMutations(): readonly FieldMutation[] {
+    return fieldMutations;
+  }
+
+  function setPortals(nextPortals: readonly PortalPair[]) {
+    portals = nextPortals;
+  }
+
+  function getPortals(): readonly PortalPair[] {
+    return portals;
+  }
+
   return {
     sample,
     distance,
@@ -814,5 +849,9 @@ export function createCpuWorldEvaluator(course: CourseSpec): CpuWorldEvaluator {
     queryContact,
     sphereCast,
     isOccluded,
+    setFieldMutations,
+    getFieldMutations,
+    setPortals,
+    getPortals,
   };
 }

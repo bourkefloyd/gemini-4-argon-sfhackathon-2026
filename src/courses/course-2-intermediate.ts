@@ -52,6 +52,21 @@ export const COURSE_2_INTERMEDIATE_MADNESS: CourseSpec = {
       radius: 4.5,
     },
   ],
+  portals: [
+    {
+      id: 'intermediate-acid-vault-portal',
+      posA: [-2.4, 7.55, -18.55],
+      normalA: [0.0, 0.25, 0.968],
+      upA: [0.0, 0.968, -0.25],
+      posB: [20.2, 4.65, -28.6],
+      normalB: [0.14, 0.52, -0.842],
+      upB: [0.0, 0.85, 0.52],
+      radius: 1.38,
+      activeA: true,
+      activeB: true,
+      flingBoost: 1.0,
+    },
+  ],
   hazardManifest: [
     {
       id: 'ice-slick-plaza',

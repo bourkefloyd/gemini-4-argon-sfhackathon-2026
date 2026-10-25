@@ -21,14 +21,24 @@ import type {
   CameraState,
   CameraZoomStopId,
   CourseSpec,
+  FieldMutation,
   MarbleState,
+  PortalPair,
   Vec3,
+  WeaponAbilityId,
 } from './contracts';
 import { BUILT_IN_COURSES } from './courses';
 import { createMarbleSimulation } from './physics';
+import { type PortalEnd, raycastAndPlacePortal } from './portals';
 import { createRaymarchRenderer } from './rendering';
 import { createCpuWorldEvaluator } from './sdf/eval-cpu';
 import { ArcadeHud, ArchitectHookPanel } from './ui';
+import {
+  createInitialWeaponState,
+  stepWeaponController,
+  triggerWeaponAbility,
+  type WeaponControllerState,
+} from './weapons';
 
 export interface MarblePlaytestTelemetry {
   readonly courseId: string;
@@ -52,6 +62,9 @@ export interface MarblePlaytestTelemetry {
   readonly score: number;
   readonly fps: number;
   readonly camera: CameraState;
+  readonly portals: readonly PortalPair[];
+  readonly fieldMutations: readonly FieldMutation[];
+  readonly bridgeExtruderRemainingSec: number;
 }
 
 export interface MarblePlaytestApi {
@@ -76,6 +89,15 @@ export interface MarblePlaytestApi {
   setCameraZoom: (stopIndexOrId: number | CameraZoomStopId) => CameraState;
   loadCourseSpec: (spec: CourseSpec) => MarblePlaytestTelemetry;
   getCompiledShaders: () => { glsl: string; wgsl: string; backend: string };
+  firePortal: (end: PortalEnd, aimDir?: Vec3, origin?: Vec3) => MarblePlaytestTelemetry;
+  setPortals: (portals: readonly PortalPair[]) => MarblePlaytestTelemetry;
+  getPortals: () => readonly PortalPair[];
+  triggerWeapon: (
+    ability: WeaponAbilityId,
+    options?: { targetPosition?: Vec3; radius?: number },
+  ) => MarblePlaytestTelemetry;
+  getFieldMutations: () => readonly FieldMutation[];
+  clearFieldMutations: () => MarblePlaytestTelemetry;
 }
 
 declare global {
@@ -116,6 +138,12 @@ export const App: React.FC = () => {
     vector: [0, 0],
     keyVector: [0, 0],
   });
+  const [uiPortals, setUiPortals] = useState<readonly PortalPair[]>(
+    () => currentCourse.portals ?? [],
+  );
+  const [uiWeaponState, setUiWeaponState] = useState<WeaponControllerState>(
+    createInitialWeaponState,
+  );
 
   const timeRemainingRef = useRef<number>(currentCourse.parTimeSec);
   const scoreRef = useRef<number>(0);
@@ -125,6 +153,8 @@ export const App: React.FC = () => {
   const coursesRef = useRef<readonly CourseSpec[]>(courses);
   const activeIdxRef = useRef<number>(activeCourseIndex);
   const goalAwardedRef = useRef<boolean>(false);
+  const portalsRef = useRef<readonly PortalPair[]>(currentCourse.portals ?? []);
+  const weaponStateRef = useRef<WeaponControllerState>(createInitialWeaponState());
 
   // Programmatic bot override state for `window.__MARBLE_PLAYTEST__`
   const botOverrideRef = useRef<{
@@ -144,6 +174,13 @@ export const App: React.FC = () => {
   const activateCourse = useCallback(
     (nextCourse: CourseSpec, nextIndex: number, carryOverBonusSec: number | null) => {
       const nextEval = createCpuWorldEvaluator(nextCourse);
+      const initialPortals = nextCourse.portals ? [...nextCourse.portals] : [];
+      const initialWeapons = createInitialWeaponState();
+      portalsRef.current = initialPortals;
+      weaponStateRef.current = initialWeapons;
+      nextEval.setPortals?.(initialPortals);
+      nextEval.setFieldMutations?.([]);
+
       evaluatorRef.current = nextEval;
       simRef.current.setCourse(nextCourse, nextEval);
       cameraRigRef.current.snapToCourse(nextCourse, nextCourse.startPos);
@@ -167,6 +204,8 @@ export const App: React.FC = () => {
       setTimeRemainingSec(nextTime);
       setUiMarble(simRef.current.getState());
       setUiCamera(cameraRigRef.current.getState());
+      setUiPortals(initialPortals);
+      setUiWeaponState(initialWeapons);
 
       if (carryOverBonusSec !== null) {
         setBonusBannerSec(carryOverBonusSec);
@@ -236,6 +275,95 @@ export const App: React.FC = () => {
     rendererRef.current = renderer;
     setCompiledShaders(renderer.getCompiledShaders());
 
+    const firePortalInternal = (
+      end: PortalEnd,
+      pointerNdc?: readonly [number, number],
+      explicitAimDir?: Vec3,
+      explicitOrigin?: Vec3,
+    ) => {
+      const mState = simRef.current.getState();
+      const cam = cameraRigRef.current.getState();
+      const fwdXZ = cameraRigRef.current.projectInputToWorldXZ(0, 1);
+
+      let origin: Vec3 = explicitOrigin ?? mState.position;
+      let aimDir: Vec3 =
+        explicitAimDir ??
+        (Math.hypot(mState.velocity[0], mState.velocity[2]) > 0.75
+          ? [mState.velocity[0], -0.25, mState.velocity[2]]
+          : [fwdXZ[0], -0.25, fwdXZ[1]]);
+
+      if (!explicitAimDir && !explicitOrigin && pointerNdc) {
+        const aspect = Math.max(1, window.innerWidth) / Math.max(1, window.innerHeight);
+        const tanHalfFov = Math.tan((cam.fovDeg * Math.PI) / 360);
+        const rx =
+          cam.forward[0] +
+          pointerNdc[0] * aspect * tanHalfFov * cam.right[0] +
+          pointerNdc[1] * tanHalfFov * cam.up[0];
+        const ry =
+          cam.forward[1] +
+          pointerNdc[0] * aspect * tanHalfFov * cam.right[1] +
+          pointerNdc[1] * tanHalfFov * cam.up[1];
+        const rz =
+          cam.forward[2] +
+          pointerNdc[0] * aspect * tanHalfFov * cam.right[2] +
+          pointerNdc[1] * tanHalfFov * cam.up[2];
+        origin = cam.position;
+        aimDir = [rx, ry, rz];
+      }
+
+      const existing = portalsRef.current[0] ?? {
+        id: 'player-portal-pair',
+        posA: [mState.position[0], mState.position[1], mState.position[2] - 4],
+        normalA: [0, 1, 0] as Vec3,
+        upA: [0, 0, -1] as Vec3,
+        posB: [mState.position[0] + 6, mState.position[1], mState.position[2] - 10],
+        normalB: [0, 1, 0] as Vec3,
+        upB: [0, 0, -1] as Vec3,
+        radius: 1.38,
+        activeA: true,
+        activeB: true,
+        flingBoost: 1.0,
+      };
+
+      const placed = raycastAndPlacePortal(
+        end,
+        existing,
+        origin,
+        aimDir,
+        evaluatorRef.current,
+        simTimeRef.current,
+      );
+      const nextPortals: readonly PortalPair[] = [
+        placed.pair,
+        ...portalsRef.current.slice(1),
+      ];
+      portalsRef.current = nextPortals;
+      evaluatorRef.current.setPortals?.(nextPortals);
+      setUiPortals(nextPortals);
+    };
+
+    const triggerWeaponInternal = (
+      ability: WeaponAbilityId,
+      options?: { targetPosition?: Vec3; radius?: number },
+    ) => {
+      const mState = simRef.current.getState();
+      const fwdXZ = cameraRigRef.current.projectInputToWorldXZ(0, 1);
+      const aimForward: Vec3 = [fwdXZ[0], 0, fwdXZ[1]];
+      const result = triggerWeaponAbility(
+        ability,
+        weaponStateRef.current,
+        mState,
+        aimForward,
+        simTimeRef.current,
+        options,
+      );
+      weaponStateRef.current = result.weaponState;
+      evaluatorRef.current.setFieldMutations?.(result.weaponState.mutations);
+      simRef.current.setState(result.marbleState);
+      setUiWeaponState(result.weaponState);
+      setUiMarble(result.marbleState);
+    };
+
     const inputCtrl = createArcadeInputController(window, {
       onSelectCourse: (idx) => handleSelectCourse(idx),
       onCycleCameraZoom: () => {
@@ -252,6 +380,12 @@ export const App: React.FC = () => {
       },
       onToggleArchitectPanel: () => {
         setArchitectOpen((prev) => !prev);
+      },
+      onFirePortal: (end, pointerNdc) => {
+        firePortalInternal(end, pointerNdc);
+      },
+      onTriggerWeapon: (ability) => {
+        triggerWeaponInternal(ability);
       },
     });
 
@@ -292,6 +426,9 @@ export const App: React.FC = () => {
         score: scoreRef.current,
         fps: Math.round(fpsRef.current),
         camera,
+        portals: portalsRef.current,
+        fieldMutations: weaponStateRef.current.mutations,
+        bridgeExtruderRemainingSec: weaponStateRef.current.bridgeExtruderRemainingSec,
       };
     };
 
@@ -333,8 +470,26 @@ export const App: React.FC = () => {
         const count = Math.max(1, Math.min(2400, Math.floor(frames)));
         const dt = 1 / 120;
         const moveXZ: readonly [number, number] = worldInputXZ ?? [0, 0];
+        const fwdXZ = cameraRigRef.current.projectInputToWorldXZ(0, 1);
+        const aimForward: Vec3 = [
+          moveXZ[0] || fwdXZ[0],
+          0,
+          moveXZ[1] || fwdXZ[1],
+        ];
         for (let i = 0; i < count; i++) {
           simTimeRef.current += dt;
+          if (weaponStateRef.current.bridgeExtruderRemainingSec > 0) {
+            const wStep = stepWeaponController(
+              weaponStateRef.current,
+              simRef.current.getState(),
+              aimForward,
+              dt,
+              simTimeRef.current,
+            );
+            weaponStateRef.current = wStep.weaponState;
+            evaluatorRef.current.setFieldMutations?.(wStep.weaponState.mutations);
+            simRef.current.setState(wStep.marbleState);
+          }
           const mState = simRef.current.stepFixed(
             dt,
             {
@@ -364,9 +519,13 @@ export const App: React.FC = () => {
           renderOrientation: mState.orientation,
           camera: camState,
           time: simTimeRef.current,
+          fieldMutations: weaponStateRef.current.mutations,
+          portals: portalsRef.current,
         });
         setUiMarble(mState);
         setUiCamera(camState);
+        setUiPortals(portalsRef.current);
+        setUiWeaponState(weaponStateRef.current);
         setTimeRemainingSec(timeRemainingRef.current);
         return buildTelemetrySnapshot();
       },
@@ -399,6 +558,28 @@ export const App: React.FC = () => {
         return buildTelemetrySnapshot();
       },
       getCompiledShaders: () => renderer.getCompiledShaders(),
+      firePortal: (end, aimDir, origin) => {
+        firePortalInternal(end, undefined, aimDir, origin);
+        return buildTelemetrySnapshot();
+      },
+      setPortals: (nextPortals) => {
+        portalsRef.current = [...nextPortals];
+        evaluatorRef.current.setPortals?.(portalsRef.current);
+        setUiPortals(portalsRef.current);
+        return buildTelemetrySnapshot();
+      },
+      getPortals: () => portalsRef.current,
+      triggerWeapon: (ability, options) => {
+        triggerWeaponInternal(ability, options);
+        return buildTelemetrySnapshot();
+      },
+      getFieldMutations: () => weaponStateRef.current.mutations,
+      clearFieldMutations: () => {
+        weaponStateRef.current = createInitialWeaponState();
+        evaluatorRef.current.setFieldMutations?.([]);
+        setUiWeaponState(weaponStateRef.current);
+        return buildTelemetrySnapshot();
+      },
     };
 
     window.__MARBLE_PLAYTEST__ = playtestApi;
@@ -437,6 +618,20 @@ export const App: React.FC = () => {
           effectiveJump = true;
           botOverrideRef.current.jumpQueued = false;
         }
+      }
+
+      if (weaponStateRef.current.bridgeExtruderRemainingSec > 0) {
+        const fwdXZ = cameraRigRef.current.projectInputToWorldXZ(0, 1);
+        const wStep = stepWeaponController(
+          weaponStateRef.current,
+          simRef.current.getState(),
+          [effectiveMoveXZ[0] || fwdXZ[0], 0, effectiveMoveXZ[1] || fwdXZ[1]],
+          rawDt,
+          simTimeRef.current,
+        );
+        weaponStateRef.current = wStep.weaponState;
+        evaluatorRef.current.setFieldMutations?.(wStep.weaponState.mutations);
+        simRef.current.setState(wStep.marbleState);
       }
 
       const { state: marbleState, renderPosition, renderOrientation } = simRef.current.update(
@@ -483,6 +678,8 @@ export const App: React.FC = () => {
         renderOrientation,
         camera: camState,
         time: simTimeRef.current,
+        fieldMutations: weaponStateRef.current.mutations,
+        portals: portalsRef.current,
       });
 
       uiSyncAccumulator += rawDt;
@@ -494,6 +691,8 @@ export const App: React.FC = () => {
         setScore(scoreRef.current);
         setFps(fpsRef.current);
         setTrackball(sampled.telemetry);
+        setUiPortals(portalsRef.current);
+        setUiWeaponState(weaponStateRef.current);
       }
 
       rafId = window.requestAnimationFrame(tick);
@@ -528,6 +727,10 @@ export const App: React.FC = () => {
         fps={fps}
         trackball={trackball}
         architectOpen={architectOpen}
+        portals={uiPortals}
+        fieldMutations={uiWeaponState.mutations}
+        bridgeExtruderRemainingSec={uiWeaponState.bridgeExtruderRemainingSec}
+        lastActivatedAbility={uiWeaponState.lastActivatedAbility}
         onSelectCourse={handleSelectCourse}
         onCycleCameraZoom={() => {
           cameraRigRef.current.cycleZoomStop();
@@ -540,6 +743,12 @@ export const App: React.FC = () => {
         }}
         onNextCourseWithBonus={handleNextCourseWithBonus}
         onToggleArchitect={() => setArchitectOpen((prev) => !prev)}
+        onFirePortal={(end) => {
+          window.__MARBLE_PLAYTEST__?.firePortal(end);
+        }}
+        onTriggerWeapon={(ability) => {
+          window.__MARBLE_PLAYTEST__?.triggerWeapon(ability);
+        }}
       />
 
       <ArchitectHookPanel

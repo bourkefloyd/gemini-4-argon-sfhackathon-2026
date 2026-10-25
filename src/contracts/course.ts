@@ -6,7 +6,7 @@
  * rendering or physics engine internals.
  */
 
-import type { SdfNode, SdfPrimitiveNode, Vec3 } from './sdf';
+import type { PortalPair, SdfNode, SdfPrimitiveNode, Vec3 } from './sdf';
 
 export interface CourseThemePalette {
   readonly name: string;
@@ -87,4 +87,6 @@ export interface CourseSpec {
   readonly hazardManifest: readonly CourseHazardSummary[];
   /** Optional intermediate respawn checkpoints */
   readonly checkpoints?: readonly CourseCheckpoint[];
+  /** Optional linked Blue & Orange non-Euclidean SDF portal pairs */
+  readonly portals?: readonly PortalPair[];
 }

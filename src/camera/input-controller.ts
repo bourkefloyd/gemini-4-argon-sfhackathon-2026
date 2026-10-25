@@ -13,6 +13,8 @@
  *   - `1` / `2` / `3`: Switch playable courses immediately
  */
 
+import type { WeaponAbilityId } from '../contracts';
+
 export interface TrackballUiTelemetry {
   readonly active: boolean;
   readonly vector: readonly [number, number];
@@ -26,6 +28,8 @@ export interface ArcadeInputCallbacks {
   onRespawn?: () => void;
   onOrbitCameraYaw?: (deltaDeg: number) => void;
   onToggleArchitectPanel?: () => void;
+  onFirePortal?: (end: 'blue' | 'orange', pointerNdc?: readonly [number, number]) => void;
+  onTriggerWeapon?: (ability: WeaponAbilityId) => void;
 }
 
 export interface ArcadeInputController {
@@ -50,10 +54,18 @@ export function createArcadeInputController(
   // Virtual trackball pointer state
   let pointerDragging = false;
   let orbitDragging = false;
+  let rightClickDownPos: [number, number] | null = null;
   let pointerOrigin: [number, number] = [0, 0];
   let pointerCurrent: [number, number] = [0, 0];
+  let lastPointerNdc: [number, number] | undefined = undefined;
   let smoothedRight = 0;
   let smoothedUp = 0;
+
+  function computeNdc(clientX: number, clientY: number): [number, number] {
+    const w = Math.max(1, window.innerWidth);
+    const h = Math.max(1, window.innerHeight);
+    return [(clientX / w) * 2 - 1, 1 - (clientY / h) * 2];
+  }
 
   function isTypingInInput(ev: Event): boolean {
     const el = ev.target as HTMLElement | null;
@@ -65,6 +77,7 @@ export function createArcadeInputController(
   function onKeyDown(ev: KeyboardEvent) {
     if (isTypingInInput(ev)) return;
     const code = ev.code;
+    const isRepeat = keysDown.has(code);
     keysDown.add(code);
 
     if (code === 'Space') {
@@ -79,6 +92,18 @@ export function createArcadeInputController(
       callbacks.onCycleMarblePreset?.();
     } else if (code === 'KeyG') {
       callbacks.onToggleArchitectPanel?.();
+    } else if (code === 'KeyQ' && !isRepeat) {
+      callbacks.onFirePortal?.('blue', lastPointerNdc);
+    } else if (code === 'KeyE' && !isRepeat) {
+      callbacks.onFirePortal?.('orange', lastPointerNdc);
+    } else if (code === 'KeyF' && !isRepeat) {
+      callbacks.onTriggerWeapon?.('matterBomb');
+    } else if (code === 'KeyV' && !isRepeat) {
+      callbacks.onTriggerWeapon?.('bridgeExtruder');
+    } else if (code === 'KeyB' && !isRepeat) {
+      callbacks.onTriggerWeapon?.('popRamp');
+    } else if (code === 'KeyN' && !isRepeat) {
+      callbacks.onTriggerWeapon?.('cryoFreeze');
     } else if (code === 'Digit1') {
       callbacks.onSelectCourse?.(0);
     } else if (code === 'Digit2') {
@@ -98,7 +123,11 @@ export function createArcadeInputController(
     if (target && target.closest('[data-hud-interactive="true"]')) {
       return;
     }
-    if (ev.button === 2 || ev.shiftKey) {
+    lastPointerNdc = computeNdc(ev.clientX, ev.clientY);
+    if (ev.button === 2) {
+      rightClickDownPos = [ev.clientX, ev.clientY];
+      orbitDragging = true;
+    } else if (ev.shiftKey) {
       orbitDragging = true;
     } else {
       pointerDragging = true;
@@ -108,6 +137,7 @@ export function createArcadeInputController(
   }
 
   function onPointerMove(ev: PointerEvent) {
+    lastPointerNdc = computeNdc(ev.clientX, ev.clientY);
     if (!pointerDragging && !orbitDragging) return;
     if (orbitDragging) {
       const dx = ev.clientX - pointerCurrent[0];
@@ -116,7 +146,14 @@ export function createArcadeInputController(
     pointerCurrent = [ev.clientX, ev.clientY];
   }
 
-  function onPointerUp() {
+  function onPointerUp(ev: PointerEvent) {
+    if (rightClickDownPos) {
+      const moved = Math.hypot(ev.clientX - rightClickDownPos[0], ev.clientY - rightClickDownPos[1]);
+      if (moved < 8) {
+        callbacks.onFirePortal?.('orange', computeNdc(ev.clientX, ev.clientY));
+      }
+      rightClickDownPos = null;
+    }
     pointerDragging = false;
     orbitDragging = false;
   }
@@ -143,11 +180,11 @@ export function createArcadeInputController(
   ) {
     const safeDt = Math.min(Math.max(dt, 0.001), 0.1);
 
-    // Camera yaw orbit via Q/E
-    if (keysDown.has('KeyQ')) {
+    // Camera yaw orbit via [ / ]
+    if (keysDown.has('BracketLeft')) {
       callbacks.onOrbitCameraYaw?.(-65 * safeDt);
     }
-    if (keysDown.has('KeyE')) {
+    if (keysDown.has('BracketRight')) {
       callbacks.onOrbitCameraYaw?.(65 * safeDt);
     }
 

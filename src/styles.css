@@ -390,6 +390,44 @@ body,
   gap: 6px;
 }
 
+.hud-weapons-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.hud-portal-status-badges {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.hud-badge-portal-blue {
+  background: rgba(24, 156, 255, 0.22);
+  color: #6bd4ff;
+  border: 1px solid rgba(56, 188, 255, 0.55);
+}
+
+.hud-weapons-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.hud-btn-portal-blue {
+  background: rgba(12, 92, 188, 0.45);
+  border-color: #3bb8ff;
+  color: #b8ecff;
+}
+
+.hud-btn-portal-orange {
+  background: rgba(188, 78, 12, 0.45);
+  border-color: #ff8c2b;
+  color: #ffe0bd;
+}
+
 .hud-hazard-chips {
   display: flex;
   flex-wrap: wrap;

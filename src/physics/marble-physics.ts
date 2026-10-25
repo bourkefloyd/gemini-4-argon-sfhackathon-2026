@@ -36,6 +36,7 @@ import {
   vec3Scale,
   vec3Sub,
 } from '../sdf/eval-cpu';
+import { stepPortalCrossing } from '../portals';
 
 export function createInitialMarbleState(
   course: CourseSpec,
@@ -73,6 +74,9 @@ export function createInitialMarbleState(
     coyoteTimer: config.coyoteTime,
     jumpBufferTimer: 0,
     jumpCooldown: 0,
+    portalCooldown: 0,
+    portalCrossings: 0,
+    lastPortalExitSpeed: 0,
     respawnPos: [...course.startPos],
     marblePresetIndex: presetIndex,
   };
@@ -344,6 +348,35 @@ export function createMarbleSimulation(
       nextPos = vec3Add(state.position, displacement);
     }
 
+    // 5.5 Non-Euclidean SDF Portal Crossing Check ("Speedy marble goes in, speedy marble comes out")
+    const activePortals = evaluator.getPortals?.() ?? course.portals ?? [];
+    let portalCooldown = Math.max(0, (state.portalCooldown ?? 0) - dt);
+    if (activePortals.length > 0) {
+      const portalCandidate: MarbleState = {
+        ...state,
+        position: nextPos,
+        velocity: nextVel,
+      };
+      const portalResult = stepPortalCrossing(
+        prevPosition,
+        portalCandidate,
+        activePortals,
+        dt,
+      );
+      if (portalResult.crossed) {
+        state = {
+          ...portalResult.state,
+          coyoteTimer: 0,
+          jumpBufferTimer,
+          jumpCooldown,
+          respawnPos,
+        };
+        return state;
+      }
+      nextVel = portalResult.state.velocity;
+      portalCooldown = portalResult.state.portalCooldown ?? 0;
+    }
+
     // 6. 5-Iteration SDF Collision & Depenetration Solver
     let contactGrounded = false;
     let wallContact = false;
@@ -508,6 +541,9 @@ export function createMarbleSimulation(
       coyoteTimer,
       jumpBufferTimer,
       jumpCooldown,
+      portalCooldown,
+      portalCrossings: state.portalCrossings ?? 0,
+      lastPortalExitSpeed: state.lastPortalExitSpeed ?? 0,
       respawnPos,
       marblePresetIndex: state.marblePresetIndex,
     };
