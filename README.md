@@ -1,10 +1,36 @@
 # Gemini 4 Argon SF Hackathon — team guide
 
-Practical notes for a team hacking at this event. Every fact below comes from the [official details page](https://cerebralvalley.ai/e/gemini-4-argon-sf/details) as fetched on 2026-10-25. Anything that page does not state is listed under [What the page does not say](#what-the-page-does-not-say). Do not treat those gaps as rules.
+Practical notes for a team hacking at this event. Event facts come from the [official details page](https://cerebralvalley.ai/e/gemini-4-argon-sf/details) as fetched on 2026-10-25. Anything that page does not state is listed under [What the page does not say](#what-the-page-does-not-say). Do not treat those gaps as rules.
+
+The [project section](#the-hack-project-intent) is Bourke’s concept for this repo. It is not an event rule. Sentences there that are not on the event page, and not taken from the inspiration repo, are marked as project intent.
 
 **Source:** https://cerebralvalley.ai/e/gemini-4-argon-sf/details  
 **Canonical event page:** https://cerebralvalley.ai/e/gemini-4-argon-sf  
 **Markdown alternate linked from the details page:** https://cerebralvalley.ai/e/gemini-4-argon-sf.md
+
+## The hack (project intent)
+
+**Build a remake of Marble Madness using signed distance fields (SDFs).** That choice is this project’s intent. The event page does not name Marble Madness, SDFs, or this repo.
+
+A marble-on-a-course game is a ball moving through one continuous solid: banks, gaps, tubes, rails. An SDF is a function from a point to the signed distance to that solid. **Project intent:** use that one description for both the picture and the motion. Raymarch the field to draw the course. Use the distance, and the gradient as a surface normal, to keep the marble from sinking through it. The level can stay a spec plus a shader-sized function instead of a mesh plus a separate collider. That is why an SDF fits this game. None of that rationale is stated on the event page, and it was not read out of the inspiration repo.
+
+### Hard-problem bet
+
+**Project intent:** spend the hack on two hard Gemini 4 Argon problems: a context on the order of a **million tokens**, and **parallel agents**. The event page names Gemini 4 Argon and a “Best use of Managed Agents” prize. It does not define million-token context, parallel agents, or Managed Agents, and it does not say this split counts for that prize.
+
+Working agreement for the team, not a design spec:
+
+- Hold the **course, the shaders, and the level spec in one context**, so a change to the course is visible to the code that draws it and the code that moves the marble.
+- Split ownership across agents: **level, physics, camera, and rules**. One agent per surface. They meet in that shared context.
+- Keep each agent’s job to that surface. Do not grow this into an engine outline during the hack.
+
+### Inspiration repo
+
+Inspiration only: https://github.com/bourkefloyd/gamex
+
+Do not vendor it and do not paste its source into this repo. None of its files are included here.
+
+Checked on 2026-10-25 from this environment: the GitHub page, the API, and `raw.githubusercontent.com` paths for `README.md` and `LICENSE` on `main` and `master` all returned **404**. The public repo list for `bourkefloyd` did not include `gamex`. So this guide cannot say what the repo renders, how it does physics, whether it uses SDFs, how the tree is laid out, or what the **license** is. Do not assume a license. Until the repo is readable, there is no specific file or technique in it to copy a pattern from. If it becomes readable, use it to see how a game is factored, then write this project fresh under that repo’s license.
 
 ## What it is
 
@@ -52,6 +78,8 @@ Constraints the page does state:
 - **Maximum team size is four.**
 - Space is limited. **All attendees must apply and be approved.** An application does not guarantee a spot.
 - The event is fully in person in San Francisco.
+
+This repo’s answer to that brief is the [Marble Madness SDF remake](#the-hack-project-intent). That answer is project intent, not a requirement from the page.
 
 ## Gemini stack and official resources
 
