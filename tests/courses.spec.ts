@@ -15,6 +15,7 @@ import {
   COURSE_5_SILLY_RACE,
   COURSE_6_ULTIMATE_ARGON_CORE,
 } from '../src/courses';
+import { runHeadlessBotRollout } from '../src/bot';
 import { createMarbleSimulation } from '../src/physics';
 import { compileCourseToGlsl, compileCourseToWgsl } from '../src/rendering';
 import { createCpuWorldEvaluator } from '../src/sdf/eval-cpu';
@@ -438,5 +439,22 @@ describe('Classic 6-Course Campaign — SDF Integrity, Shaders & 120 Hz Physical
     );
     expect(run6IceSplit.reachedGoal).toBe(true);
     expect(run6IceSplit.finalState.status).toBe('goal');
+  });
+
+  it('reaches status === "goal" on all 6 campaign courses in both tourist and speedrunner bot rollouts (12/12 passing)', () => {
+    for (const course of BUILT_IN_COURSES) {
+      for (const style of ['tourist', 'speedrunner'] as const) {
+        const rollout = runHeadlessBotRollout(course, {
+          style,
+          maxDurationSec: course.parTimeSec,
+          seed: 2026,
+        });
+        expect(
+          rollout.summary.reachedGoal,
+          `Course ${course.index} (${course.id}) [${style}] should reach goal (outcome: ${rollout.summary.outcome})`,
+        ).toBe(true);
+        expect(rollout.finalState.status).toBe('goal');
+      }
+    }
   });
 });

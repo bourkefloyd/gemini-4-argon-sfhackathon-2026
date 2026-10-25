@@ -197,7 +197,7 @@ export const COURSE_2_BEGINNER_CHUTES: CourseSpec = {
       kind: 'roundedBox',
       material: 'standard',
       center: [-1.5, 5.0, -26.0],
-      halfExtents: [1.85, 0.6, 3.4],
+      halfExtents: [2.15, 0.6, 3.4],
       radius: 0.1,
       supportBias: true,
     },

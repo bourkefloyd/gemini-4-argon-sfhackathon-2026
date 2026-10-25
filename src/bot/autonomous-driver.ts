@@ -409,6 +409,179 @@ export function buildCourseWaypoints(
     return finalizeWaypointChain(raw, style);
   }
 
+  if (course.id === 'beginner-chutes') {
+    const isSpeedrun = style === 'speedrunner';
+    const raw: RawWaypointNode[] = isSpeedrun
+      ? [
+          {
+            id: 'c2b-wp-turbo-entry',
+            label: 'East Narrow Turbo Chute Entry',
+            position: [2.8, 10.0, -3.5],
+            captureRadius: 1.8,
+            targetSpeed: 13.5,
+            routeKind: 'shortcut',
+          },
+          {
+            id: 'c2b-wp-turbo-exit',
+            label: 'East Turbo Chute Exit',
+            position: [2.8, 5.6, -16.8],
+            captureRadius: 2.2,
+            targetSpeed: 14.5,
+            routeKind: 'shortcut',
+          },
+          {
+            id: 'c2b-wp-confluence',
+            label: 'Chute Confluence Plaza',
+            position: [-1.2, 5.6, -19.6],
+            captureRadius: 2.2,
+            targetSpeed: 11.5,
+          },
+          {
+            id: 'c2b-wp-bridge-spine',
+            label: 'West Bridge Spine',
+            position: [-1.5, 5.6, -26.0],
+            captureRadius: 2.0,
+            targetSpeed: 13.0,
+          },
+          {
+            id: 'c2b-wp-wave-approach',
+            label: 'Wave Floor Approach',
+            position: [0, 5.6, -31.2],
+            captureRadius: 2.2,
+            targetSpeed: 13.5,
+          },
+          {
+            id: 'c2b-wp-wave-floor',
+            label: 'Gentle Wave Floor',
+            position: [0, 5.6, -38.0],
+            captureRadius: 2.2,
+            targetSpeed: 14.0,
+          },
+          {
+            id: 'c2b-wp-goal',
+            label: 'Beginner Chutes Goal Pad',
+            position: [...course.goalPos],
+            captureRadius: course.goalRadius,
+            targetSpeed: 14.0,
+          },
+        ]
+      : [
+          {
+            id: 'c2b-wp-safe-entry',
+            label: 'West Safe Guarded Chute Entry',
+            position: [-2.4, 10.0, -3.5],
+            captureRadius: 1.8,
+            targetSpeed: 9.5,
+          },
+          {
+            id: 'c2b-wp-safe-exit',
+            label: 'West Safe Chute Exit',
+            position: [-2.4, 5.6, -16.8],
+            captureRadius: 2.2,
+            targetSpeed: 9.5,
+          },
+          {
+            id: 'c2b-wp-confluence',
+            label: 'Chute Confluence Plaza',
+            position: [-1.5, 5.6, -19.6],
+            captureRadius: 2.2,
+            targetSpeed: 8.8,
+          },
+          {
+            id: 'c2b-wp-bridge-spine',
+            label: 'West Bridge Spine',
+            position: [-1.5, 5.6, -26.0],
+            captureRadius: 2.0,
+            targetSpeed: 9.2,
+          },
+          {
+            id: 'c2b-wp-wave-approach',
+            label: 'Wave Floor Approach',
+            position: [0, 5.6, -31.2],
+            captureRadius: 2.2,
+            targetSpeed: 9.5,
+          },
+          {
+            id: 'c2b-wp-wave-floor',
+            label: 'Gentle Wave Floor',
+            position: [0, 5.6, -38.0],
+            captureRadius: 2.2,
+            targetSpeed: 9.5,
+          },
+          {
+            id: 'c2b-wp-goal',
+            label: 'Beginner Chutes Goal Pad',
+            position: [...course.goalPos],
+            captureRadius: course.goalRadius,
+            targetSpeed: 10.5,
+          },
+        ];
+    return finalizeWaypointChain(raw, style);
+  }
+
+  if (course.id === 'aerial-catwalks') {
+    const isSpeedrun = style === 'speedrunner';
+    const raw: RawWaypointNode[] = [
+      {
+        id: 'c4-wp-drop-entry',
+        label: 'Aerial Drop Ramp Entry',
+        position: [0, 14.0, -3.0],
+        captureRadius: 1.8,
+        targetSpeed: isSpeedrun ? 13.5 : 10.0,
+      },
+      {
+        id: 'c4-wp-ridge-mid',
+        label: 'Suspended Narrow Ridge',
+        position: [0, 10.0, -14.0],
+        captureRadius: 1.8,
+        targetSpeed: isSpeedrun ? 14.5 : 10.5,
+      },
+      {
+        id: 'c4-wp-island-1',
+        label: 'Sky Island 1 Hub',
+        position: [0.4, 10.0, -25.2],
+        captureRadius: 2.2,
+        targetSpeed: isSpeedrun ? 11.5 : 8.2,
+      },
+      {
+        id: 'c4-wp-conveyor-entry',
+        label: 'Conveyor Sky Accelerator Entry',
+        position: [1.2, 10.0, -28.0],
+        captureRadius: 1.8,
+        targetSpeed: isSpeedrun ? 12.5 : 9.0,
+      },
+      {
+        id: 'c4-wp-conveyor-exit',
+        label: 'Sky Island 2 Landing Brake',
+        position: [1.5, 6.8, -38.2],
+        captureRadius: 2.2,
+        targetSpeed: isSpeedrun ? 8.5 : 6.2,
+      },
+      {
+        id: 'c4-wp-island-2-turn',
+        label: 'Lower Catwalk Junction Turn',
+        position: [6.2, 6.8, style === 'tourist' ? -39.8 : -38.6],
+        captureRadius: 2.2,
+        targetSpeed: isSpeedrun ? 12.0 : 8.5,
+      },
+      {
+        id: 'c4-wp-final-catwalk',
+        label: 'Final Suspended Catwalk Ridge',
+        position: [11.6, 5.2, style === 'tourist' ? -39.8 : -38.6],
+        captureRadius: 2.2,
+        targetSpeed: isSpeedrun ? 14.5 : 10.2,
+      },
+      {
+        id: 'c4-wp-goal',
+        label: 'Aerial Catwalks Goal Spire',
+        position: [...course.goalPos],
+        captureRadius: course.goalRadius,
+        targetSpeed: isSpeedrun ? 14.0 : 10.5,
+      },
+    ];
+    return finalizeWaypointChain(raw, style);
+  }
+
   if (course.id === 'intermediate-madness') {
     const raw: RawWaypointNode[] = [
       {
@@ -682,16 +855,30 @@ export function createAutonomousDriver(
         pos[0] - activeWp.position[0],
         pos[2] - activeWp.position[2],
       );
-      if (distActive > 18.0) {
+      if (distActive > 9.0) {
         const nearestIdx = findNearestWaypointIndex(pos);
         const nearestWp = waypoints[nearestIdx];
         const distNearest = Math.hypot(
           pos[0] - nearestWp.position[0],
           pos[2] - nearestWp.position[2],
         );
-        if (nearestIdx > activeWaypointIndex && distNearest < 3.6) {
+        if (nearestIdx > activeWaypointIndex && distNearest < 5.5) {
           activeWaypointIndex = nearestIdx;
         }
+      }
+    }
+
+    // Advance if marble bypassed activeWaypoint (e.g. via portal fling or jump) and landed near a subsequent waypoint
+    while (activeWaypointIndex < waypoints.length - 1) {
+      const curWp = waypoints[activeWaypointIndex];
+      const nextWp = waypoints[activeWaypointIndex + 1];
+      const dCur = Math.hypot(pos[0] - curWp.position[0], pos[2] - curWp.position[2]);
+      const dNext = Math.hypot(pos[0] - nextWp.position[0], pos[2] - nextWp.position[2]);
+      const dNextY = Math.abs(pos[1] - nextWp.position[1]);
+      if (dNext < dCur && dNext < 4.8 && dNextY <= 2.5) {
+        activeWaypointIndex++;
+      } else {
+        break;
       }
     }
 
