@@ -97,12 +97,107 @@ describe('QR Party Multiplayer Module — QR SVG, In-Memory Room, Tunnel & Bumpe
     expect(parsed.publicTunnelOverride).toBe('https://shack15.trycloudflare.com');
   });
 
+  it('automatically overflows players into ARGON-1, ARGON-2, ARGON-3 when reaching maxMarblesPerRoom (default 4)', () => {
+    const room = createPartyRoomEngine({
+      roomCode: 'ARGON',
+      lanIp: '192.168.1.50',
+      port: 5173,
+      // Default maxMarblesPerRoom is 4 (for a 2x2 split-screen room grid)
+    });
+
+    expect(room.getSnapshot().maxMarblesPerRoom).toBe(4);
+
+    // Join 10 players scanning the master QR code (?party=1&room=ARGON or room=AUTO)
+    const joinResults = [];
+    for (let i = 1; i <= 10; i++) {
+      const res = room.joinPlayer({
+        roomCode: i % 2 === 0 ? 'AUTO' : 'ARGON',
+        playerId: `overflow_p_${i}`,
+        handle: `racer_${i}`,
+      });
+      joinResults.push(res);
+    }
+
+    // Players 1..4 fill ARGON-1
+    for (let i = 0; i < 4; i++) {
+      expect(joinResults[i].roomId).toBe('ARGON-1');
+      expect(joinResults[i].roomIndex).toBe(1);
+      expect(joinResults[i].roomPlayerCount).toBe(i + 1);
+      expect(joinResults[i].maxMarblesPerRoom).toBe(4);
+      expect(joinResults[i].autoOverflowed).toBe(false);
+    }
+
+    // Players 5..8 automatically overflow into ARGON-2
+    for (let i = 4; i < 8; i++) {
+      expect(joinResults[i].roomId).toBe('ARGON-2');
+      expect(joinResults[i].roomIndex).toBe(2);
+      expect(joinResults[i].roomPlayerCount).toBe(i - 4 + 1);
+      expect(joinResults[i].maxMarblesPerRoom).toBe(4);
+      expect(joinResults[i].autoOverflowed).toBe(true);
+    }
+
+    // Players 9..10 automatically overflow into ARGON-3
+    for (let i = 8; i < 10; i++) {
+      expect(joinResults[i].roomId).toBe('ARGON-3');
+      expect(joinResults[i].roomIndex).toBe(3);
+      expect(joinResults[i].roomPlayerCount).toBe(i - 8 + 1);
+      expect(joinResults[i].maxMarblesPerRoom).toBe(4);
+      expect(joinResults[i].autoOverflowed).toBe(true);
+    }
+
+    const lastJoin = joinResults[9];
+    expect(lastJoin.allRoomsSummary).toEqual([
+      {
+        roomId: 'ARGON-1',
+        roomIndex: 1,
+        playerCount: 4,
+        maxPlayers: 4,
+        isFull: true,
+        leaderName: 'racer_1',
+      },
+      {
+        roomId: 'ARGON-2',
+        roomIndex: 2,
+        playerCount: 4,
+        maxPlayers: 4,
+        isFull: true,
+        leaderName: 'racer_5',
+      },
+      {
+        roomId: 'ARGON-3',
+        roomIndex: 3,
+        playerCount: 2,
+        maxPlayers: 4,
+        isFull: false,
+        leaderName: 'racer_9',
+      },
+    ]);
+
+    // Host can switch the active Stage room between ARGON-1, ARGON-2, and ARGON-3
+    const snapRoom2 = room.setActiveRoom('ARGON-2');
+    expect(snapRoom2.roomId).toBe('ARGON-2');
+    expect(snapRoom2.roomIndex).toBe(2);
+    expect(snapRoom2.roomPlayerCount).toBe(4);
+    expect(snapRoom2.roomPlayers.map((p) => p.handle)).toEqual([
+      'racer_5',
+      'racer_6',
+      'racer_7',
+      'racer_8',
+    ]);
+
+    // Reconfiguring maxMarblesPerRoom to 6 (clamped 4..8) updates room capacity dynamically
+    const snapCap6 = room.setMaxMarblesPerRoom(6);
+    expect(snapCap6.maxMarblesPerRoom).toBe(6);
+  });
+
   it('manages 8 Arena Racers, unlimited Crowd Architects, 4s CSG cooldowns, Argon twists, and 6-Phone Simulation', () => {
     let clockMs = 10_000;
     const room = createPartyRoomEngine({
       roomCode: 'ARGON',
       lanIp: '192.168.1.50',
       port: 5173,
+      maxMarblesPerRoom: 8,
+      autoOverflow: false,
       now: () => clockMs,
     });
 
@@ -141,7 +236,8 @@ describe('QR Party Multiplayer Module — QR SVG, In-Memory Room, Tunnel & Bumpe
     });
     expect(bridgeRes.ok).toBe(true);
     expect(bridgeRes.mutation?.kind).toBe('rescueBridge');
-    expect(bridgeRes.toast?.text).toContain('@player_9 extruded a Rescue Bridge!');
+    expect(bridgeRes.toast?.text).toContain('@player_9');
+    expect(bridgeRes.toast?.text).toContain('extruded a Rescue Bridge!');
 
     // Immediate second click within 4.0s cooldown is rejected with remaining time
     clockMs += 1500;

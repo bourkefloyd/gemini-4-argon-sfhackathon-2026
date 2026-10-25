@@ -413,7 +413,8 @@ export function createMultiMarbleArenaSimulation(
       }
     }
 
-    const activeRacerRecords = snapshot.players
+    const sourcePlayers = snapshot.roomPlayers ?? snapshot.players;
+    const activeRacerRecords = sourcePlayers
       .filter((p) => p.role === 'racer' && p.racerSlot !== null)
       .slice(0, MAX_ARENA_RACERS);
 

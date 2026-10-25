@@ -4,6 +4,11 @@
  * Shared between:
  * - Node/Vite Wi-Fi Room Server (`server/party-room.ts`)
  * - Browser `BroadcastChannel` Fallback (`src/multiplayer/party-client.ts`)
+ *
+ * Supports automatic multi-room capacity limits & overflow (`ARGON-1`, `ARGON-2`, `ARGON-3`, ...):
+ * - Configurable `maxMarblesPerRoom` (default `4` for a clean 2x2 split-screen grid, configurable `4..8`).
+ * - When `ARGON-1` reaches `maxMarblesPerRoom`, the 5th+ QR joiner automatically overflows into `ARGON-2`,
+ *   the 9th+ into `ARGON-3`, etc.
  */
 
 import type { SurfaceMaterial, Vec3 } from '../contracts';
@@ -11,11 +16,14 @@ import {
   CROWD_ACTION_COOLDOWN_MS,
   CROWD_MUTATOR_CATALOG,
   type CrowdMutatorKind,
+  DEFAULT_MAX_MARBLES_PER_ROOM,
   type JoinPartyRequest,
+  type JoinPartyResponse,
   MAX_ACTIVE_WORLD_MUTATIONS,
-  MAX_ARENA_RACERS,
   MAX_CROWD_PROMPTS,
+  MAX_MARBLES_PER_ROOM,
   MAX_RECENT_TOASTS,
+  MIN_MARBLES_PER_ROOM,
   PARTY_MARBLE_PALETTES,
   type PartyActionPayload,
   type PartyArcadeToast,
@@ -25,11 +33,16 @@ import {
   type PartyPlayerRecord,
   type PartyPromptPayload,
   type PartyRoomSnapshot,
+  type PartyRoomSummary,
   type PartyWorldMutationEvent,
 } from './party-types';
 
 export interface PartyRoomEngineOptions {
   readonly roomCode?: string;
+  /** Per-room marble capacity before overflowing into `ARGON-2`, `ARGON-3`, ... (default: 4, range: 4..8) */
+  readonly maxMarblesPerRoom?: number;
+  /** Whether to automatically overflow players into `ARGON-2`, `ARGON-3`, ... when a room is full (default: true) */
+  readonly autoOverflow?: boolean;
   readonly lanIp?: string;
   readonly port?: number;
   readonly customTunnelUrl?: string | null;
@@ -47,11 +60,8 @@ export interface PartyActionResult {
 }
 
 export interface PartyRoomEngine {
-  getSnapshot(nowMs?: number): PartyRoomSnapshot;
-  joinPlayer(req: JoinPartyRequest, nowMs?: number): {
-    player: PartyPlayerRecord;
-    snapshot: PartyRoomSnapshot;
-  };
+  getSnapshot(nowMs?: number, targetRoomId?: string): PartyRoomSnapshot;
+  joinPlayer(req: JoinPartyRequest, nowMs?: number): JoinPartyResponse;
   removePlayer(playerId: string, nowMs?: number): PartyRoomSnapshot;
   updateInput(payload: PartyInputPayload, nowMs?: number): PartyPlayerRecord | null;
   syncPlayerPose(
@@ -66,6 +76,8 @@ export interface PartyRoomEngine {
     prompt: PartyCrowdPrompt | null;
     snapshot: PartyRoomSnapshot;
   };
+  setActiveRoom(roomIdOrIndex: string | number, nowMs?: number): PartyRoomSnapshot;
+  setMaxMarblesPerRoom(maxMarbles: number, nowMs?: number): PartyRoomSnapshot;
   setCustomTunnelUrl(url: string | null, nowMs?: number): PartyRoomSnapshot;
   setLanAddress(lanIp: string, port?: number, nowMs?: number): PartyRoomSnapshot;
   spawnSimulatedCrowdPhones(count?: number, nowMs?: number): PartyRoomSnapshot;
@@ -94,6 +106,32 @@ function clampUnit(v: number): number {
   return Math.max(-1, Math.min(1, v));
 }
 
+function clampMarblesPerRoom(value: number | undefined): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return DEFAULT_MAX_MARBLES_PER_ROOM;
+  }
+  return Math.max(MIN_MARBLES_PER_ROOM, Math.min(MAX_MARBLES_PER_ROOM, Math.round(value)));
+}
+
+function extractBaseRoomPrefix(rawCode: string | undefined): string {
+  const upper = (rawCode ?? 'ARGON').trim().toUpperCase();
+  if (!upper || upper === 'AUTO') return 'ARGON';
+  const match = upper.match(/^([A-Z0-9_]+?)(?:-\d+)?$/);
+  return match?.[1] || 'ARGON';
+}
+
+function parseRequestedRoomIndex(rawCode: string | undefined, basePrefix: string): number | null {
+  if (!rawCode) return null;
+  const upper = rawCode.trim().toUpperCase();
+  if (!upper || upper === 'AUTO' || upper === basePrefix) return null;
+  const match = upper.match(new RegExp(`^${basePrefix}-(\\d+)$`));
+  if (match) {
+    const idx = Number.parseInt(match[1], 10);
+    return Number.isFinite(idx) && idx >= 1 ? idx : null;
+  }
+  return null;
+}
+
 export function buildPartyJoinUrl(
   lanIp: string,
   port: number,
@@ -110,7 +148,10 @@ export function buildPartyJoinUrl(
 }
 
 export function createPartyRoomEngine(options: PartyRoomEngineOptions = {}): PartyRoomEngine {
-  const roomCode = (options.roomCode ?? 'ARGON').toUpperCase();
+  const roomCode = extractBaseRoomPrefix(options.roomCode);
+  let maxMarblesPerRoom = clampMarblesPerRoom(options.maxMarblesPerRoom);
+  const autoOverflow = options.autoOverflow ?? true;
+  let activeRoomIndex = 1;
   let lanIp = options.lanIp ?? '127.0.0.1';
   let port = options.port ?? 5173;
   let customTunnelUrl: string | null = options.customTunnelUrl ?? null;
@@ -124,6 +165,10 @@ export function createPartyRoomEngine(options: PartyRoomEngineOptions = {}): Par
   let idCounter = 1;
   const listeners = new Set<(snapshot: PartyRoomSnapshot) => void>();
 
+  function formatRoomId(index: number): string {
+    return `${roomCode}-${Math.max(1, Math.floor(index))}`;
+  }
+
   function nextId(prefix: string): string {
     return `${prefix}_${idCounter++}`;
   }
@@ -136,14 +181,20 @@ export function createPartyRoomEngine(options: PartyRoomEngineOptions = {}): Par
     toasts = [toast, ...toasts].slice(0, MAX_RECENT_TOASTS);
   }
 
-  function findAvailableRacerSlot(): number | null {
+  function getRoomRacers(roomIdx: number): PartyPlayerRecord[] {
+    return Array.from(players.values())
+      .filter((p) => p.roomIndex === roomIdx && p.role === 'racer' && p.racerSlot !== null)
+      .sort((a, b) => (a.racerSlot ?? 99) - (b.racerSlot ?? 99));
+  }
+
+  function findAvailableSlotInRoom(roomIdx: number): number | null {
     const usedSlots = new Set<number>();
     for (const p of players.values()) {
-      if (p.role === 'racer' && p.racerSlot !== null) {
+      if (p.roomIndex === roomIdx && p.role === 'racer' && p.racerSlot !== null) {
         usedSlots.add(p.racerSlot);
       }
     }
-    for (let slot = 0; slot < MAX_ARENA_RACERS; slot++) {
+    for (let slot = 0; slot < maxMarblesPerRoom; slot++) {
       if (!usedSlots.has(slot)) {
         return slot;
       }
@@ -151,10 +202,83 @@ export function createPartyRoomEngine(options: PartyRoomEngineOptions = {}): Par
     return null;
   }
 
-  function findLeadRacerAheadPosition(): Vec3 {
+  /**
+   * Finds the first room index (`1, 2, 3, ...`) that has `< maxMarblesPerRoom` active racers.
+   * If `preferredStartRoomIndex` is provided (e.g., `?room=ARGON-2`) and has space, assigns there;
+   * if that room is full, overflows to the next available room!
+   */
+  function assignRoomAndSlot(preferredStartRoomIndex: number | null): {
+    roomIndex: number;
+    roomId: string;
+    racerSlot: number | null;
+    autoOverflowed: boolean;
+  } {
+    if (!autoOverflow) {
+      const slot = findAvailableSlotInRoom(1);
+      return {
+        roomIndex: 1,
+        roomId: formatRoomId(1),
+        racerSlot: slot,
+        autoOverflowed: false,
+      };
+    }
+
+    const startIdx = preferredStartRoomIndex && preferredStartRoomIndex >= 1 ? preferredStartRoomIndex : 1;
+
+    // First check from startIdx upward (so ARGON-1 fills first, then overflows to ARGON-2, ARGON-3, ...)
+    for (let roomIdx = startIdx; roomIdx <= 64; roomIdx++) {
+      const slot = findAvailableSlotInRoom(roomIdx);
+      if (slot !== null) {
+        return {
+          roomIndex: roomIdx,
+          roomId: formatRoomId(roomIdx),
+          racerSlot: slot,
+          autoOverflowed: roomIdx > 1,
+        };
+      }
+    }
+
+    return {
+      roomIndex: 1,
+      roomId: formatRoomId(1),
+      racerSlot: null,
+      autoOverflowed: false,
+    };
+  }
+
+  function buildAllRoomsSummary(): PartyRoomSummary[] {
+    let highestRoomIdx = Math.max(1, activeRoomIndex);
+    for (const p of players.values()) {
+      if (p.roomIndex > highestRoomIdx) {
+        highestRoomIdx = p.roomIndex;
+      }
+    }
+
+    const summaries: PartyRoomSummary[] = [];
+    for (let idx = 1; idx <= highestRoomIdx; idx++) {
+      const rId = formatRoomId(idx);
+      const roomMembers = Array.from(players.values()).filter((p) => p.roomIndex === idx);
+      const roomRacers = roomMembers.filter((p) => p.role === 'racer');
+      const sortedByScore = [...roomMembers].sort(
+        (a, b) => b.score - a.score || a.joinedAtMs - b.joinedAtMs,
+      );
+      const playerCount = roomRacers.length;
+      summaries.push({
+        roomId: rId,
+        roomIndex: idx,
+        playerCount,
+        maxPlayers: maxMarblesPerRoom,
+        isFull: playerCount >= maxMarblesPerRoom,
+        leaderName: sortedByScore[0]?.handle ?? null,
+      });
+    }
+    return summaries;
+  }
+
+  function findLeadRacerAheadPosition(roomIdx = activeRoomIndex): Vec3 {
     let bestRacer: PartyPlayerRecord | null = null;
     for (const p of players.values()) {
-      if (p.role === 'racer' && p.pose) {
+      if (p.roomIndex === roomIdx && p.role === 'racer' && p.pose) {
         if (!bestRacer || p.pose.position[2] < (bestRacer.pose?.position[2] ?? 0)) {
           bestRacer = p;
         }
@@ -171,19 +295,39 @@ export function createPartyRoomEngine(options: PartyRoomEngineOptions = {}): Par
     return [0, 3.5, -6.0];
   }
 
-  function getSnapshot(nowMs = nowFn()): PartyRoomSnapshot {
+  function resolveRoomIndex(roomIdOrIndex?: string | number): number {
+    if (typeof roomIdOrIndex === 'number' && Number.isFinite(roomIdOrIndex)) {
+      return Math.max(1, Math.floor(roomIdOrIndex));
+    }
+    if (typeof roomIdOrIndex === 'string' && roomIdOrIndex.trim()) {
+      const parsed = parseRequestedRoomIndex(roomIdOrIndex, roomCode);
+      if (parsed !== null) return parsed;
+    }
+    return activeRoomIndex;
+  }
+
+  function getSnapshot(nowMs = nowFn(), targetRoomId?: string): PartyRoomSnapshot {
     pruneExpired(nowMs);
 
-    const playerList = Array.from(players.values()).sort((a, b) => {
+    const viewRoomIndex = targetRoomId ? resolveRoomIndex(targetRoomId) : activeRoomIndex;
+    const viewRoomId = formatRoomId(viewRoomIndex);
+
+    const allPlayerList = Array.from(players.values()).sort((a, b) => {
+      if (a.roomIndex !== b.roomIndex) return a.roomIndex - b.roomIndex;
       if (a.role !== b.role) return a.role === 'racer' ? -1 : 1;
       return (a.racerSlot ?? 99) - (b.racerSlot ?? 99);
     });
+
+    const roomPlayers = allPlayerList.filter((p) => p.roomIndex === viewRoomIndex);
+    const roomRacers = roomPlayers.filter((p) => p.role === 'racer');
 
     const leaderboard: PartyLeaderboardEntry[] = Array.from(players.values())
       .map((p) => ({
         playerId: p.playerId,
         handle: p.handle,
         role: p.role,
+        roomId: p.roomId,
+        roomIndex: p.roomIndex,
         racerSlot: p.racerSlot,
         colorHex: p.colorHex,
         score: p.score,
@@ -193,15 +337,22 @@ export function createPartyRoomEngine(options: PartyRoomEngineOptions = {}): Par
       .sort((a, b) => b.score - a.score || a.handle.localeCompare(b.handle));
 
     const hasWaveSurge = mutations.some((m) => m.kind === 'waveSurge' && m.expiresAtMs > nowMs);
+    const allRoomsSummary = buildAllRoomsSummary();
 
     return {
       roomCode,
+      roomId: viewRoomId,
+      roomIndex: viewRoomIndex,
+      roomPlayerCount: roomRacers.length,
+      maxMarblesPerRoom,
+      allRoomsSummary,
       lanIp,
       port,
       joinUrl: buildPartyJoinUrl(lanIp, port, roomCode, customTunnelUrl),
       customTunnelUrl,
       updatedAtMs: nowMs,
-      players: playerList,
+      players: allPlayerList,
+      roomPlayers,
       activeMutations: [...mutations],
       recentToasts: [...toasts],
       crowdPrompts: [...prompts],
@@ -218,7 +369,7 @@ export function createPartyRoomEngine(options: PartyRoomEngineOptions = {}): Par
     return snap;
   }
 
-  function joinPlayer(req: JoinPartyRequest, nowMs = nowFn()) {
+  function joinPlayer(req: JoinPartyRequest, nowMs = nowFn()): JoinPartyResponse {
     const handle = sanitizeHandle(req.handle);
     const existingId = req.playerId && players.has(req.playerId) ? req.playerId : null;
 
@@ -230,22 +381,54 @@ export function createPartyRoomEngine(options: PartyRoomEngineOptions = {}): Par
         lastSeenAtMs: nowMs,
       };
       players.set(existingId, updated);
-      return { player: updated, snapshot: notify(nowMs) };
+      const snap = notify(nowMs);
+      const roomCount = getRoomRacers(updated.roomIndex).length;
+      return {
+        player: updated,
+        roomId: updated.roomId,
+        roomIndex: updated.roomIndex,
+        roomPlayerCount: roomCount,
+        maxMarblesPerRoom,
+        autoOverflowed: updated.autoOverflowed,
+        allRoomsSummary: snap.allRoomsSummary,
+        snapshot: snap,
+      };
     }
 
     const playerId = req.playerId?.trim() || nextId('plr');
-    const availableSlot =
-      req.preferredRole === 'architect' ? null : findAvailableRacerSlot();
+    const requestedRoomIdx = parseRequestedRoomIndex(req.roomCode, roomCode);
+
+    let assignedRoomIdx = requestedRoomIdx ?? 1;
+    let assignedRoomId = formatRoomId(assignedRoomIdx);
+    let availableSlot: number | null = null;
+    let autoOverflowed = false;
+
+    if (req.preferredRole !== 'architect') {
+      const assignment = assignRoomAndSlot(requestedRoomIdx);
+      assignedRoomIdx = assignment.roomIndex;
+      assignedRoomId = assignment.roomId;
+      availableSlot = assignment.racerSlot;
+      autoOverflowed = assignment.autoOverflowed;
+    }
+
     const role = availableSlot !== null ? 'racer' : 'architect';
     const palette =
       availableSlot !== null
         ? PARTY_MARBLE_PALETTES[availableSlot % PARTY_MARBLE_PALETTES.length]
         : PARTY_MARBLE_PALETTES[players.size % PARTY_MARBLE_PALETTES.length];
 
+    const currentRoomRacers = getRoomRacers(assignedRoomIdx).length;
+    const roomPlayerNumber =
+      availableSlot !== null ? availableSlot + 1 : currentRoomRacers + 1;
+
     const record: PartyPlayerRecord = {
       playerId,
       handle,
       role,
+      roomId: assignedRoomId,
+      roomIndex: assignedRoomIdx,
+      roomPlayerNumber,
+      autoOverflowed,
       racerSlot: availableSlot,
       colorHex: palette.hex,
       score: 0,
@@ -263,33 +446,48 @@ export function createPartyRoomEngine(options: PartyRoomEngineOptions = {}): Par
     };
 
     players.set(playerId, record);
+    const updatedRoomPlayerCount = getRoomRacers(assignedRoomIdx).length;
 
     pushToast({
       id: nextId('toast'),
-      icon: role === 'racer' ? '🟢' : '⚡',
+      icon: autoOverflowed ? '🚀' : role === 'racer' ? '🟢' : '⚡',
       text:
         role === 'racer'
-          ? `@${handle} joined as Marble #${(availableSlot ?? 0) + 1} (${palette.name})!`
-          : `@${handle} joined the Crowd Chaos & Rescue Deck!`,
+          ? autoOverflowed
+            ? `@${handle} auto-overflowed to ${assignedRoomId} (Player ${roomPlayerNumber}/${maxMarblesPerRoom} • ${palette.name})!`
+            : `@${handle} joined ${assignedRoomId} as Marble #${roomPlayerNumber}/${maxMarblesPerRoom} (${palette.name})!`
+          : `@${handle} joined ${assignedRoomId} Crowd Chaos & Rescue Deck!`,
       accentColor: palette.hex,
       playerId,
       playerHandle: handle,
+      roomId: assignedRoomId,
       kind: 'join',
       createdAtMs: nowMs,
     });
 
-    return { player: record, snapshot: notify(nowMs) };
+    const snap = notify(nowMs);
+    return {
+      player: record,
+      roomId: assignedRoomId,
+      roomIndex: assignedRoomIdx,
+      roomPlayerCount: updatedRoomPlayerCount,
+      maxMarblesPerRoom,
+      autoOverflowed,
+      allRoomsSummary: snap.allRoomsSummary,
+      snapshot: snap,
+    };
   }
 
   function removePlayer(playerId: string, nowMs = nowFn()): PartyRoomSnapshot {
     const removed = players.get(playerId);
     players.delete(playerId);
 
-    // If an Arena Racer slot opened up, promote the longest-waiting Crowd Architect!
+    // If an Arena Racer slot opened up in that room, promote a waiting Crowd Architect in the same room
     if (removed && removed.role === 'racer' && removed.racerSlot !== null) {
       const freedSlot = removed.racerSlot;
+      const freedRoomIdx = removed.roomIndex;
       const waitingArchitect = Array.from(players.values())
-        .filter((p) => p.role === 'architect')
+        .filter((p) => p.roomIndex === freedRoomIdx && p.role === 'architect')
         .sort((a, b) => b.score - a.score || a.joinedAtMs - b.joinedAtMs)[0];
 
       if (waitingArchitect) {
@@ -298,6 +496,7 @@ export function createPartyRoomEngine(options: PartyRoomEngineOptions = {}): Par
           ...waitingArchitect,
           role: 'racer',
           racerSlot: freedSlot,
+          roomPlayerNumber: freedSlot + 1,
           colorHex: palette.hex,
         });
       }
@@ -372,7 +571,7 @@ export function createPartyRoomEngine(options: PartyRoomEngineOptions = {}): Par
 
     const def =
       CROWD_MUTATOR_CATALOG.find((c) => c.kind === payload.kind) ?? CROWD_MUTATOR_CATALOG[0];
-    const targetPos = payload.targetPosition ?? findLeadRacerAheadPosition();
+    const targetPos = payload.targetPosition ?? findLeadRacerAheadPosition(player.roomIndex);
 
     let material: SurfaceMaterial = 'standard';
     let radius = 1.65;
@@ -429,6 +628,7 @@ export function createPartyRoomEngine(options: PartyRoomEngineOptions = {}): Par
       kind: def.kind,
       playerId: player.playerId,
       playerHandle: player.handle,
+      roomId: player.roomId,
       position: targetPos,
       secondaryPos,
       radius,
@@ -443,10 +643,11 @@ export function createPartyRoomEngine(options: PartyRoomEngineOptions = {}): Par
     const toast: PartyArcadeToast = {
       id: nextId('toast'),
       icon: def.icon,
-      text: `${def.icon} @${player.handle} ${actionVerb}`,
+      text: `${def.icon} @${player.handle} (${player.roomId}) ${actionVerb}`,
       accentColor: def.accentColor,
       playerId: player.playerId,
       playerHandle: player.handle,
+      roomId: player.roomId,
       kind: def.kind,
       createdAtMs: nowMs,
     };
@@ -520,11 +721,22 @@ export function createPartyRoomEngine(options: PartyRoomEngineOptions = {}): Par
       accentColor: '#c084fc',
       playerId: payload.playerId,
       playerHandle: handle,
+      roomId: player?.roomId,
       kind: 'prompt',
       createdAtMs: nowMs,
     });
 
     return { prompt: promptRecord, snapshot: notify(nowMs) };
+  }
+
+  function setActiveRoom(roomIdOrIndex: string | number, nowMs = nowFn()): PartyRoomSnapshot {
+    activeRoomIndex = resolveRoomIndex(roomIdOrIndex);
+    return notify(nowMs);
+  }
+
+  function setMaxMarblesPerRoom(nextMax: number, nowMs = nowFn()): PartyRoomSnapshot {
+    maxMarblesPerRoom = clampMarblesPerRoom(nextMax);
+    return notify(nowMs);
   }
 
   function setCustomTunnelUrl(url: string | null, nowMs = nowFn()): PartyRoomSnapshot {
@@ -539,16 +751,20 @@ export function createPartyRoomEngine(options: PartyRoomEngineOptions = {}): Par
   }
 
   const SIMULATED_CROWD_PERSONAS = [
-    { id: 'sim_phone_1', handle: 'ivan_dm', role: 'racer' as const, twist: 'deterministic lockstep ice chute' },
-    { id: 'sim_phone_2', handle: 'joana_devrel', role: 'racer' as const, twist: 'low gravity neon pinball' },
-    { id: 'sim_phone_3', handle: 'subhasmita_rsi', role: 'racer' as const, twist: 'self healing bridge gauntlet' },
-    { id: 'sim_phone_4', handle: 'shudhatma_sys', role: 'racer' as const, twist: 'high speed spiral halfpipe' },
-    { id: 'sim_phone_5', handle: 'oskar_world', role: 'architect' as const, twist: 'non euclidean portal fling' },
-    { id: 'sim_phone_6', handle: 'maya_sf', role: 'architect' as const, twist: 'ferrofluid steelie bumper arena' },
+    { id: 'sim_phone_1', handle: 'ivan_dm', twist: 'deterministic lockstep ice chute' },
+    { id: 'sim_phone_2', handle: 'joana_devrel', twist: 'low gravity neon pinball' },
+    { id: 'sim_phone_3', handle: 'subhasmita_rsi', twist: 'self healing bridge gauntlet' },
+    { id: 'sim_phone_4', handle: 'shudhatma_sys', twist: 'high speed spiral halfpipe' },
+    { id: 'sim_phone_5', handle: 'oskar_world', twist: 'non euclidean portal fling' },
+    { id: 'sim_phone_6', handle: 'maya_sf', twist: 'ferrofluid steelie bumper arena' },
+    { id: 'sim_phone_7', handle: 'alex_gpu', twist: 'cyber wave boost highway' },
+    { id: 'sim_phone_8', handle: 'sara_sdf', twist: 'cryo acid vortex funnel' },
+    { id: 'sim_phone_9', handle: 'devon_synth', twist: 'double piston catapult alley' },
+    { id: 'sim_phone_10', handle: 'kai_shader', twist: 'escher reverse gravity spiral' },
   ];
 
   function spawnSimulatedCrowdPhones(count = 6, nowMs = nowFn()): PartyRoomSnapshot {
-    const clampedCount = Math.max(1, Math.min(8, Math.floor(count)));
+    const clampedCount = Math.max(1, Math.min(16, Math.floor(count)));
     const mutatorCycle: CrowdMutatorKind[] = [
       'rescueBridge',
       'craterMortar',
@@ -566,7 +782,6 @@ export function createPartyRoomEngine(options: PartyRoomEngineOptions = {}): Par
         {
           playerId,
           handle,
-          preferredRole: persona.role,
         },
         nowMs,
       );
@@ -641,7 +856,7 @@ export function createPartyRoomEngine(options: PartyRoomEngineOptions = {}): Par
       });
 
       // Periodically trigger crowd mutations when off cooldown
-      if (p.role === 'architect' && nowMs - p.lastActionAtMs >= cooldownMs + 600) {
+      if (nowMs - p.lastActionAtMs >= cooldownMs + 600 && idx % 3 === 0) {
         const mutKind = mutatorCycle[(idx + Math.floor(tSec)) % mutatorCycle.length];
         triggerCrowdAction(
           {
@@ -669,6 +884,7 @@ export function createPartyRoomEngine(options: PartyRoomEngineOptions = {}): Par
     mutations = [];
     toasts = [];
     prompts = [];
+    activeRoomIndex = 1;
     return notify(nowMs);
   }
 
@@ -680,6 +896,8 @@ export function createPartyRoomEngine(options: PartyRoomEngineOptions = {}): Par
     syncPlayerPose,
     triggerCrowdAction,
     submitCrowdPrompt,
+    setActiveRoom,
+    setMaxMarblesPerRoom,
     setCustomTunnelUrl,
     setLanAddress,
     spawnSimulatedCrowdPhones,

@@ -84,6 +84,20 @@ export const QrPartyHudModal: React.FC<QrPartyHudModalProps> = ({
     setSimulatingCrowd(true);
   }, [activeClient]);
 
+  const handleSelectRoom = useCallback(
+    async (targetRoomId: string) => {
+      await activeClient.selectRoom(targetRoomId);
+    },
+    [activeClient],
+  );
+
+  const handleMaxMarblesChange = useCallback(
+    async (maxMarbles: number) => {
+      await activeClient.setMaxMarblesPerRoom(maxMarbles);
+    },
+    [activeClient],
+  );
+
   const handleSynthesizeClick = useCallback(() => {
     if (!onSynthesizeCrowdTwist) return;
     const topTwists = snapshot.crowdPrompts
@@ -97,8 +111,18 @@ export const QrPartyHudModal: React.FC<QrPartyHudModalProps> = ({
 
   if (!isOpen) return null;
 
-  const racers = snapshot.players.filter((p) => p.role === 'racer');
-  const architects = snapshot.players.filter((p) => p.role === 'architect');
+  const focusedRoomPlayers = snapshot.roomPlayers ?? snapshot.players;
+  const racers = focusedRoomPlayers.filter((p) => p.role === 'racer');
+  const roomsSummary = snapshot.allRoomsSummary ?? [
+    {
+      roomId: snapshot.roomId ?? `${snapshot.roomCode}-1`,
+      roomIndex: snapshot.roomIndex ?? 1,
+      playerCount: racers.length,
+      maxPlayers: snapshot.maxMarblesPerRoom ?? 4,
+      isFull: racers.length >= (snapshot.maxMarblesPerRoom ?? 4),
+      leaderName: racers[0]?.handle ?? null,
+    },
+  ];
 
   return (
     <aside
@@ -195,6 +219,117 @@ export const QrPartyHudModal: React.FC<QrPartyHudModalProps> = ({
           </button>
         </div>
       </header>
+
+      {/* Active Rooms Rail (Auto-Overflow Switcher) */}
+      <div
+        data-testid="active-rooms-rail"
+        style={{
+          display: 'flex',
+          flexWrap: 'wrap',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: '10px',
+          padding: '10px 20px',
+          background: 'rgba(9, 14, 26, 0.92)',
+          borderBottom: '1px solid rgba(56, 189, 248, 0.22)',
+        }}
+      >
+        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '8px' }}>
+          <span
+            style={{
+              fontSize: '11px',
+              fontWeight: 800,
+              letterSpacing: '0.07em',
+              color: '#94a3b8',
+              textTransform: 'uppercase',
+              marginRight: '4px',
+            }}
+          >
+            ACTIVE ROOMS RAIL:
+          </span>
+          {roomsSummary.map((rm) => {
+            const isSelected = rm.roomId === snapshot.roomId;
+            const statusLabel = rm.isFull
+              ? `${rm.playerCount}/${rm.maxPlayers} FULL`
+              : `${rm.playerCount}/${rm.maxPlayers} ACTIVE`;
+            return (
+              <button
+                key={rm.roomId}
+                type="button"
+                data-testid={`room-pill-${rm.roomId}`}
+                onClick={() => void handleSelectRoom(rm.roomId)}
+                style={{
+                  background: isSelected
+                    ? 'linear-gradient(135deg, #0284c7, #2563eb)'
+                    : 'rgba(30, 41, 59, 0.85)',
+                  color: '#f8fafc',
+                  border: isSelected
+                    ? '1.5px solid #38bdf8'
+                    : rm.isFull
+                      ? '1px solid rgba(250, 204, 21, 0.5)'
+                      : '1px solid rgba(148, 163, 184, 0.3)',
+                  borderRadius: '999px',
+                  padding: '5px 12px',
+                  fontSize: '12px',
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                }}
+              >
+                <span>
+                  {rm.roomId} ({statusLabel})
+                </span>
+                {rm.leaderName && (
+                  <span style={{ fontSize: '10px', color: '#bae6fd', fontWeight: 600 }}>
+                    ★ @{rm.leaderName}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+          <span
+            data-testid="auto-overflow-ready-pill"
+            style={{
+              background: 'rgba(16, 185, 129, 0.14)',
+              color: '#6ee7b7',
+              border: '1px dashed rgba(52, 211, 153, 0.5)',
+              borderRadius: '999px',
+              padding: '5px 11px',
+              fontSize: '11px',
+              fontWeight: 700,
+            }}
+          >
+            + Auto-Overflow Ready ({snapshot.roomCode}-{roomsSummary.length + 1})
+          </span>
+        </div>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', color: '#cbd5e1' }}>
+          <span>Room Cap:</span>
+          {[4, 6, 8].map((cap) => (
+            <button
+              key={cap}
+              type="button"
+              data-testid={`room-cap-btn-${cap}`}
+              onClick={() => void handleMaxMarblesChange(cap)}
+              style={{
+                background:
+                  snapshot.maxMarblesPerRoom === cap ? '#0ea5e9' : '#1e293b',
+                color: '#ffffff',
+                border: '1px solid #334155',
+                borderRadius: '6px',
+                padding: '3px 8px',
+                fontSize: '11px',
+                fontWeight: 700,
+                cursor: 'pointer',
+              }}
+            >
+              {cap}/room
+            </button>
+          ))}
+        </div>
+      </div>
 
       {/* Main 3-Column Stage Layout */}
       <div
@@ -338,10 +473,10 @@ export const QrPartyHudModal: React.FC<QrPartyHudModalProps> = ({
                 letterSpacing: '0.06em',
               }}
             >
-              ARENA RACERS ({racers.length}/8 MARBLES)
+              {snapshot.roomId} RACERS ({racers.length}/{snapshot.maxMarblesPerRoom} MARBLES)
             </span>
             <span style={{ fontSize: '12px', color: '#94a3b8' }}>
-              +{architects.length} Crowd Architects
+              {snapshot.players.length} Total Crowd ({roomsSummary.length} Rooms)
             </span>
           </div>
 
@@ -363,7 +498,7 @@ export const QrPartyHudModal: React.FC<QrPartyHudModalProps> = ({
                 Scan the QR code or click &ldquo;Simulate 6 Crowd Phones&rdquo; to populate the arena!
               </div>
             ) : (
-              snapshot.leaderboard.slice(0, 10).map((entry) => (
+              focusedRoomPlayers.slice(0, 10).map((entry) => (
                 <div
                   key={entry.playerId}
                   style={{
@@ -387,8 +522,8 @@ export const QrPartyHudModal: React.FC<QrPartyHudModalProps> = ({
                       }}
                     >
                       {entry.role === 'racer' && entry.racerSlot !== null
-                        ? `Marble #${entry.racerSlot + 1}`
-                        : 'Crowd Architect'}
+                        ? `${entry.roomId} • Marble #${entry.racerSlot + 1}`
+                        : `${entry.roomId} • Crowd Architect`}
                     </span>
                   </div>
                   <div style={{ fontWeight: 700, color: '#facc15' }}>

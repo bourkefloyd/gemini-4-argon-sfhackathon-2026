@@ -11,6 +11,9 @@
 
 import type { Quat, SurfaceMaterial, Vec3 } from '../contracts';
 
+export const DEFAULT_MAX_MARBLES_PER_ROOM = 4;
+export const MIN_MARBLES_PER_ROOM = 4;
+export const MAX_MARBLES_PER_ROOM = 8;
 export const MAX_ARENA_RACERS = 8;
 export const CROWD_ACTION_COOLDOWN_MS = 4000;
 export const MAX_ACTIVE_WORLD_MUTATIONS = 16;
@@ -125,11 +128,34 @@ export interface PartyPlayerInputState {
   readonly updatedAtMs: number;
 }
 
+export interface PartyRoomSummary {
+  /** Full room identifier, e.g. `ARGON-1`, `ARGON-2`, `ARGON-3` */
+  readonly roomId: string;
+  /** 1-based overflow room index (`1`, `2`, `3`, ...) */
+  readonly roomIndex: number;
+  /** Number of active marble racers currently in this room */
+  readonly playerCount: number;
+  /** Per-room marble capacity (`maxMarblesPerRoom`, e.g. `4`) */
+  readonly maxPlayers: number;
+  /** True when `playerCount >= maxPlayers` */
+  readonly isFull: boolean;
+  /** Handle of the current top-scoring or first player in this room */
+  readonly leaderName: string | null;
+}
+
 export interface PartyPlayerRecord {
   readonly playerId: string;
   readonly handle: string;
   readonly role: PartyPlayerRole;
-  /** `0..7` for Arena Racers, `null` for Crowd Chaos & Rescue Architects */
+  /** Assigned overflow room ID (`ARGON-1`, `ARGON-2`, `ARGON-3`, ...) */
+  readonly roomId: string;
+  /** 1-based room index (`1`, `2`, `3`, ...) */
+  readonly roomIndex: number;
+  /** 1-based player number within the assigned room (`1..maxMarblesPerRoom`) */
+  readonly roomPlayerNumber: number;
+  /** True when this player was automatically overflowed into `ARGON-2+` because earlier rooms were full */
+  readonly autoOverflowed: boolean;
+  /** `0..maxMarblesPerRoom-1` for Arena Racers, `null` for Crowd Chaos & Rescue Architects */
   readonly racerSlot: number | null;
   readonly colorHex: string;
   readonly score: number;
@@ -153,6 +179,7 @@ export interface PartyWorldMutationEvent {
   readonly kind: CrowdMutatorKind;
   readonly playerId: string;
   readonly playerHandle: string;
+  readonly roomId?: string;
   /** Target world-space center where the CSG operation or override applies */
   readonly position: Vec3;
   /** Optional secondary endpoint or half-extents */
@@ -171,6 +198,7 @@ export interface PartyArcadeToast {
   readonly accentColor: string;
   readonly playerId: string;
   readonly playerHandle: string;
+  readonly roomId?: string;
   readonly kind: CrowdMutatorKind | 'join' | 'prompt' | 'bump';
   readonly createdAtMs: number;
 }
@@ -189,6 +217,8 @@ export interface PartyLeaderboardEntry {
   readonly playerId: string;
   readonly handle: string;
   readonly role: PartyPlayerRole;
+  readonly roomId: string;
+  readonly roomIndex: number;
   readonly racerSlot: number | null;
   readonly colorHex: string;
   readonly score: number;
@@ -197,13 +227,27 @@ export interface PartyLeaderboardEntry {
 }
 
 export interface PartyRoomSnapshot {
+  /** Base room prefix (e.g. `ARGON`) */
   readonly roomCode: string;
+  /** Currently focused/active room ID on the stage (e.g. `ARGON-1`, `ARGON-2`) */
+  readonly roomId: string;
+  /** 1-based index of the currently focused room (`1`, `2`, ...) */
+  readonly roomIndex: number;
+  /** Active racer count in the currently focused `roomId` */
+  readonly roomPlayerCount: number;
+  /** Configurable per-room marble cap (default `4`, configurable `4..8`) */
+  readonly maxMarblesPerRoom: number;
+  /** Summary of all active/overflow rooms (`ARGON-1`, `ARGON-2`, ...) */
+  readonly allRoomsSummary: readonly PartyRoomSummary[];
   readonly lanIp: string;
   readonly port: number;
   readonly joinUrl: string;
   readonly customTunnelUrl: string | null;
   readonly updatedAtMs: number;
+  /** All players across all overflow rooms (each has `.roomId` & `.roomIndex`) */
   readonly players: readonly PartyPlayerRecord[];
+  /** Players filtered to the currently focused stage `roomId` */
+  readonly roomPlayers: readonly PartyPlayerRecord[];
   readonly activeMutations: readonly PartyWorldMutationEvent[];
   readonly recentToasts: readonly PartyArcadeToast[];
   readonly crowdPrompts: readonly PartyCrowdPrompt[];
@@ -216,6 +260,17 @@ export interface JoinPartyRequest {
   readonly playerId?: string;
   readonly handle: string;
   readonly preferredRole?: PartyPlayerRole;
+}
+
+export interface JoinPartyResponse {
+  readonly player: PartyPlayerRecord;
+  readonly roomId: string;
+  readonly roomIndex: number;
+  readonly roomPlayerCount: number;
+  readonly maxMarblesPerRoom: number;
+  readonly autoOverflowed: boolean;
+  readonly allRoomsSummary: readonly PartyRoomSummary[];
+  readonly snapshot: PartyRoomSnapshot;
 }
 
 export interface PartyInputPayload {
