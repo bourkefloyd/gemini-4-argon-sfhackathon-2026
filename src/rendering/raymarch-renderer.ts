@@ -568,17 +568,24 @@ export function createRaymarchRenderer(
       const count = Math.min(6, list.length);
       const posRadData = new Float32Array(6 * 4);
       const colData = new Float32Array(6 * 4);
-      for (let i = 0; i < count; i++) {
-        const om = list[i];
+      for (let i = 0; i < 6; i++) {
         const base = i * 4;
-        posRadData[base + 0] = om.position[0];
-        posRadData[base + 1] = om.position[1];
-        posRadData[base + 2] = om.position[2];
-        posRadData[base + 3] = om.radius;
-        colData[base + 0] = om.color[0];
-        colData[base + 1] = om.color[1];
-        colData[base + 2] = om.color[2];
-        colData[base + 3] = om.slotIndex ?? i;
+        if (i < count) {
+          const om = list[i];
+          posRadData[base + 0] = om.position[0];
+          posRadData[base + 1] = om.position[1];
+          posRadData[base + 2] = om.position[2];
+          posRadData[base + 3] = om.radius;
+          colData[base + 0] = om.color[0];
+          colData[base + 1] = om.color[1];
+          colData[base + 2] = om.color[2];
+          colData[base + 3] = om.slotIndex ?? i;
+        } else {
+          posRadData[base + 0] = 0;
+          posRadData[base + 1] = -1000;
+          posRadData[base + 2] = 0;
+          posRadData[base + 3] = 0;
+        }
       }
       gl.uniform1i(locations!.uOtherMarbleCount, count);
       if (locations!.uOtherMarblePosRad) {

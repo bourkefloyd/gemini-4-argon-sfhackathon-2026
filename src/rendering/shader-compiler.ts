@@ -849,32 +849,20 @@ vec2 evalSceneSdf(vec3 p) {
     }
   }
 
-  // Other Active Multiplayer Marbles SDF (material ID = 110.0 .. 115.0)
+  // Other Active Multiplayer Marbles SDF (material ID = 110.0 .. 115.0, branchless for fast SPIR-V compilation)
   if (uOtherMarbleCount > 0) {
-    if (uOtherMarblePosRad[0].w > 0.05) {
-      float d0 = length(p - uOtherMarblePosRad[0].xyz) - uOtherMarblePosRad[0].w;
-      if (d0 < res.x) res = vec2(d0, 110.0);
-    }
-    if (uOtherMarbleCount > 1 && uOtherMarblePosRad[1].w > 0.05) {
-      float d1 = length(p - uOtherMarblePosRad[1].xyz) - uOtherMarblePosRad[1].w;
-      if (d1 < res.x) res = vec2(d1, 111.0);
-    }
-    if (uOtherMarbleCount > 2 && uOtherMarblePosRad[2].w > 0.05) {
-      float d2 = length(p - uOtherMarblePosRad[2].xyz) - uOtherMarblePosRad[2].w;
-      if (d2 < res.x) res = vec2(d2, 112.0);
-    }
-    if (uOtherMarbleCount > 3 && uOtherMarblePosRad[3].w > 0.05) {
-      float d3 = length(p - uOtherMarblePosRad[3].xyz) - uOtherMarblePosRad[3].w;
-      if (d3 < res.x) res = vec2(d3, 113.0);
-    }
-    if (uOtherMarbleCount > 4 && uOtherMarblePosRad[4].w > 0.05) {
-      float d4 = length(p - uOtherMarblePosRad[4].xyz) - uOtherMarblePosRad[4].w;
-      if (d4 < res.x) res = vec2(d4, 114.0);
-    }
-    if (uOtherMarbleCount > 5 && uOtherMarblePosRad[5].w > 0.05) {
-      float d5 = length(p - uOtherMarblePosRad[5].xyz) - uOtherMarblePosRad[5].w;
-      if (d5 < res.x) res = vec2(d5, 115.0);
-    }
+    float d0 = length(p - uOtherMarblePosRad[0].xyz) - uOtherMarblePosRad[0].w;
+    float d1 = length(p - uOtherMarblePosRad[1].xyz) - uOtherMarblePosRad[1].w;
+    float d2 = length(p - uOtherMarblePosRad[2].xyz) - uOtherMarblePosRad[2].w;
+    float d3 = length(p - uOtherMarblePosRad[3].xyz) - uOtherMarblePosRad[3].w;
+    float d4 = length(p - uOtherMarblePosRad[4].xyz) - uOtherMarblePosRad[4].w;
+    float d5 = length(p - uOtherMarblePosRad[5].xyz) - uOtherMarblePosRad[5].w;
+    vec2 m01 = mix(vec2(d0, 110.0), vec2(d1, 111.0), step(d1, d0));
+    vec2 m23 = mix(vec2(d2, 112.0), vec2(d3, 113.0), step(d3, d2));
+    vec2 m45 = mix(vec2(d4, 114.0), vec2(d5, 115.0), step(d5, d4));
+    vec2 m03 = mix(m01, m23, step(m23.x, m01.x));
+    vec2 mBest = mix(m03, m45, step(m45.x, m03.x));
+    res = mix(res, mBest, step(mBest.x, res.x));
   }
 
   // Hovering holographic Goal Halo Torus above the Goal Pad (material ID = 101.0)
@@ -1298,18 +1286,19 @@ vec3 shadeGhostMarble(vec3 p, vec3 n, vec3 V, vec3 ro) {
  * internal cat's-eye swirl, Fresnel rim glow, and dual-coat specular highlight.
  */
 vec3 shadeOtherPlayerMarble(vec3 p, vec3 n, vec3 V, int idx) {
-  vec4 posRad = idx == 0 ? uOtherMarblePosRad[0]
-              : idx == 1 ? uOtherMarblePosRad[1]
-              : idx == 2 ? uOtherMarblePosRad[2]
-              : idx == 3 ? uOtherMarblePosRad[3]
-              : idx == 4 ? uOtherMarblePosRad[4]
-              : uOtherMarblePosRad[5];
-  vec4 colVec = idx == 0 ? uOtherMarbleColor[0]
-              : idx == 1 ? uOtherMarbleColor[1]
-              : idx == 2 ? uOtherMarbleColor[2]
-              : idx == 3 ? uOtherMarbleColor[3]
-              : idx == 4 ? uOtherMarbleColor[4]
-              : uOtherMarbleColor[5];
+  float fi = float(idx);
+  vec4 posRad = uOtherMarblePosRad[0] * step(abs(fi - 0.0), 0.25)
+              + uOtherMarblePosRad[1] * step(abs(fi - 1.0), 0.25)
+              + uOtherMarblePosRad[2] * step(abs(fi - 2.0), 0.25)
+              + uOtherMarblePosRad[3] * step(abs(fi - 3.0), 0.25)
+              + uOtherMarblePosRad[4] * step(abs(fi - 4.0), 0.25)
+              + uOtherMarblePosRad[5] * step(abs(fi - 5.0), 0.25);
+  vec4 colVec = uOtherMarbleColor[0] * step(abs(fi - 0.0), 0.25)
+              + uOtherMarbleColor[1] * step(abs(fi - 1.0), 0.25)
+              + uOtherMarbleColor[2] * step(abs(fi - 2.0), 0.25)
+              + uOtherMarbleColor[3] * step(abs(fi - 3.0), 0.25)
+              + uOtherMarbleColor[4] * step(abs(fi - 4.0), 0.25)
+              + uOtherMarbleColor[5] * step(abs(fi - 5.0), 0.25);
   vec3 mCenter = posRad.xyz;
   float mRad = max(posRad.w, 0.05);
   vec3 baseCol = colVec.rgb;
