@@ -1,5 +1,8 @@
 import type { CourseSpec } from '../contracts';
-import { COURSE_1_PRACTICE_RACE } from './course-1-practice';
+import {
+  COURSE_1_PRACTICE_RACE,
+  COURSE_1_RAMP_GAUNTLET,
+} from './course-1-practice';
 import { COURSE_2_BEGINNER_CHUTES } from './course-2-beginner';
 import {
   COURSE_2_INTERMEDIATE_MADNESS,
@@ -11,6 +14,7 @@ import { COURSE_6_ULTIMATE_ARGON_CORE } from './course-6-ultimate';
 
 export {
   COURSE_1_PRACTICE_RACE,
+  COURSE_1_RAMP_GAUNTLET,
   COURSE_2_BEGINNER_CHUTES,
   COURSE_2_INTERMEDIATE_MADNESS,
   COURSE_3_INTERMEDIATE_MADNESS,

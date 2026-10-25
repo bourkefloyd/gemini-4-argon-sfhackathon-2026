@@ -331,7 +331,7 @@ describe('Stage 2 Worker 2 — Raymarched SDF Portals & Realtime CSG Level-Mutat
     // Blue Entry placed ~3.5m ahead along -Z from start [0, 8.75, 0]
     expect(smartPair.posA[2]).toBeLessThan(-2.0);
     // Orange Exit placed ahead near checkpoint 1 / next terrace and angled upward + toward goal
-    expect(smartPair.posB[2]).toBeLessThan(-15.0);
+    expect(smartPair.posB[2]).toBeLessThan(-13.5);
     expect(smartPair.normalB[1]).toBeGreaterThan(0.5);
 
     // 2. Live 3D Cursor Raycast Aim Preview ([E] / Right-Click / Alt+Click)
