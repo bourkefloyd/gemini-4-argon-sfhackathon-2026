@@ -5,6 +5,7 @@ import {
   generateArchitectCoursePreset,
 } from '../src/courses';
 import { createMarbleSimulation } from '../src/physics';
+import { applyPortalThroatCarveToDistance } from '../src/portals';
 import { createCpuWorldEvaluator } from '../src/sdf/eval-cpu';
 import {
   bakeCourseToSparseBrickAtlas,
@@ -49,14 +50,27 @@ describe('Web Game IP Security POC — .msdf RPN Bytecode, Sparse Brick Atlas & 
           ] as const;
 
           const expected = cpuEval.sample(testPt, time);
-          const actualDist = evalMsdfBytecodeDistance(
-            roundtrip,
-            testPt[0],
-            testPt[1],
-            testPt[2],
-            time,
+          const portals = course.portals ?? [];
+          const actualDist = applyPortalThroatCarveToDistance(
+            evalMsdfBytecodeDistance(
+              roundtrip,
+              testPt[0],
+              testPt[1],
+              testPt[2],
+              time,
+            ),
+            testPt,
+            portals,
           );
-          const actualSample = evalMsdfBytecode(roundtrip, testPt, time);
+          const actualSampleRaw = evalMsdfBytecode(roundtrip, testPt, time);
+          const actualSample = {
+            ...actualSampleRaw,
+            distance: applyPortalThroatCarveToDistance(
+              actualSampleRaw.distance,
+              testPt,
+              portals,
+            ),
+          };
 
           expect(Math.abs(actualDist - expected.distance)).toBeLessThan(1e-4);
           expect(Math.abs(actualSample.distance - expected.distance)).toBeLessThan(1e-4);

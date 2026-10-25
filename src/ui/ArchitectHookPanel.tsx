@@ -41,6 +41,7 @@ export interface ArchitectHookPanelProps {
   readonly currentCourse: CourseSpec;
   readonly compiledShaders: { glsl: string; wgsl: string; backend: string };
   readonly onApplyCustomCourse: (course: CourseSpec) => void;
+  readonly seedPrompt?: string | null;
 }
 
 const ARCHITECT_SCOPED_STYLES = `
@@ -199,6 +200,7 @@ export const ArchitectHookPanel: React.FC<ArchitectHookPanelProps> = ({
   currentCourse,
   compiledShaders,
   onApplyCustomCourse,
+  seedPrompt = null,
 }) => {
   const telemetryTrackerRef = useRef(createLiveTelemetryTracker());
   const [telemetryTick, setTelemetryTick] = useState<number>(0);
@@ -209,6 +211,11 @@ export const ArchitectHookPanel: React.FC<ArchitectHookPanelProps> = ({
   const [promptText, setPromptText] = useState<string>(
     'Synthesize Portal Fling Citadel: helical ice chute with linked Blue/Orange SDF Portals & synchronized slamming pistons',
   );
+  useEffect(() => {
+    if (seedPrompt && seedPrompt.trim().length > 0) {
+      setPromptText(seedPrompt);
+    }
+  }, [seedPrompt]);
   const [userApiKey, setUserApiKey] = useState<string>('');
   const [hasServerEnvKey, setHasServerEnvKey] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);

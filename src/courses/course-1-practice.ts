@@ -57,7 +57,7 @@ export const COURSE_1_PRACTICE_RACE: CourseSpec = {
       posA: [0.4, 5.42, -19.35],
       normalA: [0.0, 0.22, 0.9755],
       upA: [0.0, 0.9755, -0.22],
-      posB: [24.6, 1.95, -18.2],
+      posB: [27.05, 1.7, -19.85],
       normalB: [0.0, 0.36, -0.933],
       upB: [0.0, 0.933, 0.36],
       radius: 1.38,

@@ -57,6 +57,7 @@ export interface ArcadeHudProps {
   readonly onToggleBotPlaytest?: () => void;
   readonly onFirePortal?: (end: 'blue' | 'orange') => void;
   readonly onTriggerWeapon?: (ability: WeaponAbilityId) => void;
+  readonly onToggleParty?: () => void;
 }
 
 export const ArcadeHud: React.FC<ArcadeHudProps> = ({
@@ -90,6 +91,7 @@ export const ArcadeHud: React.FC<ArcadeHudProps> = ({
   onToggleBotPlaytest,
   onFirePortal,
   onTriggerWeapon,
+  onToggleParty,
 }) => {
   const horizSpeed = Math.hypot(marble.velocity[0], marble.velocity[2]);
   const totalSpeed = Math.hypot(marble.velocity[0], marble.velocity[1], marble.velocity[2]);
@@ -341,7 +343,7 @@ export const ArcadeHud: React.FC<ArcadeHudProps> = ({
         <div className="hud-panel hud-hazards-panel" data-hud-interactive="true">
           <div className="hud-weapons-header">
             <span className="hud-eyebrow">
-              RAYMARCHED SDF PORTALS [Q / E] &amp; REALTIME CSG WEAPONS [F / V / B / N]
+              RAYMARCHED SDF PORTALS [Q / E] &amp; REALTIME CSG WEAPONS [F / V / B / X]
             </span>
             <div className="hud-portal-status-badges">
               <span className="hud-badge hud-badge-portal-blue">
@@ -406,6 +408,14 @@ export const ArcadeHud: React.FC<ArcadeHudProps> = ({
             >
               [X] CRYO FREEZE
             </button>
+            <button
+              type="button"
+              className="hud-btn hud-btn-sm"
+              onClick={() => onToggleParty?.()}
+              title="Open the QR party arena for up to 8 phones [Y]"
+            >
+              [Y] QR PARTY
+            </button>
           </div>
 
           <div className="hud-keybind-hint">
@@ -416,6 +426,7 @@ export const ArcadeHud: React.FC<ArcadeHudProps> = ({
             <span>G: Argon 1M</span>
             <span>Q / E: Blue &amp; Orange Portals</span>
             <span>F / V / B / X: CSG Crater / Bridge / Ramp / Cryo</span>
+            <span>Y: QR Party</span>
             <span>[ / ]: Orbit Cam</span>
           </div>
         </div>

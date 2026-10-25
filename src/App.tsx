@@ -52,6 +52,7 @@ import {
   triggerWeaponAbility,
   type WeaponControllerState,
 } from './weapons';
+import { QrPartyHudModal } from './multiplayer';
 
 export interface MarblePlaytestTelemetry {
   readonly courseId: string;
@@ -163,6 +164,8 @@ export const App: React.FC = () => {
   const [bonusBannerSec, setBonusBannerSec] = useState<number | null>(null);
   const [fps, setFps] = useState<number>(60);
   const [architectOpen, setArchitectOpen] = useState<boolean>(false);
+  const [partyOpen, setPartyOpen] = useState<boolean>(false);
+  const [crowdSeedPrompt, setCrowdSeedPrompt] = useState<string | null>(null);
   const [compiledShaders, setCompiledShaders] = useState<{
     glsl: string;
     wgsl: string;
@@ -442,6 +445,9 @@ export const App: React.FC = () => {
       },
       onTriggerWeapon: (ability) => {
         triggerWeaponInternal(ability);
+      },
+      onToggleParty: () => {
+        setPartyOpen((prev) => !prev);
       },
     });
 
@@ -976,6 +982,7 @@ export const App: React.FC = () => {
         onTriggerWeapon={(ability) => {
           window.__MARBLE_PLAYTEST__?.triggerWeapon(ability);
         }}
+        onToggleParty={() => setPartyOpen((prev) => !prev)}
       />
 
       <ArchitectHookPanel
@@ -984,6 +991,17 @@ export const App: React.FC = () => {
         currentCourse={currentCourse}
         compiledShaders={compiledShaders}
         onApplyCustomCourse={handleApplyCustomCourse}
+        seedPrompt={crowdSeedPrompt}
+      />
+
+      <QrPartyHudModal
+        isOpen={partyOpen}
+        onClose={() => setPartyOpen(false)}
+        onSynthesizeCrowdTwist={(combinedPrompt) => {
+          setCrowdSeedPrompt(combinedPrompt);
+          setPartyOpen(false);
+          setArchitectOpen(true);
+        }}
       />
     </main>
   );

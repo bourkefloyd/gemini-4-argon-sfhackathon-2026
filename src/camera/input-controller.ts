@@ -13,6 +13,7 @@
  *   - `N`: Toggle YM2151 synth mute
  *   - `Q` / `E`: Place Blue / Orange SDF portals (short right-click also places Orange)
  *   - `F` / `V` / `B` / `X`: CSG Crater Bomb / Bridge Extruder / Pop-Ramp / Cryo Freeze
+ *   - `Y`: QR Party arena
  *   - `1`–`6`: Switch the classic campaign courses immediately
  */
 
@@ -35,6 +36,7 @@ export interface ArcadeInputCallbacks {
   onUserGesture?: () => void;
   onFirePortal?: (end: 'blue' | 'orange', pointerNdc?: readonly [number, number]) => void;
   onTriggerWeapon?: (ability: WeaponAbilityId) => void;
+  onToggleParty?: () => void;
 }
 
 export interface ArcadeInputController {
@@ -112,6 +114,8 @@ export function createArcadeInputController(
       callbacks.onTriggerWeapon?.('popRamp');
     } else if (code === 'KeyX' && !isRepeat) {
       callbacks.onTriggerWeapon?.('cryoFreeze');
+    } else if (code === 'KeyY' && !isRepeat) {
+      callbacks.onToggleParty?.();
     } else if (code === 'Digit1') {
       callbacks.onSelectCourse?.(0);
     } else if (code === 'Digit2') {

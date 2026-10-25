@@ -219,10 +219,23 @@ function sdSinglePortalThroat(p: Vec3, pos: Vec3, basis: PortalBasis, radius: nu
 }
 
 /**
- * Evaluate the combined CSG throat cylinder distance for all active linked portal pairs.
- * Subtracted from the world SDF on both CPU and GPU so the marble doesn't collide
- * with the host wall or floor when entering an active portal aperture.
+ * CSG-subtract an active portal throat from a world distance so CPU AST and
+ * `.msdf` bytecode stay in lockstep wherever a linked aperture is carved open.
+ *
+ * The throat cylinder is subtracted from the world SDF on both CPU and GPU so
+ * the marble doesn't collide with the host wall or floor inside an aperture.
  */
+export function applyPortalThroatCarveToDistance(
+  distance: number,
+  p: Vec3,
+  portals: readonly PortalPair[],
+): number {
+  if (portals.length === 0) return distance;
+  const dThroat = evaluatePortalThroatCarve(p, portals);
+  if (dThroat < 100 && -dThroat > distance) return -dThroat;
+  return distance;
+}
+
 export function evaluatePortalThroatCarve(
   p: Vec3,
   portals: readonly PortalPair[],

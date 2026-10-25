@@ -26,7 +26,7 @@ import {
   type SurfaceMaterial,
   type Vec3,
 } from '../contracts';
-import { evaluatePortalThroatCarve } from '../portals';
+import { applyPortalThroatCarveToDistance } from '../portals';
 import { applyFieldMutationsToSample } from '../weapons';
 
 const ZERO_VEC3: Vec3 = [0, 0, 0];
@@ -650,11 +650,11 @@ export function createCpuWorldEvaluator(course: CourseSpec): CpuWorldEvaluator {
       s = applyFieldMutationsToSample(s, p, fieldMutations, time);
     }
     if (portals.length > 0) {
-      const dThroat = evaluatePortalThroatCarve(p, portals);
-      if (dThroat < 100 && -dThroat > s.distance) {
+      const carved = applyPortalThroatCarveToDistance(s.distance, p, portals);
+      if (carved !== s.distance) {
         s = {
           ...s,
-          distance: -dThroat,
+          distance: carved,
         };
       }
     }

@@ -190,6 +190,19 @@ export function createPartyRoomClient(
     }
   }
 
+  if (enableNetwork && typeof fetch === 'function') {
+    void fetch(`${apiBase}/api/party/state`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((remoteSnap: PartyRoomSnapshot | null) => {
+        if (remoteSnap && remoteSnap.roomCode) {
+          emit(remoteSnap);
+        }
+      })
+      .catch(() => {
+        // Local engine stays authoritative until the party middleware is reachable.
+      });
+  }
+
   if (enableNetwork && typeof EventSource !== 'undefined') {
     try {
       eventSource = new EventSource(`${apiBase}/api/party/stream`);

@@ -34,6 +34,7 @@ import {
   evalMsdfBytecodeDistance,
   getLastMsdfMaterialId,
 } from './msdf-bytecode';
+import { applyPortalThroatCarveToDistance } from '../portals';
 import { buildCourseSceneTree, createCpuWorldEvaluator, evaluateSdfTree } from '../sdf/eval-cpu';
 
 export const BRICK_LOGICAL_DIM = 8; // 8x8x8 logical cells per brick
@@ -453,7 +454,11 @@ export function benchmarkSdfEvaluators(
   for (let i = 0; i < sampleCount; i++) {
     const p: Vec3 = [pointsX[i], pointsY[i], pointsZ[i]];
     const dAst = astEvaluator.distance(p, 0);
-    const dRpn = evalMsdfBytecodeDistance(rpnProgram, p[0], p[1], p[2], 0);
+    const dRpn = applyPortalThroatCarveToDistance(
+      evalMsdfBytecodeDistance(rpnProgram, p[0], p[1], p[2], 0),
+      p,
+      course.portals ?? [],
+    );
     const dBrick = sampleSparseBrickAtlasDistance(brickAtlas, p[0], p[1], p[2]);
 
     const rpnDiff = Math.abs(dAst - dRpn);
