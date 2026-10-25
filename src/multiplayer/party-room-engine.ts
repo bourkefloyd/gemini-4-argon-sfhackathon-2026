@@ -198,7 +198,7 @@ export function buildPartyJoinUrl(
 export function createPartyRoomEngine(options: PartyRoomEngineOptions = {}): PartyRoomEngine {
   const roomCode = extractBaseRoomPrefix(options.roomCode);
   let maxMarblesPerRoom = clampMarblesPerRoom(options.maxMarblesPerRoom);
-  const autoOverflow = options.autoOverflow ?? true;
+  const autoOverflow = options.autoOverflow ?? false;
   let activeRoomIndex = 1;
   let lanIp = options.lanIp ?? '127.0.0.1';
   let port = options.port ?? 5173;
@@ -503,11 +503,55 @@ export function createPartyRoomEngine(options: PartyRoomEngineOptions = {}): Par
     let autoOverflowed = false;
 
     if (req.preferredRole !== 'architect') {
-      const assignment = assignRoomAndSlot(requestedRoomIdx);
-      assignedRoomIdx = assignment.roomIndex;
-      assignedRoomId = assignment.roomId;
-      availableSlot = assignment.racerSlot;
-      autoOverflowed = assignment.autoOverflowed;
+      if (
+        typeof req.preferredSlot === 'number' &&
+        req.preferredSlot >= 0 &&
+        req.preferredSlot < maxMarblesPerRoom
+      ) {
+        const targetSlot = Math.floor(req.preferredSlot);
+        const occupant = Array.from(players.values()).find(
+          (p) => p.roomIndex === 1 && p.role === 'racer' && p.racerSlot === targetSlot,
+        );
+        if (!occupant || occupant.isSimulated) {
+          if (occupant) {
+            players.delete(occupant.playerId);
+            playerSecrets.delete(occupant.playerId);
+          }
+          assignedRoomIdx = 1;
+          assignedRoomId = formatRoomId(1);
+          availableSlot = targetSlot;
+          autoOverflowed = false;
+        }
+      }
+
+      if (availableSlot === null) {
+        const assignment = assignRoomAndSlot(requestedRoomIdx);
+        assignedRoomIdx = assignment.roomIndex;
+        assignedRoomId = assignment.roomId;
+        availableSlot = assignment.racerSlot;
+        autoOverflowed = assignment.autoOverflowed;
+      }
+
+      // If all slots in the server-owned 6-player room are full, evict an AI bot or oldest idle slot
+      if (availableSlot === null && !autoOverflow && !req.isSimulated) {
+        const roomRacers = getRoomRacers(1);
+        const aiOccupant = roomRacers.find((p) => p.isSimulated);
+        const targetEvict =
+          aiOccupant ??
+          (maxMarblesPerRoom <= 6
+            ? [...roomRacers].sort(
+                (a, b) => a.lastSeenAtMs - b.lastSeenAtMs || a.joinedAtMs - b.joinedAtMs,
+              )[0]
+            : undefined);
+
+        if (targetEvict && targetEvict.racerSlot !== null) {
+          availableSlot = targetEvict.racerSlot;
+          assignedRoomIdx = 1;
+          assignedRoomId = formatRoomId(1);
+          players.delete(targetEvict.playerId);
+          playerSecrets.delete(targetEvict.playerId);
+        }
+      }
     }
 
     const role = availableSlot !== null ? 'racer' : 'architect';
@@ -536,6 +580,7 @@ export function createPartyRoomEngine(options: PartyRoomEngineOptions = {}): Par
       joinedAtMs: nowMs,
       lastSeenAtMs: nowMs,
       lastActionAtMs: 0,
+      isSimulated: req.isSimulated,
       input: {
         moveXZ: [0, 0],
         jumpPressed: false,
@@ -869,14 +914,27 @@ export function createPartyRoomEngine(options: PartyRoomEngineOptions = {}): Par
     ];
 
     for (let i = 0; i < clampedCount; i++) {
-      const persona = SIMULATED_CROWD_PERSONAS[i % SIMULATED_CROWD_PERSONAS.length];
-      const playerId = i < SIMULATED_CROWD_PERSONAS.length ? persona.id : `sim_phone_${i + 1}`;
-      const handle = i < SIMULATED_CROWD_PERSONAS.length ? persona.handle : `sim_crowd_${i + 1}`;
+      const openSlot = findAvailableSlotInRoom(1);
+      if (openSlot === null && !autoOverflow) {
+        break;
+      }
+      const personaIdx = openSlot !== null ? openSlot : i;
+      const persona = SIMULATED_CROWD_PERSONAS[personaIdx % SIMULATED_CROWD_PERSONAS.length];
+      const playerId =
+        personaIdx < SIMULATED_CROWD_PERSONAS.length
+          ? persona.id
+          : `sim_phone_${personaIdx + 1}`;
+      const handle =
+        personaIdx < SIMULATED_CROWD_PERSONAS.length
+          ? persona.handle
+          : `sim_crowd_${personaIdx + 1}`;
 
       const { player } = joinPlayer(
         {
           playerId,
           handle,
+          preferredSlot: openSlot ?? undefined,
+          isSimulated: true,
         },
         nowMs,
       );

@@ -1,20 +1,17 @@
 /**
  * Retro-Futuristic Marble Madness Arcade HUD (`src/ui/ArcadeHud.tsx`)
  *
- * Clean Fullscreen Default UI + Collapsible Debug Drawer + Multi-Player Perspective Grid Overlay:
+ * Clean Fullscreen Default UI + Unobstructed 6-Player Split-Screen Grid Mode:
  * - Default Fullscreen Mode (`1×1`):
- *   1. Sleek, compact Top Arcade Bar: Course Name (`COURSE 01: MARBLE RAMP GAUNTLET`),
- *      large glowing Countdown Timer (`58.4s`), Score (`001420`), and active Portal / Powerup pill
- *      (`[Q] Smart Portal · [F] Crater · [V] Bridge`).
- *   2. Minimal Top-Right Pill Strip with 4 action buttons:
- *      - `[Tab / V] View: Fullscreen 1×1 ↔ Player Grid (2×2)`
- *      - `[Y] QR Party (Room ARGON-1)`
- *      - `[G] Argon 1M`
- *      - `[` / D] Debug & Controls` (opens collapsible Debug/Telemetry drawer)
- * - Player Perspective Grid Mode (`2×2 / Multi-POV`):
- *   - Overlays a minimal HUD badge on each grid cell (`P1: YOU (14.2 u/s)`, `P2: @MAYA / AI BOT (16.8 u/s)`,
- *     `P3: @DAN / GHOST`, `P4: @ALEX`, plus room badge `ROOM ARGON-1`).
- *   - Clicking any grid cell (or pressing `1`–`4` in grid mode) maximizes that player to Fullscreen.
+ *   1. Sleek, compact Top Arcade Bar: Course Name, Countdown Timer, Score, and Portal / Powerup pill.
+ *   2. Minimal Top-Right Pill Strip: Engine Mode, `[Tab / V] 6P Split-Screen (3×2)`, `[Y] Join Party (N/6)`, `[G] Argon 1M`, `[D] Debug`.
+ * - Split-Screen Grid Mode (`viewMode === 'grid'`, `2×2` or `3×2` for up to 6 players):
+ *   1. Does NOT float the big ArcadeHud top bar over the top row of player tiles!
+ *   2. Docks a compact `32px` Slim Top Strip above the grid containing ONLY:
+ *      Course Name, Timer, and `[Tab] 1×1 Fullscreen` · `[Y] QR Join (N/6)` · `[G] Argon` · `[D] Debug`.
+ *   3. Inside each player's grid cell (`P1` through `P6`), shows ONLY a tiny, ultra-clean color-coded
+ *      corner tag (`● P2 @MAYA · 14.2 u/s`) in the top-left corner (`padding: 2px 7px`, `font-size: 11px`, `pointer-events: none`),
+ *      leaving 98% of every player's viewport completely clear!
  */
 
 import React from 'react';
@@ -37,6 +34,7 @@ import {
   type EngineComparisonMode,
   getEngineModeSpec,
 } from '../physics/basic-polygon-mode';
+import { MAX_PLAYERS } from '../multiplayer/party-types';
 
 export type ViewportDisplayMode = 'fullscreen' | 'grid';
 
@@ -48,6 +46,7 @@ export interface PlayerGridCellHudInfo {
   readonly roomCode: string;
   readonly accentColor: string;
   readonly status: MarbleState['status'];
+  readonly isHuman?: boolean;
 }
 
 export interface ArcadeHudProps {
@@ -69,6 +68,7 @@ export interface ArcadeHudProps {
   readonly architectOpen: boolean;
   readonly partyOpen?: boolean;
   readonly partyRoomCode?: string;
+  readonly partyConnectedCount?: number;
   readonly viewMode?: ViewportDisplayMode;
   readonly focusedPlayerIndex?: number;
   readonly debugDrawerOpen?: boolean;
@@ -114,7 +114,7 @@ export const ArcadeHud: React.FC<ArcadeHudProps> = ({
   botStyle,
   architectOpen,
   partyOpen = false,
-  partyRoomCode = 'ARGON-1',
+  partyConnectedCount = 1,
   viewMode = 'fullscreen',
   focusedPlayerIndex = 0,
   debugDrawerOpen = false,
@@ -162,138 +162,203 @@ export const ArcadeHud: React.FC<ArcadeHudProps> = ({
   const isLowTime = timeRemainingSec <= 12 && marble.status === 'racing';
   const focusedCell = gridCells[focusedPlayerIndex];
   const engineSpec = getEngineModeSpec(engineMode);
+  const visibleCells = gridCells.slice(0, MAX_PLAYERS);
+  const isSixTileGrid = visibleCells.length > 4;
 
   return (
-    <div className="arcade-hud-overlay">
-      {/* SLEEK COMPACT TOP ARCADE BAR + TOP-RIGHT 4-PILL STRIP */}
-      <header className="hud-clean-top-strip">
-        <div className="hud-compact-arcade-bar" data-hud-interactive="true">
-          <div className="hud-compact-course-block">
-            <span className="hud-course-index">
-              COURSE 0{currentCourse.index}:
+    <div
+      className={`arcade-hud-overlay ${
+        viewMode === 'grid' ? 'arcade-hud-overlay-split-grid' : ''
+      }`}
+    >
+      {viewMode === 'grid' ? (
+        /* DOCKED 32PX SLIM TOP STRIP IN SPLIT-SCREEN MODE (NEVER OVERLAPS PLAYER TILES) */
+        <header
+          className="hud-slim-split-top-strip"
+          data-testid="hud-slim-split-top-strip"
+          data-hud-interactive="true"
+        >
+          <div className="hud-slim-left">
+            <span className="hud-slim-course">
+              COURSE 0{currentCourse.index}: {currentCourse.name.toUpperCase()}
             </span>
-            <span className="hud-course-name">
-              {currentCourse.name.toUpperCase()}
-            </span>
-            {focusedPlayerIndex > 0 && focusedCell && viewMode === 'fullscreen' && (
-              <button
-                type="button"
-                className="hud-focused-pov-pill"
-                onClick={() => onSelectGridPlayer?.(0)}
-                title="Click to return to P1: YOU"
-              >
-                POV: {focusedCell.badgeTitle} [1]
-              </button>
-            )}
-          </div>
-
-          <div
-            className={`hud-compact-timer ${isLowTime ? 'hud-timer-critical' : ''}`}
-            data-testid="hud-countdown-timer"
-          >
-            <span className="hud-compact-timer-digits">
+            <span
+              className={`hud-slim-timer ${isLowTime ? 'hud-timer-critical' : ''}`}
+              data-testid="hud-countdown-timer"
+            >
               {Math.max(0, timeRemainingSec).toFixed(1)}s
             </span>
           </div>
 
-          <div className="hud-compact-score">
-            <span className="hud-compact-score-label">SCORE</span>
-            <strong className="hud-compact-score-digits">
-              {score.toString().padStart(6, '0')}
-            </strong>
+          <nav className="hud-slim-actions" aria-label="Split-Screen Quick Actions">
+            <button
+              type="button"
+              className="hud-slim-btn hud-slim-btn-active"
+              onClick={() => onToggleViewMode?.()}
+              data-testid="hud-view-mode-toggle"
+            >
+              [Tab] 1×1 Fullscreen
+            </button>
+            <span className="hud-slim-sep">·</span>
+            <button
+              type="button"
+              className={`hud-slim-btn ${partyOpen ? 'hud-slim-btn-active' : ''}`}
+              onClick={() => onToggleParty?.()}
+              data-testid="hud-party-toggle"
+            >
+              [Y] QR Join ({partyConnectedCount}/{MAX_PLAYERS})
+            </button>
+            <span className="hud-slim-sep">·</span>
+            <button
+              type="button"
+              className={`hud-slim-btn ${architectOpen ? 'hud-slim-btn-active' : ''}`}
+              onClick={onToggleArchitect}
+              data-testid="hud-architect-toggle"
+            >
+              [G] Argon
+            </button>
+            <span className="hud-slim-sep">·</span>
+            <button
+              type="button"
+              className={`hud-slim-btn ${debugDrawerOpen ? 'hud-slim-btn-active' : ''}`}
+              onClick={() => onToggleDebugDrawer?.()}
+              data-testid="hud-debug-toggle"
+            >
+              [D] Debug
+            </button>
+          </nav>
+        </header>
+      ) : (
+        /* SLEEK COMPACT TOP ARCADE BAR + TOP-RIGHT PILL STRIP IN 1x1 FULLSCREEN MODE */
+        <header className="hud-clean-top-strip">
+          <div className="hud-compact-arcade-bar" data-hud-interactive="true">
+            <div className="hud-compact-course-block">
+              <span className="hud-course-index">
+                COURSE 0{currentCourse.index}:
+              </span>
+              <span className="hud-course-name">
+                {currentCourse.name.toUpperCase()}
+              </span>
+              {focusedPlayerIndex > 0 && focusedCell && (
+                <button
+                  type="button"
+                  className="hud-focused-pov-pill"
+                  onClick={() => onSelectGridPlayer?.(0)}
+                  title="Click to return to P1"
+                >
+                  POV: {focusedCell.badgeTitle} [1]
+                </button>
+              )}
+            </div>
+
+            <div
+              className={`hud-compact-timer ${isLowTime ? 'hud-timer-critical' : ''}`}
+              data-testid="hud-countdown-timer"
+            >
+              <span className="hud-compact-timer-digits">
+                {Math.max(0, timeRemainingSec).toFixed(1)}s
+              </span>
+            </div>
+
+            <div className="hud-compact-score">
+              <span className="hud-compact-score-label">SCORE</span>
+              <strong className="hud-compact-score-digits">
+                {score.toString().padStart(6, '0')}
+              </strong>
+            </div>
+
+            <div className="hud-compact-powerup-pill">
+              <button
+                type="button"
+                className="hud-powerup-chip hud-powerup-portal"
+                onClick={() => onFirePortal?.('blue')}
+                title="Fire Smart SDF Portal [Q / E]"
+              >
+                [Q] Smart Portal
+                {portals.length > 0 ? ' (A↔B)' : ''}
+              </button>
+              <span className="hud-powerup-sep">·</span>
+              <button
+                type="button"
+                className={`hud-powerup-chip ${lastActivatedAbility === 'matterBomb' ? 'active' : ''}`}
+                onClick={() => onTriggerWeapon?.('matterBomb')}
+                title="CSG Crater Bomb [F]"
+              >
+                [F] Crater
+              </button>
+              <span className="hud-powerup-sep">·</span>
+              <button
+                type="button"
+                className={`hud-powerup-chip ${bridgeExtruderRemainingSec > 0 ? 'active' : ''}`}
+                onClick={() => onTriggerWeapon?.('bridgeExtruder')}
+                title="Ferrofluid Bridge Extruder [V]"
+              >
+                [V] Bridge
+                {bridgeExtruderRemainingSec > 0
+                  ? ` (${bridgeExtruderRemainingSec.toFixed(1)}s)`
+                  : ''}
+              </button>
+            </div>
           </div>
 
-          <div className="hud-compact-powerup-pill">
+          {/* MINIMAL TOP-RIGHT PILL STRIP */}
+          <nav
+            className="hud-top-right-pill-strip"
+            data-hud-interactive="true"
+            aria-label="Primary View and Arena Actions"
+          >
             <button
               type="button"
-              className="hud-powerup-chip hud-powerup-portal"
-              onClick={() => onFirePortal?.('blue')}
-              title="Fire Smart SDF Portal [Q / E]"
+              className={`hud-action-pill ${engineMode !== 0 ? 'hud-action-pill-active' : 'hud-action-pill-accent'}`}
+              onClick={() => onCycleEngineMode?.()}
+              data-testid="hud-engine-mode-toggle"
+              title={`${engineSpec.label}: ${engineSpec.description} [K]`}
             >
-              [Q] Smart Portal
-              {portals.length > 0 ? ' (A↔B)' : ''}
+              [K] Engine: {engineSpec.shortLabel}
             </button>
-            <span className="hud-powerup-sep">·</span>
+
             <button
               type="button"
-              className={`hud-powerup-chip ${lastActivatedAbility === 'matterBomb' ? 'active' : ''}`}
-              onClick={() => onTriggerWeapon?.('matterBomb')}
-              title="CSG Crater Bomb [F]"
+              className="hud-action-pill"
+              onClick={() => onToggleViewMode?.()}
+              data-testid="hud-view-mode-toggle"
+              title="Toggle Fullscreen (1×1) vs 6-Player Split-Screen Grid (3×2) [Tab]"
             >
-              [F] Crater
+              [Tab] Split-Screen ({isSixTileGrid ? '3×2' : '2×2'})
             </button>
-            <span className="hud-powerup-sep">·</span>
+
             <button
               type="button"
-              className={`hud-powerup-chip ${bridgeExtruderRemainingSec > 0 ? 'active' : ''}`}
-              onClick={() => onTriggerWeapon?.('bridgeExtruder')}
-              title="Ferrofluid Bridge Extruder [V]"
+              className={`hud-action-pill ${partyOpen ? 'hud-action-pill-active' : ''}`}
+              onClick={() => onToggleParty?.()}
+              data-testid="hud-party-toggle"
+              title="Open 6-Player QR Party Join Modal [Y]"
             >
-              [V] Bridge
-              {bridgeExtruderRemainingSec > 0
-                ? ` (${bridgeExtruderRemainingSec.toFixed(1)}s)`
-                : ''}
+              [Y] Join Party ({partyConnectedCount}/{MAX_PLAYERS})
             </button>
-          </div>
-        </div>
 
-        {/* MINIMAL TOP-RIGHT 4-PILL STRIP */}
-        <nav
-          className="hud-top-right-pill-strip"
-          data-hud-interactive="true"
-          aria-label="Primary View and Arena Actions"
-        >
-          <button
-            type="button"
-            className={`hud-action-pill ${engineMode !== 0 ? 'hud-action-pill-active' : 'hud-action-pill-accent'}`}
-            onClick={() => onCycleEngineMode?.()}
-            data-testid="hud-engine-mode-toggle"
-            title={`${engineSpec.label}: ${engineSpec.description} [K]`}
-          >
-            [K] Engine: {engineSpec.shortLabel}
-          </button>
+            <button
+              type="button"
+              className={`hud-action-pill ${architectOpen ? 'hud-action-pill-accent' : ''}`}
+              onClick={onToggleArchitect}
+              data-testid="hud-architect-toggle"
+              title="Open Gemini 4 Argon 1M Course Architect [G]"
+            >
+              [G] Argon 1M
+            </button>
 
-          <button
-            type="button"
-            className={`hud-action-pill ${viewMode === 'grid' ? 'hud-action-pill-active' : ''}`}
-            onClick={() => onToggleViewMode?.()}
-            data-testid="hud-view-mode-toggle"
-            title="Toggle Fullscreen (1×1) vs Multi-Player Perspective Grid (2×2) [Tab]"
-          >
-            [Tab / V] View: {viewMode === 'grid' ? 'Player Grid (2×2)' : 'Fullscreen 1×1'}
-          </button>
-
-          <button
-            type="button"
-            className={`hud-action-pill ${partyOpen ? 'hud-action-pill-active' : ''}`}
-            onClick={() => onToggleParty?.()}
-            data-testid="hud-party-toggle"
-            title="Open QR Multiplayer Party Lobby [Y]"
-          >
-            [Y] QR Party (Room {partyRoomCode})
-          </button>
-
-          <button
-            type="button"
-            className={`hud-action-pill ${architectOpen ? 'hud-action-pill-accent' : ''}`}
-            onClick={onToggleArchitect}
-            data-testid="hud-architect-toggle"
-            title="Open Gemini 4 Argon 1M Course Architect [G]"
-          >
-            [G] Argon 1M
-          </button>
-
-          <button
-            type="button"
-            className={`hud-action-pill ${debugDrawerOpen ? 'hud-action-pill-active' : ''}`}
-            onClick={() => onToggleDebugDrawer?.()}
-            data-testid="hud-debug-toggle"
-            title="Toggle Collapsible Debug & Telemetry Drawer [`]"
-          >
-            [` / D] Debug &amp; Controls
-          </button>
-        </nav>
-      </header>
+            <button
+              type="button"
+              className={`hud-action-pill ${debugDrawerOpen ? 'hud-action-pill-active' : ''}`}
+              onClick={() => onToggleDebugDrawer?.()}
+              data-testid="hud-debug-toggle"
+              title="Toggle Collapsible Debug & Telemetry Drawer [` / D]"
+            >
+              [` / D] Debug
+            </button>
+          </nav>
+        </header>
+      )}
 
       {bonusBannerSec !== null && (
         <div className="hud-bonus-carryover-banner hud-bonus-floating">
@@ -360,16 +425,20 @@ export const ArcadeHud: React.FC<ArcadeHudProps> = ({
         </div>
       )}
 
-      {/* MULTI-PLAYER PERSPECTIVE 2×2 GRID OVERLAY BADGES */}
-      {viewMode === 'grid' && gridCells.length > 0 && (
+      {/* MULTI-PLAYER SPLIT-SCREEN GRID OVERLAY (UP TO 6 TILES IN 3×2 OR 4 TILES IN 2×2) */}
+      {viewMode === 'grid' && visibleCells.length > 0 && (
         <div
-          className="hud-player-grid-overlay"
+          className={`hud-player-grid-overlay ${
+            isSixTileGrid ? 'hud-player-grid-3x2' : 'hud-player-grid-2x2'
+          }`}
           data-testid="hud-player-grid-overlay"
         >
-          {gridCells.slice(0, 4).map((cell, idx) => (
+          {visibleCells.map((cell, idx) => (
             <div
               key={cell.slotIndex}
-              className={`hud-grid-cell-frame ${focusedPlayerIndex === idx ? 'hud-grid-cell-focused' : ''}`}
+              className={`hud-grid-cell-frame ${
+                focusedPlayerIndex === idx ? 'hud-grid-cell-focused' : ''
+              }`}
               data-hud-interactive="true"
               data-testid={`hud-grid-cell-${idx}`}
               onClick={() => onSelectGridPlayer?.(idx)}
@@ -383,32 +452,17 @@ export const ArcadeHud: React.FC<ArcadeHudProps> = ({
               }}
               title={`Click or press [${idx + 1}] to maximize ${cell.badgeTitle} to Fullscreen`}
             >
-              <div className="hud-grid-cell-top-row">
-                <div
-                  className="hud-grid-player-badge"
-                  style={{ borderColor: cell.accentColor }}
-                >
-                  <span
-                    className="hud-grid-player-dot"
-                    style={{ background: cell.accentColor }}
-                  />
-                  <strong className="hud-grid-player-title">
-                    {cell.badgeTitle}
-                  </strong>
-                  <span className="hud-grid-player-speed">
-                    ({cell.speedUps.toFixed(1)} u/s)
-                  </span>
-                </div>
-
-                <div className="hud-grid-room-badge">
-                  ROOM {cell.roomCode}
-                </div>
-              </div>
-
-              <div className="hud-grid-cell-bottom-row">
-                <span className="hud-grid-player-subtitle">{cell.subtitle}</span>
-                <span className="hud-grid-maximize-hint">
-                  [{idx + 1} / CLICK] FULLSCREEN
+              <div
+                className="hud-grid-corner-tag"
+                data-testid={`hud-grid-corner-tag-${idx}`}
+                style={{ borderColor: cell.accentColor }}
+              >
+                <span
+                  className="hud-grid-player-dot"
+                  style={{ background: cell.accentColor }}
+                />
+                <span className="hud-grid-corner-label">
+                  {cell.badgeTitle} · {cell.speedUps.toFixed(1)} u/s
                 </span>
               </div>
             </div>
@@ -416,8 +470,8 @@ export const ArcadeHud: React.FC<ArcadeHudProps> = ({
         </div>
       )}
 
-      {/* CENTER STATUS OVERLAY: Goal / Shattered / Sunk / Fell */}
-      {marble.status !== 'racing' && (
+      {/* CENTER STATUS OVERLAY: Goal / Shattered / Sunk / Fell (Only in Fullscreen or Goal) */}
+      {marble.status !== 'racing' && (viewMode === 'fullscreen' || marble.status === 'goal') && (
         <div className="hud-status-modal" data-hud-interactive="true">
           {marble.status === 'goal' && (
             <div className="hud-status-card hud-status-goal">
@@ -720,7 +774,7 @@ export const ArcadeHud: React.FC<ArcadeHudProps> = ({
             <div className="hud-keybind-hint">
               <span>WASD / DRAG: Roll Trackball</span>
               <span>SPACE: Hop</span>
-              <span>TAB: 1×1 ↔ 2×2 Grid</span>
+              <span>TAB: 1×1 ↔ 3×2 Split</span>
               <span>P: AI Bot</span>
               <span>N: Synth</span>
               <span>G: Argon 1M</span>

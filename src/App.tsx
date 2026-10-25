@@ -70,9 +70,13 @@ import {
 import {
   createMultiMarbleArenaSimulation,
   createPartyRoomClient,
+  getArenaSlotSpawnPosition,
+  MAX_PLAYERS,
+  PLAYER_MARBLE_PALETTE,
   QrPartyHudModal,
+  resolveMarbleCollisions,
 } from './multiplayer';
-import type { GridTileViewInput } from './rendering';
+import type { GridTileViewInput, OtherMarbleRenderInput } from './rendering';
 import type { PlayerGridCellHudInfo, ViewportDisplayMode } from './ui/ArcadeHud';
 
 export interface MarblePlaytestTelemetry {
@@ -213,26 +217,43 @@ export const App: React.FC = () => {
   const shatterSimRef = useLazyRef(() => createShatterSimulator());
   const shockwaveMgrRef = useLazyRef(() => createShockwaveManager());
   const botControllerRef = useRef<BotPlaytestController | null>(null);
-  const partyClientRef = useLazyRef(() => createPartyRoomClient({ roomCode: 'ARGON-1' }));
+  const partyClientRef = useLazyRef(() => createPartyRoomClient({ roomCode: 'ARGON' }));
   const multiMarbleSimRef = useLazyRef(() => createMultiMarbleArenaSimulation(currentCourse));
-  const aiRivalSim2Ref = useLazyRef(() =>
-    createMarbleSimulation(currentCourse, evaluatorRef.current),
+  const aiRivalsRef = useLazyRef(() => {
+    const styles: readonly BotPlayStyle[] = [
+      'speedrunner',
+      'tourist',
+      'chaos-explorer',
+      'speedrunner',
+      'tourist',
+    ];
+    const defaultHandles = ['MAYA', 'DAN', 'ALEX', 'ZOE', 'KAI'];
+    return styles.map((style, idx) => {
+      const slotIndex = idx + 1; // Slots 1..5 (P2..P6)
+      const spawnPos = getArenaSlotSpawnPosition(currentCourse.startPos, slotIndex);
+      const slotCourse: CourseSpec = { ...currentCourse, startPos: spawnPos };
+      const sim = createMarbleSimulation(slotCourse, evaluatorRef.current);
+      sim.setState({
+        ...sim.getState(),
+        position: spawnPos,
+        prevPosition: spawnPos,
+        respawnPos: spawnPos,
+        marblePresetIndex: slotIndex % 4,
+      });
+      const driver = createAutonomousDriver(slotCourse, evaluatorRef.current, { style });
+      return {
+        slotIndex,
+        defaultHandle: defaultHandles[idx] ?? `BOT${slotIndex + 1}`,
+        sim,
+        driver,
+      };
+    });
+  });
+  const tileCameraRigsRef = useLazyRef(() =>
+    Array.from({ length: MAX_PLAYERS }, () =>
+      createIsometricCameraRig(currentCourse, currentCourse.startPos),
+    ),
   );
-  const aiRivalDriver2Ref = useLazyRef(() =>
-    createAutonomousDriver(currentCourse, evaluatorRef.current, { style: 'speedrunner' }),
-  );
-  const aiRivalSim4Ref = useLazyRef(() =>
-    createMarbleSimulation(currentCourse, evaluatorRef.current),
-  );
-  const aiRivalDriver4Ref = useLazyRef(() =>
-    createAutonomousDriver(currentCourse, evaluatorRef.current, { style: 'chaos-explorer' }),
-  );
-  const tileCameraRigsRef = useLazyRef(() => [
-    createIsometricCameraRig(currentCourse, currentCourse.startPos),
-    createIsometricCameraRig(currentCourse, currentCourse.startPos),
-    createIsometricCameraRig(currentCourse, currentCourse.startPos),
-    createIsometricCameraRig(currentCourse, currentCourse.startPos),
-  ]);
 
   const [uiMarble, setUiMarble] = useState<MarbleState>(() => simRef.current.getState());
   const [uiCamera, setUiCamera] = useState<CameraState>(() => cameraRigRef.current.getState());
@@ -258,7 +279,8 @@ export const App: React.FC = () => {
   const [debugDrawerOpen, setDebugDrawerOpen] = useState<boolean>(false);
   const [engineMode, setEngineMode] = useState<EngineComparisonMode>(0);
   const [uiGridCells, setUiGridCells] = useState<readonly PlayerGridCellHudInfo[]>([]);
-  const [partyRoomCode, setPartyRoomCode] = useState<string>('ARGON-1');
+  const [partyRoomCode, setPartyRoomCode] = useState<string>('ARGON');
+  const [partyConnectedCount, setPartyConnectedCount] = useState<number>(1);
   const [crowdSeedPrompt, setCrowdSeedPrompt] = useState<string | null>(null);
   const [compiledShaders, setCompiledShaders] = useState<{
     glsl: string;
@@ -336,18 +358,19 @@ export const App: React.FC = () => {
       shatterSimRef.current.reset();
       shockwaveMgrRef.current.clear();
       multiMarbleSimRef.current.setCourse(nextCourse);
-      aiRivalSim2Ref.current.setCourse(nextCourse, nextEval);
-      aiRivalSim2Ref.current.setState({
-        ...aiRivalSim2Ref.current.getState(),
-        marblePresetIndex: 1,
-      });
-      aiRivalDriver2Ref.current.reset(nextCourse, nextEval);
-      aiRivalSim4Ref.current.setCourse(nextCourse, nextEval);
-      aiRivalSim4Ref.current.setState({
-        ...aiRivalSim4Ref.current.getState(),
-        marblePresetIndex: 3,
-      });
-      aiRivalDriver4Ref.current.reset(nextCourse, nextEval);
+      for (const rival of aiRivalsRef.current) {
+        const spawnPos = getArenaSlotSpawnPosition(nextCourse.startPos, rival.slotIndex);
+        const slotCourse: CourseSpec = { ...nextCourse, startPos: spawnPos };
+        rival.sim.setCourse(slotCourse, nextEval);
+        rival.sim.setState({
+          ...rival.sim.getState(),
+          position: spawnPos,
+          prevPosition: spawnPos,
+          respawnPos: spawnPos,
+          marblePresetIndex: rival.slotIndex % 4,
+        });
+        rival.driver.reset(slotCourse, nextEval);
+      }
       for (const rig of tileCameraRigsRef.current) {
         rig.snapToCourse(nextCourse, nextCourse.startPos);
       }
@@ -590,16 +613,255 @@ export const App: React.FC = () => {
     };
 
     const selectGridPlayerInternal = (slotIndex: number) => {
-      const clamped = Math.max(0, Math.min(3, Math.floor(slotIndex)));
+      const clamped = Math.max(0, Math.min(MAX_PLAYERS - 1, Math.floor(slotIndex)));
       focusedPlayerIdxRef.current = clamped;
       setFocusedPlayerIndex(clamped);
       viewModeRef.current = 'fullscreen';
       setViewMode('fullscreen');
     };
 
+    const stepMultiplayerAndBuildGrid = (
+      stepDt: number,
+      course: CourseSpec,
+      p1Marble: MarbleState,
+      p1Pos: Vec3,
+      p1Quat: readonly [number, number, number, number],
+      cam0: CameraState,
+    ) => {
+      const partySnap = partyClientRef.current.getSnapshot();
+      const currentRoomCode = partySnap.roomCode || 'ARGON';
+
+      if (partySnap.activeMutations && partySnap.activeMutations.length > 0) {
+        let updatedMutations = weaponStateRef.current.mutations;
+        let addedAny = false;
+        for (const pm of partySnap.activeMutations) {
+          if (!seenPartyMutationIdsRef.current.has(pm.id)) {
+            seenPartyMutationIdsRef.current.add(pm.id);
+            addedAny = true;
+            const fieldKind: FieldMutation['kind'] =
+              pm.kind === 'craterMortar'
+                ? 'subtractSphere'
+                : pm.kind === 'rescueBridge'
+                  ? 'unionCapsule'
+                  : pm.kind === 'tectonicRamp'
+                    ? 'unionRamp'
+                    : 'materialOverride';
+            const fieldMut: FieldMutation = {
+              id: pm.id,
+              kind: fieldKind,
+              posA: pm.position,
+              posB:
+                pm.kind === 'tectonicRamp'
+                  ? [0, 1.85, -1]
+                  : pm.secondaryPos ?? [pm.position[0], pm.position[1], pm.position[2] - 2.2],
+              radius: pm.radius,
+              blendK: pm.blendK,
+              material: pm.material,
+              spawnTime: simTimeRef.current,
+              ttl: Math.max(4.0, (pm.expiresAtMs - pm.createdAtMs) / 1000 || 12.0),
+            };
+            updatedMutations = appendFieldMutation(
+              updatedMutations,
+              fieldMut,
+              simTimeRef.current,
+            );
+          }
+        }
+        if (addedAny) {
+          weaponStateRef.current = {
+            ...weaponStateRef.current,
+            mutations: updatedMutations,
+          };
+          evaluatorRef.current.setFieldMutations?.(updatedMutations);
+        }
+      }
+
+      multiMarbleSimRef.current.syncPlayersFromRoom(partySnap);
+      const partyRacerSource = partySnap.roomPlayers ?? partySnap.players;
+      const partyInputs = new Map<
+        string,
+        { moveXZ: readonly [number, number]; jumpPressed: boolean; respawnPressed: boolean }
+      >();
+      for (const p of partyRacerSource) {
+        if (p.role === 'racer') {
+          partyInputs.set(p.playerId, {
+            moveXZ: p.input.moveXZ,
+            jumpPressed: p.input.jumpPressed,
+            respawnPressed: false,
+          });
+        }
+      }
+      const partyStep = multiMarbleSimRef.current.stepFixed(
+        stepDt,
+        partyInputs,
+        simTimeRef.current,
+      );
+      const partyBySlot = new Map<number, (typeof partyStep.marbles)[number]>();
+      for (const m of partyStep.marbles) {
+        partyBySlot.set(m.slotIndex, m);
+      }
+
+      // Step autonomous AI rivals for any open slots 1..5 so 6-player split-screen always has 6 live marbles
+      const rivalOutputs = aiRivalsRef.current.map((rival) => {
+        const cur = rival.sim.getState();
+        if (cur.status !== 'racing' && cur.statusTimer > 1.1) {
+          const spawnPos = getArenaSlotSpawnPosition(course.startPos, rival.slotIndex);
+          rival.sim.setState({
+            ...cur,
+            position: spawnPos,
+            prevPosition: spawnPos,
+            velocity: [0, 0, 0],
+            status: 'racing',
+            statusTimer: 0,
+          });
+          rival.driver.reset({ ...course, startPos: spawnPos }, evaluatorRef.current);
+        }
+        const dec = rival.driver.stepDecision(
+          rival.sim.getState(),
+          simTimeRef.current,
+          stepDt,
+        );
+        const out = rival.sim.update(stepDt, dec.commands, simTimeRef.current);
+        return {
+          slotIndex: rival.slotIndex,
+          defaultHandle: rival.defaultHandle,
+          sim: rival.sim,
+          state: out.state,
+          renderPosition: out.renderPosition,
+          renderOrientation: out.renderOrientation,
+        };
+      });
+
+      // Assemble all 6 player slots (P1..P6)
+      const slotEntries = PLAYER_MARBLE_PALETTE.map((palette, slotIdx) => {
+        const partySlot = partyBySlot.get(slotIdx);
+        if (slotIdx === 0) {
+          return {
+            slotIndex: 0,
+            palette,
+            handle: partySlot ? partySlot.handle.toUpperCase() : 'YOU',
+            isHuman: true,
+            marble: p1Marble,
+            renderPosition: p1Pos,
+            renderOrientation: p1Quat,
+          };
+        }
+        const rival = rivalOutputs[slotIdx - 1];
+        const useParty = Boolean(partySlot);
+        const mState = useParty ? partySlot!.state : rival.state;
+        const rPos = useParty ? partySlot!.state.position : rival.renderPosition;
+        const rQuat = useParty ? partySlot!.state.orientation : rival.renderOrientation;
+        return {
+          slotIndex: slotIdx,
+          palette,
+          handle: useParty ? partySlot!.handle.toUpperCase() : rival.defaultHandle,
+          isHuman: Boolean(partySlot),
+          marble: mState,
+          renderPosition: rPos,
+          renderOrientation: rQuat,
+        };
+      });
+
+      // Resolve pairwise 3D marble-marble bumper collisions across all 6 active marbles
+      const collisionResolved = resolveMarbleCollisions(slotEntries.map((s) => s.marble));
+      for (let i = 1; i < slotEntries.length; i++) {
+        const updated = collisionResolved.states[i];
+        slotEntries[i].marble = updated;
+        slotEntries[i].renderPosition = updated.position;
+        if (!partyBySlot.has(i)) {
+          aiRivalsRef.current[i - 1]?.sim.setState(updated);
+        }
+      }
+
+      const rigs = tileCameraRigsRef.current;
+      rigs[0].setZoomStop(cameraRigRef.current.getState().zoomStopIndex);
+      const cameras: CameraState[] = [cam0];
+      for (let i = 1; i < MAX_PLAYERS; i++) {
+        rigs[i].setZoomStop('isometric');
+        cameras.push(
+          rigs[i].update(
+            stepDt,
+            course,
+            slotEntries[i].marble,
+            slotEntries[i].renderPosition,
+            evaluatorRef.current,
+            simTimeRef.current,
+          ),
+        );
+      }
+
+      const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+      const fullW = Math.max(3, Math.floor((canvas.clientWidth || window.innerWidth) * dpr));
+      const fullH = Math.max(2, Math.floor((canvas.clientHeight || window.innerHeight) * dpr));
+
+      // Dynamic 3×2 grid (6 tiles: 3 columns × 2 rows) for 5–6 marbles, or 2×2 for 1–4
+      const activeCount = slotEntries.length;
+      const cols = activeCount > 4 ? 3 : 2;
+      const rows = 2;
+      const colW = Math.floor(fullW / cols);
+      const rowH = Math.floor(fullH / rows);
+
+      const tileDefs: readonly GridTileViewInput[] = slotEntries.map((entry, idx) => {
+        const col = idx % cols;
+        const row = Math.floor(idx / cols); // 0 = top row, 1 = bottom row
+        const vx = col * colW;
+        const vw = col === cols - 1 ? fullW - vx : colW;
+        // WebGL2 viewport y=0 is bottom row; top row (row=0) has y = rowH
+        const vy = row === 0 ? rowH : 0;
+        const vh = row === 0 ? fullH - rowH : rowH;
+
+        const otherMarbles: OtherMarbleRenderInput[] = slotEntries
+          .filter((other) => other.slotIndex !== idx)
+          .map((other) => ({
+            position: other.renderPosition,
+            radius: other.marble.radius,
+            color: other.palette.rgb,
+            slotIndex: other.slotIndex,
+          }));
+
+        return {
+          tileIndex: idx,
+          viewport: { x: vx, y: vy, width: vw, height: vh },
+          camera: cameras[idx],
+          marble: entry.marble,
+          renderPosition: entry.renderPosition,
+          renderOrientation: entry.renderOrientation,
+          marbleColor: entry.palette.rgb,
+          otherMarbles,
+          ghostActive: false,
+        };
+      });
+
+      const nextGridCells: readonly PlayerGridCellHudInfo[] = slotEntries.map((entry) => {
+        const speed = Math.hypot(
+          entry.marble.velocity[0],
+          entry.marble.velocity[1],
+          entry.marble.velocity[2],
+        );
+        return {
+          slotIndex: entry.slotIndex,
+          badgeTitle: `${entry.palette.slotId} @${entry.handle}`,
+          subtitle: entry.palette.marbleTitle,
+          speedUps: speed,
+          roomCode: currentRoomCode,
+          accentColor: entry.palette.hex,
+          status: entry.marble.status,
+          isHuman: entry.isHuman,
+        };
+      });
+      gridCellsRef.current = nextGridCells;
+
+      return {
+        tileDefs,
+        nextGridCells,
+        currentRoomCode,
+        connectedCount: Math.max(1, partyBySlot.size || 1),
+      };
+    };
+
     const inputCtrl = createArcadeInputController(window, {
       onSelectCourse: (idx) => {
-        if (viewModeRef.current === 'grid' && idx >= 0 && idx < 4) {
+        if (viewModeRef.current === 'grid' && idx >= 0 && idx < MAX_PLAYERS) {
           selectGridPlayerInternal(idx);
           return;
         }
@@ -840,13 +1102,24 @@ export const App: React.FC = () => {
           evaluatorRef.current,
           simTimeRef.current,
         );
+        const gridOut = stepMultiplayerAndBuildGrid(
+          (count * dt) || 1 / 60,
+          activeCourseRef.current,
+          mState,
+          mState.position,
+          mState.orientation,
+          camState,
+        );
+        const focusedTile = gridOut.tileDefs[focusedPlayerIdxRef.current] ?? gridOut.tileDefs[0];
         const shockUniforms = shockwaveMgrRef.current.packUniforms();
         renderer.render({
           course: activeCourseRef.current,
-          marble: mState,
-          renderPosition: mState.position,
-          renderOrientation: mState.orientation,
-          camera: camState,
+          marble: viewModeRef.current === 'fullscreen' ? focusedTile.marble : mState,
+          renderPosition: viewModeRef.current === 'fullscreen' ? focusedTile.renderPosition : mState.position,
+          renderOrientation: viewModeRef.current === 'fullscreen' ? focusedTile.renderOrientation : mState.orientation,
+          marbleColor: focusedTile.marbleColor,
+          otherMarbles: focusedTile.otherMarbles,
+          camera: viewModeRef.current === 'fullscreen' ? focusedTile.camera : camState,
           time: simTimeRef.current,
           glassStress: latestSensory.feel.stress.glassStress,
           crackVisibility: latestSensory.feel.stress.crackVisibility,
@@ -870,6 +1143,7 @@ export const App: React.FC = () => {
           portals: portalsRef.current,
           portalAimPreview: portalAimPreviewRef.current,
           engineMode: engineModeRef.current,
+          gridTiles: viewModeRef.current === 'grid' ? gridOut.tileDefs : undefined,
         });
         setUiMarble(mState);
         setUiCamera(camState);
@@ -879,6 +1153,9 @@ export const App: React.FC = () => {
         setUiPortals(portalsRef.current);
         setUiWeaponState(weaponStateRef.current);
         setTimeRemainingSec(timeRemainingRef.current);
+        setUiGridCells(gridOut.nextGridCells);
+        setPartyRoomCode(gridOut.currentRoomCode);
+        setPartyConnectedCount(gridOut.connectedCount);
         return buildTelemetrySnapshot();
       },
       respawn: (atCheckpoint = true) => {
@@ -1118,308 +1395,76 @@ export const App: React.FC = () => {
 
         const shockUniforms = shockwaveMgrRef.current.packUniforms();
 
-        // Step AI rivals & sync QR Party racers + Crowd Mutations for Multi-Player Perspective Grid (2×2)
-        const partySnap = partyClientRef.current.getSnapshot();
-        const currentRoomCode = partySnap.roomId || partySnap.roomCode || 'ARGON-1';
-
-        if (partySnap.activeMutations && partySnap.activeMutations.length > 0) {
-          let updatedMutations = weaponStateRef.current.mutations;
-          let addedAny = false;
-          for (const pm of partySnap.activeMutations) {
-            if (!seenPartyMutationIdsRef.current.has(pm.id)) {
-              seenPartyMutationIdsRef.current.add(pm.id);
-              addedAny = true;
-              const fieldKind: FieldMutation['kind'] =
-                pm.kind === 'craterMortar'
-                  ? 'subtractSphere'
-                  : pm.kind === 'rescueBridge'
-                    ? 'unionCapsule'
-                    : pm.kind === 'tectonicRamp'
-                      ? 'unionRamp'
-                      : 'materialOverride';
-              const fieldMut: FieldMutation = {
-                id: pm.id,
-                kind: fieldKind,
-                posA: pm.position,
-                posB:
-                  pm.kind === 'tectonicRamp'
-                    ? [0, 1.85, -1]
-                    : pm.secondaryPos ?? [pm.position[0], pm.position[1], pm.position[2] - 2.2],
-                radius: pm.radius,
-                blendK: pm.blendK,
-                material: pm.material,
-                spawnTime: simTimeRef.current,
-                ttl: Math.max(4.0, (pm.expiresAtMs - pm.createdAtMs) / 1000 || 12.0),
-              };
-              updatedMutations = appendFieldMutation(
-                updatedMutations,
-                fieldMut,
-                simTimeRef.current,
-              );
-            }
-          }
-          if (addedAny) {
-            weaponStateRef.current = {
-              ...weaponStateRef.current,
-              mutations: updatedMutations,
-            };
-            evaluatorRef.current.setFieldMutations?.(updatedMutations);
-          }
-        }
-
-        multiMarbleSimRef.current.syncPlayersFromRoom(partySnap);
-        const partyRacerSource = partySnap.roomPlayers ?? partySnap.players;
-        const partyInputs = new Map<
-          string,
-          { moveXZ: readonly [number, number]; jumpPressed: boolean; respawnPressed: boolean }
-        >();
-        for (const p of partyRacerSource) {
-          if (p.role === 'racer') {
-            partyInputs.set(p.playerId, {
-              moveXZ: p.input.moveXZ,
-              jumpPressed: p.input.jumpPressed,
-              respawnPressed: false,
-            });
-          }
-        }
-        const partyStep = multiMarbleSimRef.current.stepFixed(
+        const {
+          tileDefs,
+          nextGridCells,
+          currentRoomCode,
+          connectedCount,
+        } = stepMultiplayerAndBuildGrid(
           rawDt,
-          partyInputs,
-          simTimeRef.current,
+          course,
+          marbleState,
+          renderPosition,
+          renderOrientation,
+          camState,
         );
-        const activePartyMarbles = partyStep.marbles;
 
-      const rival2Cur = aiRivalSim2Ref.current.getState();
-      if (rival2Cur.status === 'goal') {
-        aiRivalSim2Ref.current.respawn(false);
-        aiRivalDriver2Ref.current.reset(course, evaluatorRef.current);
-      }
-      const dec2 = aiRivalDriver2Ref.current.stepDecision(
-        aiRivalSim2Ref.current.getState(),
-        simTimeRef.current,
-        rawDt,
-      );
-      const rival2Out = aiRivalSim2Ref.current.update(
-        rawDt,
-        dec2.commands,
-        simTimeRef.current,
-      );
+        const focusedTile = tileDefs[focusedPlayerIdxRef.current] ?? tileDefs[0];
 
-      const rival4Cur = aiRivalSim4Ref.current.getState();
-      if (rival4Cur.status === 'goal') {
-        aiRivalSim4Ref.current.respawn(false);
-        aiRivalDriver4Ref.current.reset(course, evaluatorRef.current);
-      }
-      const dec4 = aiRivalDriver4Ref.current.stepDecision(
-        aiRivalSim4Ref.current.getState(),
-        simTimeRef.current,
-        rawDt,
-      );
-      const rival4Out = aiRivalSim4Ref.current.update(
-        rawDt,
-        dec4.commands,
-        simTimeRef.current,
-      );
+        renderer.render({
+          course,
+          marble: viewModeRef.current === 'fullscreen' ? focusedTile.marble : marbleState,
+          renderPosition: viewModeRef.current === 'fullscreen' ? focusedTile.renderPosition : renderPosition,
+          renderOrientation: viewModeRef.current === 'fullscreen' ? focusedTile.renderOrientation : renderOrientation,
+          marbleColor: focusedTile.marbleColor,
+          otherMarbles: focusedTile.otherMarbles,
+          camera: viewModeRef.current === 'fullscreen' ? focusedTile.camera : camState,
+          time: simTimeRef.current,
+          glassStress: sensoryStep.feel.stress.glassStress,
+          crackVisibility: sensoryStep.feel.stress.crackVisibility,
+          stressGlow: sensoryStep.feel.stress.stressGlowIntensity,
+          ghostActive: sensoryStep.ghostPose.active,
+          ghostPos: sensoryStep.ghostPose.position,
+          ghostQuat: sensoryStep.ghostPose.orientation,
+          ghostColor: [
+            sensoryStep.ghostPose.holoColorRgba[0],
+            sensoryStep.ghostPose.holoColorRgba[1],
+            sensoryStep.ghostPose.holoColorRgba[2],
+          ],
+          shatterShards: shatterSimRef.current.packUniforms(),
+          shatterShardCount: shatterSimRef.current.getState().active
+            ? shatterSimRef.current.getState().shards.length
+            : 0,
+          shockwaveRings: shockUniforms.uShockwaveRings,
+          shockwaveParams: shockUniforms.uShockwaveParams,
+          rimDanger: shockUniforms.uRimDanger,
+          fieldMutations: weaponStateRef.current.mutations,
+          portals: portalsRef.current,
+          portalAimPreview: portalAimPreviewRef.current,
+          engineMode: engineModeRef.current,
+          gridTiles: viewModeRef.current === 'grid' ? tileDefs : undefined,
+        });
 
-      // Build 4 POV slots (binding to QR Party racers when connected, or AI Bot / Ghost / Aerial POVs)
-      const ghostPose = sensoryStep.ghostPose;
-      const ghostMarbleState: MarbleState = {
-        ...marbleState,
-        position: ghostPose.position,
-        prevPosition: ghostPose.position,
-        velocity: ghostPose.velocity,
-        orientation: ghostPose.orientation,
-        prevOrientation: ghostPose.orientation,
-        marblePresetIndex: 2,
-        status: 'racing',
-      };
-
-      const slot0Party = activePartyMarbles[0];
-      const slot1Party = activePartyMarbles[1];
-      const slot2Party = activePartyMarbles[2];
-      const slot3Party = activePartyMarbles[3];
-
-      const p1Marble = marbleState;
-      const p1Pos = renderPosition;
-      const p1Quat = renderOrientation;
-      const p1Speed = Math.hypot(p1Marble.velocity[0], p1Marble.velocity[1], p1Marble.velocity[2]);
-
-      const p2Marble = slot1Party ? slot1Party.state : rival2Out.state;
-      const p2Pos = slot1Party ? slot1Party.state.position : rival2Out.renderPosition;
-      const p2Quat = slot1Party ? slot1Party.state.orientation : rival2Out.renderOrientation;
-      const p2Speed = Math.hypot(p2Marble.velocity[0], p2Marble.velocity[1], p2Marble.velocity[2]);
-
-      const p3Marble = slot2Party ? slot2Party.state : ghostMarbleState;
-      const p3Pos = slot2Party ? slot2Party.state.position : ghostPose.position;
-      const p3Quat = slot2Party ? slot2Party.state.orientation : ghostPose.orientation;
-      const p3Speed = Math.hypot(p3Marble.velocity[0], p3Marble.velocity[1], p3Marble.velocity[2]);
-
-      const p4Marble = slot3Party ? slot3Party.state : rival4Out.state;
-      const p4Pos = slot3Party ? slot3Party.state.position : rival4Out.renderPosition;
-      const p4Quat = slot3Party ? slot3Party.state.orientation : rival4Out.renderOrientation;
-      const p4Speed = Math.hypot(p4Marble.velocity[0], p4Marble.velocity[1], p4Marble.velocity[2]);
-
-      const rigs = tileCameraRigsRef.current;
-      rigs[0].setZoomStop(cameraRigRef.current.getState().zoomStopIndex);
-      rigs[1].setZoomStop('close');
-      rigs[2].setZoomStop('isometric');
-      rigs[3].setZoomStop(slot3Party ? 'close' : 'overview');
-
-      const cam0 = camState;
-      const cam1 = rigs[1].update(rawDt, course, p2Marble, p2Pos, evaluatorRef.current, simTimeRef.current);
-      const cam2 = rigs[2].update(rawDt, course, p3Marble, p3Pos, evaluatorRef.current, simTimeRef.current);
-      const cam3 = rigs[3].update(rawDt, course, p4Marble, p4Pos, evaluatorRef.current, simTimeRef.current);
-
-      const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
-      const fullW = Math.max(2, Math.floor((canvas.clientWidth || window.innerWidth) * dpr));
-      const fullH = Math.max(2, Math.floor((canvas.clientHeight || window.innerHeight) * dpr));
-      const halfW = Math.floor(fullW / 2);
-      const halfH = Math.floor(fullH / 2);
-
-      const tileDefs: readonly GridTileViewInput[] = [
-        {
-          tileIndex: 0,
-          viewport: { x: 0, y: halfH, width: halfW, height: fullH - halfH },
-          camera: cam0,
-          marble: p1Marble,
-          renderPosition: p1Pos,
-          renderOrientation: p1Quat,
-          ghostActive: true,
-          ghostPos: p2Pos,
-          ghostQuat: p2Quat,
-          ghostColor: [0.24, 0.91, 1.0],
-        },
-        {
-          tileIndex: 1,
-          viewport: { x: halfW, y: halfH, width: fullW - halfW, height: fullH - halfH },
-          camera: cam1,
-          marble: p2Marble,
-          renderPosition: p2Pos,
-          renderOrientation: p2Quat,
-          ghostActive: true,
-          ghostPos: p1Pos,
-          ghostQuat: p1Quat,
-          ghostColor: [1.0, 0.82, 0.25],
-        },
-        {
-          tileIndex: 2,
-          viewport: { x: 0, y: 0, width: halfW, height: halfH },
-          camera: cam2,
-          marble: p3Marble,
-          renderPosition: p3Pos,
-          renderOrientation: p3Quat,
-          ghostActive: true,
-          ghostPos: p1Pos,
-          ghostQuat: p1Quat,
-          ghostColor: [0.16, 0.97, 0.61],
-        },
-        {
-          tileIndex: 3,
-          viewport: { x: halfW, y: 0, width: fullW - halfW, height: halfH },
-          camera: cam3,
-          marble: p4Marble,
-          renderPosition: p4Pos,
-          renderOrientation: p4Quat,
-          ghostActive: true,
-          ghostPos: p1Pos,
-          ghostQuat: p1Quat,
-          ghostColor: [0.85, 0.42, 1.0],
-        },
-      ];
-
-      const nextGridCells: readonly PlayerGridCellHudInfo[] = [
-        {
-          slotIndex: 0,
-          badgeTitle: slot0Party ? `P1: @${slot0Party.handle.toUpperCase()}` : 'P1: YOU',
-          subtitle: `${cam0.zoomStopLabel} · LOCAL TRACKBALL`,
-          speedUps: p1Speed,
-          roomCode: currentRoomCode,
-          accentColor: '#3ce8ff',
-          status: p1Marble.status,
-        },
-        {
-          slotIndex: 1,
-          badgeTitle: slot1Party ? `P2: @${slot1Party.handle.toUpperCase()}` : 'P2: @MAYA / AI BOT',
-          subtitle: slot1Party ? 'QR PARTY RACER #2' : 'SPEEDRUNNER BOT POV',
-          speedUps: p2Speed,
-          roomCode: currentRoomCode,
-          accentColor: '#28f79c',
-          status: p2Marble.status,
-        },
-        {
-          slotIndex: 2,
-          badgeTitle: slot2Party ? `P3: @${slot2Party.handle.toUpperCase()}` : 'P3: @DAN / GHOST',
-          subtitle: slot2Party ? 'QR PARTY RACER #3' : 'ARGON PRO PAR GHOST POV',
-          speedUps: p3Speed,
-          roomCode: currentRoomCode,
-          accentColor: '#ffd23f',
-          status: p3Marble.status,
-        },
-        {
-          slotIndex: 3,
-          badgeTitle: slot3Party ? `P4: @${slot3Party.handle.toUpperCase()}` : 'P4: @ALEX',
-          subtitle: slot3Party ? 'QR PARTY RACER #4' : 'TACTICAL AERIAL / RIVAL POV',
-          speedUps: p4Speed,
-          roomCode: currentRoomCode,
-          accentColor: '#d96bff',
-          status: p4Marble.status,
-        },
-      ];
-      gridCellsRef.current = nextGridCells;
-
-      const focusedTile = tileDefs[focusedPlayerIdxRef.current] ?? tileDefs[0];
-
-      renderer.render({
-        course,
-        marble: viewModeRef.current === 'fullscreen' ? focusedTile.marble : marbleState,
-        renderPosition: viewModeRef.current === 'fullscreen' ? focusedTile.renderPosition : renderPosition,
-        renderOrientation: viewModeRef.current === 'fullscreen' ? focusedTile.renderOrientation : renderOrientation,
-        camera: viewModeRef.current === 'fullscreen' ? focusedTile.camera : camState,
-        time: simTimeRef.current,
-        glassStress: sensoryStep.feel.stress.glassStress,
-        crackVisibility: sensoryStep.feel.stress.crackVisibility,
-        stressGlow: sensoryStep.feel.stress.stressGlowIntensity,
-        ghostActive: sensoryStep.ghostPose.active,
-        ghostPos: sensoryStep.ghostPose.position,
-        ghostQuat: sensoryStep.ghostPose.orientation,
-        ghostColor: [
-          sensoryStep.ghostPose.holoColorRgba[0],
-          sensoryStep.ghostPose.holoColorRgba[1],
-          sensoryStep.ghostPose.holoColorRgba[2],
-        ],
-        shatterShards: shatterSimRef.current.packUniforms(),
-        shatterShardCount: shatterSimRef.current.getState().active
-          ? shatterSimRef.current.getState().shards.length
-          : 0,
-        shockwaveRings: shockUniforms.uShockwaveRings,
-        shockwaveParams: shockUniforms.uShockwaveParams,
-        rimDanger: shockUniforms.uRimDanger,
-        fieldMutations: weaponStateRef.current.mutations,
-        portals: portalsRef.current,
-        portalAimPreview: portalAimPreviewRef.current,
-        engineMode: engineModeRef.current,
-        gridTiles: viewModeRef.current === 'grid' ? tileDefs : undefined,
-      });
-
-      uiSyncAccumulator += rawDt;
-      if (uiSyncAccumulator >= 1 / 30) {
-        uiSyncAccumulator = 0;
-        setUiMarble(marbleState);
-        setUiCamera(camState);
-        setUiFeel(sensoryStep.feel);
-        setUiGhostSplit(sensoryStep.split);
-        setUiSynth(sensoryStep.synth);
-        setBotEnabled(botController.isEnabled());
-        setBotStyle(botController.getStyle());
-        setTimeRemainingSec(timeRemainingRef.current);
-        setScore(scoreRef.current);
-        setFps(fpsRef.current);
-        setTrackball(sampled.telemetry);
-        setUiPortals(portalsRef.current);
-        setUiWeaponState(weaponStateRef.current);
-        setUiGridCells(nextGridCells);
-        setPartyRoomCode(currentRoomCode);
-      }
+        uiSyncAccumulator += rawDt;
+        if (uiSyncAccumulator >= 1 / 30) {
+          uiSyncAccumulator = 0;
+          setUiMarble(marbleState);
+          setUiCamera(camState);
+          setUiFeel(sensoryStep.feel);
+          setUiGhostSplit(sensoryStep.split);
+          setUiSynth(sensoryStep.synth);
+          setBotEnabled(botController.isEnabled());
+          setBotStyle(botController.getStyle());
+          setTimeRemainingSec(timeRemainingRef.current);
+          setScore(scoreRef.current);
+          setFps(fpsRef.current);
+          setTrackball(sampled.telemetry);
+          setUiPortals(portalsRef.current);
+          setUiWeaponState(weaponStateRef.current);
+          setUiGridCells(nextGridCells);
+          setPartyRoomCode(currentRoomCode);
+          setPartyConnectedCount(connectedCount);
+        }
       } catch (err) {
         console.error('Frame tick error:', err);
       }
@@ -1439,7 +1484,7 @@ export const App: React.FC = () => {
   }, [handleApplyCustomCourse, handleSelectCourse]);
 
   return (
-    <main className="app-viewport">
+    <main className={`app-viewport ${viewMode === 'grid' ? 'app-viewport-split-grid' : ''}`}>
       <canvas
         ref={canvasRef}
         className="sdf-raymarch-canvas"
@@ -1466,6 +1511,7 @@ export const App: React.FC = () => {
           architectOpen={architectOpen}
           partyOpen={partyOpen}
           partyRoomCode={partyRoomCode}
+          partyConnectedCount={partyConnectedCount}
           viewMode={viewMode}
           focusedPlayerIndex={focusedPlayerIndex}
           debugDrawerOpen={debugDrawerOpen}

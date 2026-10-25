@@ -1,20 +1,19 @@
 /**
- * Mobile Tactile Trackball, Crowd CSG Chaos Deck & Argon Twist Submitter (`src/multiplayer/MobilePartyController.tsx`)
+ * Pure, Dead-Simple Mobile Arcade Controller (`src/multiplayer/MobilePartyController.tsx`)
  *
- * Mounted when a phone scans the stage QR code (`/?party=1&room=ARGON`).
- * Loads in <20 KB without compiling heavy WebGPU shaders on the phone:
- * - Role 1 (Arena Racers #1–#8): 60 Hz Virtual Arcade Trackball + Backspin Brake + Hop button
- * - Role 2 (All 100+ Phones): 5 Realtime SDF World-Mutator buttons (`smoothUnion` bridge/ramp,
- *   `smoothSubtract` crater, `materialOverride` cryo ice, `waveSurge` 2x wave floor) on a 4s cooldown
- * - Role 3 (Crowd Prompt Swarm): Submit or upvote a 5-word course twist for Gemini 4 Argon 1M
+ * Mounted when a phone scans the stage QR code (`/?party=1`).
+ * - Big color-coded banner at the top matching the player's marble on the main screen:
+ *   `PLAYER 2 • EMERALD MARBLE (LOOK AT MAIN SCREEN!)`
+ * - Name input (`@name`), huge responsive Virtual Trackball Pad, HOP (`Space`) button,
+ *   and quick Portal (`Q`) / Crater (`F`) / Bridge (`V`) trigger buttons.
  */
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createPartyRoomClient, type PartyRoomClient } from './party-client';
 import {
   CROWD_ACTION_COOLDOWN_MS,
-  CROWD_MUTATOR_CATALOG,
   PHONE_INPUT_THROTTLE_MS,
+  PLAYER_MARBLE_PALETTE,
   type CrowdMutatorKind,
   type PartyPlayerRecord,
   type PartyRoomSnapshot,
@@ -27,11 +26,34 @@ export interface MobilePartyControllerProps {
   readonly onExitPartyMode?: () => void;
 }
 
-const QUICK_TWIST_SUGGESTIONS = [
-  'low gravity ice pinball',
-  'triple portal abyss leap',
-  'ferrofluid steelie bumper arena',
-  'double wave neon chute',
+const QUICK_CONTROLLER_POWERS: readonly {
+  readonly kind: CrowdMutatorKind;
+  readonly keyLabel: string;
+  readonly title: string;
+  readonly subtitle: string;
+  readonly accentColor: string;
+}[] = [
+  {
+    kind: 'tectonicRamp',
+    keyLabel: 'Portal (Q)',
+    title: 'PORTAL / RAMP (Q)',
+    subtitle: 'Launch wedge & portal boost ahead',
+    accentColor: '#00d8ff',
+  },
+  {
+    kind: 'craterMortar',
+    keyLabel: 'Crater (F)',
+    title: 'CRATER (F)',
+    subtitle: 'Carve smooth CSG crater ahead',
+    accentColor: '#f59e0b',
+  },
+  {
+    kind: 'rescueBridge',
+    keyLabel: 'Bridge (V)',
+    title: 'BRIDGE (V)',
+    subtitle: 'Extrude hard-light bounce bridge',
+    accentColor: '#10b981',
+  },
 ];
 
 export const MobilePartyController: React.FC<MobilePartyControllerProps> = ({
@@ -82,17 +104,14 @@ export const MobilePartyController: React.FC<MobilePartyControllerProps> = ({
   const [cooldownUntilMs, setCooldownUntilMs] = useState<number>(0);
   const [cooldownRemainingSec, setCooldownRemainingSec] = useState<number>(0);
   const [lastFeedback, setLastFeedback] = useState<string>(
-    'Connected to Stage Arena! Roll the trackball or fire a Crowd SDF Mutator.',
+    'Roll the trackball below — watch your colored marble on the main screen!',
   );
-  const [twistInput, setTwistInput] = useState<string>('');
 
   const padRef = useRef<HTMLDivElement | null>(null);
   const prevVecRef = useRef<readonly [number, number]>([0, 0]);
   const lastMoveSentAtRef = useRef<number>(0);
 
   useEffect(() => {
-    // Codex F5: Create or reconnect client inside useEffect so React 19 StrictMode
-    // mount -> unmount -> remount never leaves a closed BroadcastChannel
     const client = externalClient ?? createPartyRoomClient({ roomCode });
     client.connect();
     clientRef.current = client;
@@ -143,7 +162,6 @@ export const MobilePartyController: React.FC<MobilePartyControllerProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomCode, externalClient]);
 
-  // Update 4-second personal cooldown timer
   useEffect(() => {
     const timer = window.setInterval(() => {
       const remMs = Math.max(0, cooldownUntilMs - Date.now());
@@ -175,7 +193,7 @@ export const MobilePartyController: React.FC<MobilePartyControllerProps> = ({
         playerSecret: playerSecretRef.current,
         handle: trimmed,
       });
-      setLastFeedback(`Handle updated to @${trimmed}`);
+      setLastFeedback(`Name updated to @${trimmed}`);
     },
     [handleInput, roomCode],
   );
@@ -185,7 +203,6 @@ export const MobilePartyController: React.FC<MobilePartyControllerProps> = ({
       const clampedX = Math.max(-1, Math.min(1, nx));
       const clampedZ = Math.max(-1, Math.min(1, nz));
       const prev = prevVecRef.current;
-      // Detect sharp reverse pull (backspin brake)
       const dot = prev[0] * clampedX + prev[1] * clampedZ;
       const isBackspin = dot < -0.25 && Math.hypot(clampedX, clampedZ) > 0.55;
 
@@ -237,7 +254,7 @@ export const MobilePartyController: React.FC<MobilePartyControllerProps> = ({
   const handleHopClick = useCallback(() => {
     vibrate(22);
     sendTrackballVector(trackballVec[0], trackballVec[1], true);
-    setLastFeedback('🟢 HOP / BUMP impulse sent to Arena Marble!');
+    setLastFeedback('HOP (Space) impulse sent to your marble!');
   }, [sendTrackballVector, trackballVec, vibrate]);
 
   const handleTriggerMutator = useCallback(
@@ -262,48 +279,14 @@ export const MobilePartyController: React.FC<MobilePartyControllerProps> = ({
     [cooldownUntilMs, vibrate],
   );
 
-  const handleSubmitTwist = useCallback(
-    async (rawTwist: string) => {
-      const cleaned = rawTwist.trim();
-      if (!cleaned) return;
-      vibrate(20);
-      const res = await clientRef.current!.submitPrompt(
-        playerIdRef.current,
-        cleaned,
-      );
-      if (res.prompt) {
-        setTwistInput('');
-        setLastFeedback(
-          `✨ Queued Argon 1M Twist: "${res.prompt.twist}" (${res.prompt.votes} votes)`,
-        );
-      }
-    },
-    [vibrate],
-  );
-
-  const twistWordCount = useMemo(() => {
-    const trimmed = twistInput.trim();
-    return trimmed ? trimmed.split(/\s+/).length : 0;
-  }, [twistInput]);
-
   if (!snapshot) return null;
 
-  const assignedRoomId = me?.roomId ?? snapshot.roomId ?? `${snapshot.roomCode}-1`;
-  const maxPerRoom = snapshot.maxMarblesPerRoom ?? 4;
-  const assignedRoomSummary = snapshot.allRoomsSummary?.find(
-    (r) => r.roomId === assignedRoomId,
-  );
-  const myRoomPlayerCount =
-    assignedRoomSummary?.playerCount ?? snapshot.roomPlayerCount ?? snapshot.players.length;
-  const myPlayerNum = me?.roomPlayerNumber ?? 1;
-  const isOverflowRoom = Boolean(me?.autoOverflowed || (me?.roomIndex ?? 1) > 1);
+  const slotIdx = Math.max(0, Math.min(5, me?.racerSlot ?? 0));
+  const palette = PLAYER_MARBLE_PALETTE[slotIdx] ?? PLAYER_MARBLE_PALETTE[0];
+  const playerNumber = slotIdx + 1;
+  const marbleColor = me?.colorHex ?? palette.hex;
 
-  const roomBadgeText =
-    me?.role === 'racer'
-      ? isOverflowRoom
-        ? `ROOM ${assignedRoomId} • PLAYER ${myPlayerNum}/${maxPerRoom} (AUTO-OVERFLOW)`
-        : `ROOM ${assignedRoomId} • PLAYER ${myPlayerNum}/${maxPerRoom} • MARBLE #${(me.racerSlot ?? 0) + 1}`
-      : `ROOM ${assignedRoomId} • CROWD CHAOS & RESCUE ARCHITECT`;
+  const bannerText = `PLAYER ${playerNumber} • ${palette.marbleTitle} (LOOK AT MAIN SCREEN!)`;
 
   return (
     <div
@@ -314,98 +297,117 @@ export const MobilePartyController: React.FC<MobilePartyControllerProps> = ({
         background: 'radial-gradient(circle at 50% 0%, #111c38 0%, #050811 75%)',
         color: '#f8fafc',
         fontFamily: "'Inter', system-ui, -apple-system, sans-serif",
-        padding: '14px 16px 28px',
+        padding: '12px 14px 24px',
         display: 'flex',
         flexDirection: 'column',
-        gap: '14px',
+        gap: '12px',
         userSelect: 'none',
         touchAction: 'manipulation',
       }}
     >
-      {/* Header & Handle Bar */}
+      {/* Big Color-Coded Player Banner Matching TV/Laptop Marble */}
       <header
         style={{
           display: 'flex',
-          flexWrap: 'wrap',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          gap: '8px',
-          background: 'rgba(15, 23, 42, 0.85)',
-          border: `1px solid ${me?.colorHex ?? '#38bdf8'}`,
-          borderRadius: '12px',
-          padding: '10px 12px',
+          flexDirection: 'column',
+          gap: '10px',
+          background: 'rgba(15, 23, 42, 0.92)',
+          border: `2px solid ${marbleColor}`,
+          boxShadow: `0 0 24px ${marbleColor}33`,
+          borderRadius: '14px',
+          padding: '12px 14px',
         }}
       >
-        <div>
-          <div
-            data-testid="mobile-room-overflow-badge"
+        <div
+          data-testid="mobile-room-overflow-badge"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '10px',
+            fontSize: '15px',
+            fontWeight: 900,
+            letterSpacing: '0.06em',
+            color: '#ffffff',
+            textTransform: 'uppercase',
+          }}
+        >
+          <span
             style={{
-              fontSize: '11px',
-              fontWeight: 700,
-              letterSpacing: '0.08em',
-              color: me?.colorHex ?? '#38bdf8',
-              textTransform: 'uppercase',
-            }}
-          >
-            {roomBadgeText}
-          </div>
-          <div style={{ fontSize: '13px', color: '#cbd5e1', marginTop: '2px' }}>
-            Score: <strong style={{ color: '#facc15' }}>{me?.score ?? 0} pts</strong> •{' '}
-            {myRoomPlayerCount}/{maxPerRoom} in {assignedRoomId} •{' '}
-            {snapshot.allRoomsSummary?.length ?? 1} active room(s)
-          </div>
-        </div>
-
-        <form onSubmit={handleRenameSubmit} style={{ display: 'flex', gap: '6px' }}>
-          <input
-            type="text"
-            aria-label="Player Handle"
-            value={handleInput}
-            maxLength={18}
-            onChange={(e) => setHandleInput(e.target.value)}
-            style={{
-              background: '#090d16',
-              color: '#f8fafc',
-              border: '1px solid #334155',
-              borderRadius: '8px',
-              padding: '6px 9px',
-              fontSize: '13px',
-              width: '122px',
+              width: '18px',
+              height: '18px',
+              borderRadius: '50%',
+              background: marbleColor,
+              boxShadow: `0 0 12px ${marbleColor}`,
+              border: '2px solid #ffffff',
+              flexShrink: 0,
             }}
           />
-          <button
-            type="submit"
-            style={{
-              background: '#1e293b',
-              color: '#e2e8f0',
-              border: '1px solid #475569',
-              borderRadius: '8px',
-              padding: '6px 10px',
-              fontSize: '12px',
-              fontWeight: 600,
-              cursor: 'pointer',
-            }}
-          >
-            Set @
-          </button>
-          {onExitPartyMode && (
-            <button
-              type="button"
-              onClick={onExitPartyMode}
+          <span style={{ color: marbleColor }}>{bannerText}</span>
+        </div>
+
+        <div
+          style={{
+            display: 'flex',
+            flexWrap: 'wrap',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: '8px',
+          }}
+        >
+          <form onSubmit={handleRenameSubmit} style={{ display: 'flex', gap: '6px', flex: 1 }}>
+            <input
+              type="text"
+              aria-label="Player Handle"
+              placeholder="@name"
+              value={handleInput}
+              maxLength={18}
+              onChange={(e) => setHandleInput(e.target.value)}
               style={{
-                background: 'transparent',
-                color: '#94a3b8',
-                border: '1px solid #334155',
+                background: '#090d16',
+                color: '#f8fafc',
+                border: `1px solid ${marbleColor}88`,
                 borderRadius: '8px',
-                padding: '6px 8px',
-                fontSize: '11px',
+                padding: '7px 10px',
+                fontSize: '14px',
+                fontWeight: 700,
+                flex: 1,
+                minWidth: '110px',
+              }}
+            />
+            <button
+              type="submit"
+              style={{
+                background: marbleColor,
+                color: '#040812',
+                border: 'none',
+                borderRadius: '8px',
+                padding: '7px 12px',
+                fontSize: '13px',
+                fontWeight: 800,
                 cursor: 'pointer',
               }}
             >
-              Stage View
+              Set @Name
             </button>
-          )}
-        </form>
+            {onExitPartyMode && (
+              <button
+                type="button"
+                onClick={onExitPartyMode}
+                style={{
+                  background: 'transparent',
+                  color: '#94a3b8',
+                  border: '1px solid #334155',
+                  borderRadius: '8px',
+                  padding: '6px 8px',
+                  fontSize: '11px',
+                  cursor: 'pointer',
+                }}
+              >
+                Main Screen
+              </button>
+            )}
+          </form>
+        </div>
       </header>
 
       {/* Live Feedback Ticker */}
@@ -413,27 +415,29 @@ export const MobilePartyController: React.FC<MobilePartyControllerProps> = ({
         data-testid="party-controller-feedback"
         style={{
           background: 'rgba(30, 41, 59, 0.72)',
-          borderLeft: `4px solid ${me?.colorHex ?? '#22d3ee'}`,
+          borderLeft: `4px solid ${marbleColor}`,
           borderRadius: '8px',
-          padding: '8px 12px',
-          fontSize: '13px',
+          padding: '7px 12px',
+          fontSize: '12px',
           color: '#e2e8f0',
         }}
       >
         {lastFeedback}
       </div>
 
-      {/* Role 1: Tactile Virtual Arcade Trackball + Hop */}
+      {/* Huge Responsive Virtual Trackball Pad + HOP (Space) Button */}
       <section
         style={{
-          background: 'rgba(15, 23, 42, 0.78)',
-          border: '1px solid rgba(148, 163, 184, 0.22)',
-          borderRadius: '16px',
-          padding: '14px',
+          background: 'rgba(15, 23, 42, 0.85)',
+          border: `1.5px solid ${marbleColor}55`,
+          borderRadius: '18px',
+          padding: '16px',
           display: 'flex',
           flexDirection: 'column',
           alignItems: 'center',
-          gap: '12px',
+          gap: '14px',
+          flex: 1,
+          justifyContent: 'center',
         }}
       >
         <div
@@ -444,17 +448,18 @@ export const MobilePartyController: React.FC<MobilePartyControllerProps> = ({
             alignItems: 'center',
             fontSize: '12px',
             color: '#94a3b8',
+            fontWeight: 700,
           }}
         >
-          <span>VIRTUAL ARCADE TRACKBALL (60 HZ)</span>
+          <span>VIRTUAL TRACKBALL PAD ({palette.slotLabel} • {palette.name.toUpperCase()})</span>
           <span
             style={{
-              color: backspinActive ? '#f43f5e' : '#38bdf8',
-              fontWeight: 700,
+              color: backspinActive ? '#f43f5e' : marbleColor,
+              fontWeight: 800,
             }}
           >
             {backspinActive
-              ? '🔥 BACKSPIN CLIFF-SAVE BRAKE!'
+              ? 'BACKSPIN BRAKE!'
               : `VEC (${trackballVec[0].toFixed(2)}, ${trackballVec[1].toFixed(2)})`}
           </span>
         </div>
@@ -464,12 +469,12 @@ export const MobilePartyController: React.FC<MobilePartyControllerProps> = ({
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            gap: '18px',
+            gap: '20px',
             width: '100%',
             flexWrap: 'wrap',
           }}
         >
-          {/* Circular Tactile Trackball Surface */}
+          {/* Huge Circular Tactile Trackball Surface */}
           <div
             ref={padRef}
             data-testid="mobile-trackball-pad"
@@ -494,90 +499,86 @@ export const MobilePartyController: React.FC<MobilePartyControllerProps> = ({
               sendTrackballVector(0, 0, false);
             }}
             style={{
-              width: '190px',
-              height: '190px',
+              width: '230px',
+              height: '230px',
               borderRadius: '50%',
               position: 'relative',
               background:
                 'radial-gradient(circle at 38% 32%, #334155 0%, #0f172a 62%, #020617 100%)',
-              border: `3px solid ${
-                backspinActive ? '#f43f5e' : me?.colorHex ?? '#38bdf8'
-              }`,
+              border: `4px solid ${backspinActive ? '#f43f5e' : marbleColor}`,
               boxShadow: isDraggingPad
-                ? `0 0 28px ${me?.colorHex ?? '#38bdf8'}66, inset 0 0 24px rgba(0,0,0,0.8)`
-                : 'inset 0 0 24px rgba(0,0,0,0.85)',
+                ? `0 0 36px ${marbleColor}88, inset 0 0 28px rgba(0,0,0,0.85)`
+                : `0 0 18px ${marbleColor}33, inset 0 0 28px rgba(0,0,0,0.88)`,
               touchAction: 'none',
               cursor: 'grab',
             }}
           >
-            {/* Isometric crosshair lines */}
             <div
               style={{
                 position: 'absolute',
                 inset: '18%',
                 borderRadius: '50%',
-                border: '1px dashed rgba(148, 163, 184, 0.25)',
+                border: `1px dashed ${marbleColor}55`,
                 pointerEvents: 'none',
               }}
             />
-            {/* Thumb Reticle Pucks */}
             <div
               style={{
                 position: 'absolute',
                 left: `${50 + trackballVec[0] * 38}%`,
                 top: `${50 + trackballVec[1] * 38}%`,
                 transform: 'translate(-50%, -50%)',
-                width: '44px',
-                height: '44px',
+                width: '54px',
+                height: '54px',
                 borderRadius: '50%',
-                background: me?.colorHex ?? '#38bdf8',
-                boxShadow: '0 0 16px rgba(255,255,255,0.65)',
-                border: '2px solid #ffffff',
+                background: marbleColor,
+                boxShadow: `0 0 20px ${marbleColor}, 0 0 10px rgba(255,255,255,0.8)`,
+                border: '2.5px solid #ffffff',
                 pointerEvents: 'none',
               }}
             />
           </div>
 
-          {/* Dedicated HOP / BUMP Thumb Button */}
+          {/* Dedicated HOP (Space) Button */}
           <button
             type="button"
             data-testid="mobile-hop-button"
             onClick={handleHopClick}
             style={{
-              width: '112px',
-              height: '112px',
-              borderRadius: '22px',
-              background: 'linear-gradient(145deg, #10b981, #047857)',
+              width: '132px',
+              height: '132px',
+              borderRadius: '24px',
+              background: `linear-gradient(145deg, ${marbleColor}, #0f172a)`,
               color: '#ffffff',
-              border: '2px solid #6ee7b7',
-              boxShadow: '0 8px 20px rgba(16, 185, 129, 0.35)',
-              fontSize: '15px',
-              fontWeight: 800,
-              letterSpacing: '0.04em',
+              border: `2.5px solid ${marbleColor}`,
+              boxShadow: `0 8px 24px ${marbleColor}44`,
+              fontSize: '16px',
+              fontWeight: 900,
+              letterSpacing: '0.05em',
               cursor: 'pointer',
               display: 'flex',
               flexDirection: 'column',
               alignItems: 'center',
               justifyContent: 'center',
-              gap: '4px',
+              gap: '6px',
             }}
           >
-            <span style={{ fontSize: '24px' }}>⚡</span>
-            <span>HOP / BUMP</span>
+            <span style={{ fontSize: '20px', fontWeight: 900 }}>HOP</span>
+            <span style={{ fontSize: '12px', opacity: 0.9 }}>(SPACE)</span>
           </button>
         </div>
       </section>
 
-      {/* Role 2: Crowd Chaos & Rescue SDF Mutator Deck (All 100+ Phones) */}
+      {/* Quick Portal (Q) / Crater (F) / Bridge (V) Trigger Buttons */}
       <section
         style={{
-          background: 'rgba(15, 23, 42, 0.82)',
-          border: '1px solid rgba(56, 189, 248, 0.28)',
-          borderRadius: '16px',
-          padding: '14px',
+          background: 'rgba(15, 23, 42, 0.85)',
+          border: '1px solid rgba(148, 163, 184, 0.24)',
+          borderRadius: '14px',
+          padding: '12px',
           display: 'flex',
           flexDirection: 'column',
-          gap: '10px',
+          gap: '8px',
         }}
       >
         <div
@@ -589,37 +590,37 @@ export const MobilePartyController: React.FC<MobilePartyControllerProps> = ({
         >
           <span
             style={{
-              fontSize: '12px',
+              fontSize: '11px',
               fontWeight: 800,
-              letterSpacing: '0.06em',
-              color: '#38bdf8',
+              letterSpacing: '0.07em',
+              color: '#cbd5e1',
               textTransform: 'uppercase',
             }}
           >
-            LIVE SDF WORLD-MUTATOR DECK (CSG)
+            QUICK TRACK POWERS: PORTAL (Q) · CRATER (F) · BRIDGE (V)
           </span>
           <span
             data-testid="crowd-cooldown-badge"
             style={{
-              fontSize: '12px',
+              fontSize: '11px',
               fontWeight: 700,
-              color: cooldownRemainingSec > 0 ? '#f97316' : '#4ade80',
+              color: cooldownRemainingSec > 0 ? '#f59e0b' : '#10b981',
             }}
           >
             {cooldownRemainingSec > 0
-              ? `⏳ Cooldown ${cooldownRemainingSec.toFixed(1)}s`
-              : '⚡ READY TO SCULPT'}
+              ? `Cooldown ${cooldownRemainingSec.toFixed(1)}s`
+              : 'READY'}
           </span>
         </div>
 
         <div
           style={{
             display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fit, minmax(145px, 1fr))',
+            gridTemplateColumns: 'repeat(3, 1fr)',
             gap: '8px',
           }}
         >
-          {CROWD_MUTATOR_CATALOG.map((item) => {
+          {QUICK_CONTROLLER_POWERS.map((item) => {
             const disabled = cooldownRemainingSec > 0;
             return (
               <button
@@ -630,146 +631,29 @@ export const MobilePartyController: React.FC<MobilePartyControllerProps> = ({
                 onClick={() => void handleTriggerMutator(item.kind)}
                 style={{
                   background: disabled
-                    ? 'rgba(30, 41, 59, 0.5)'
-                    : 'rgba(15, 23, 42, 0.95)',
+                    ? 'rgba(30, 41, 59, 0.45)'
+                    : 'rgba(15, 23, 42, 0.96)',
                   border: `1.5px solid ${disabled ? '#334155' : item.accentColor}`,
-                  borderRadius: '12px',
-                  padding: '10px',
-                  textAlign: 'left',
+                  borderRadius: '10px',
+                  padding: '10px 8px',
+                  textAlign: 'center',
                   color: disabled ? '#64748b' : '#f8fafc',
                   cursor: disabled ? 'not-allowed' : 'pointer',
                   display: 'flex',
                   flexDirection: 'column',
-                  gap: '4px',
+                  alignItems: 'center',
+                  gap: '3px',
                 }}
               >
-                <div
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    fontWeight: 700,
-                    fontSize: '13px',
-                  }}
-                >
-                  <span>
-                    {item.icon} {item.shortLabel}
-                  </span>
-                </div>
-                <div
-                  style={{
-                    fontSize: '10px',
-                    fontFamily: 'monospace',
-                    color: item.accentColor,
-                  }}
-                >
-                  {item.csgBadge}
-                </div>
-                <div style={{ fontSize: '11px', color: '#94a3b8', lineHeight: 1.25 }}>
-                  {item.description}
-                </div>
+                <strong style={{ fontSize: '13px', color: disabled ? '#64748b' : item.accentColor }}>
+                  {item.title}
+                </strong>
+                <span style={{ fontSize: '10px', color: '#94a3b8' }}>
+                  {item.subtitle}
+                </span>
               </button>
             );
           })}
-        </div>
-      </section>
-
-      {/* Role 3: Crowd Prompt Swarm for Gemini 4 Argon 1M Architect */}
-      <section
-        style={{
-          background: 'rgba(15, 23, 42, 0.82)',
-          border: '1px solid rgba(192, 132, 252, 0.32)',
-          borderRadius: '16px',
-          padding: '14px',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: '10px',
-        }}
-      >
-        <div
-          style={{
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-          }}
-        >
-          <span
-            style={{
-              fontSize: '12px',
-              fontWeight: 800,
-              letterSpacing: '0.06em',
-              color: '#c084fc',
-              textTransform: 'uppercase',
-            }}
-          >
-            ✨ GEMINI 4 ARGON 1M — CROWD TWIST SWARM
-          </span>
-          <span style={{ fontSize: '11px', color: '#cbd5e1' }}>
-            {twistWordCount}/5 words
-          </span>
-        </div>
-
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            void handleSubmitTwist(twistInput);
-          }}
-          style={{ display: 'flex', gap: '8px' }}
-        >
-          <input
-            type="text"
-            data-testid="argon-twist-input"
-            placeholder="5-word hazard twist (e.g. low gravity ice pinball)"
-            value={twistInput}
-            onChange={(e) => setTwistInput(e.target.value)}
-            style={{
-              flex: 1,
-              background: '#090d16',
-              color: '#f8fafc',
-              border: '1px solid #475569',
-              borderRadius: '10px',
-              padding: '9px 12px',
-              fontSize: '13px',
-            }}
-          />
-          <button
-            type="submit"
-            data-testid="argon-twist-submit"
-            style={{
-              background: 'linear-gradient(135deg, #9333ea, #6366f1)',
-              color: '#ffffff',
-              border: 'none',
-              borderRadius: '10px',
-              padding: '9px 14px',
-              fontSize: '13px',
-              fontWeight: 700,
-              cursor: 'pointer',
-            }}
-          >
-            Queue Twist
-          </button>
-        </form>
-
-        {/* Quick 1-Tap Crowd Twist Chips */}
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
-          {QUICK_TWIST_SUGGESTIONS.map((suggestion) => (
-            <button
-              key={suggestion}
-              type="button"
-              onClick={() => void handleSubmitTwist(suggestion)}
-              style={{
-                background: 'rgba(147, 51, 234, 0.16)',
-                color: '#e9d5ff',
-                border: '1px solid rgba(192, 132, 252, 0.35)',
-                borderRadius: '999px',
-                padding: '4px 10px',
-                fontSize: '11px',
-                cursor: 'pointer',
-              }}
-            >
-              + {suggestion}
-            </button>
-          ))}
         </div>
       </section>
     </div>
