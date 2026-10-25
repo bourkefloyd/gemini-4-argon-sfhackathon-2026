@@ -25,6 +25,7 @@
  */
 
 import {
+  type CourseSpec,
   type Quat,
   type SdfCsgNode,
   type SdfNode,
@@ -34,6 +35,7 @@ import {
   MATERIAL_IDS,
 } from '../contracts';
 import {
+  buildCourseSceneTree,
   evaluateKinematicMotion,
   rotateByQuatInverse,
   vec3Add,
@@ -432,12 +434,13 @@ export function evaluatePrimitiveJet(
     }
     case 'ramp': {
       const runCoord = node.axis === 'x' ? localP[0] : localP[2];
+      const latCoord = node.axis === 'x' ? localP[2] : localP[0];
       const safeHalfLen = Math.max(node.halfLength, 0.01);
       const slope = (0.5 * node.rise) / safeHalfLen;
       const cosTheta = 1.0 / Math.sqrt(1.0 + slope * slope);
       const yTop = (runCoord / safeHalfLen) * (0.5 * node.rise);
       const halfThick = Math.max(0.075, 0.5 * node.thickness);
-      const box = jetBoxLocal(
+      const deckBox = jetBoxLocal(
         [
           node.axis === 'x' ? runCoord : localP[0],
           (localP[1] - (yTop - halfThick)) * cosTheta,
@@ -449,28 +452,102 @@ export function evaluatePrimitiveJet(
           node.axis === 'z' ? safeHalfLen : node.halfWidth,
         ],
       );
-      localD = box.d;
-      const slopeGrad: Vec3 =
+      localD = deckBox.d;
+      const deckGrad: Vec3 =
         node.axis === 'x'
-          ? vec3Normalize([-slope * box.grad[1], box.grad[1], box.grad[2]])
-          : vec3Normalize([box.grad[0], box.grad[1], -slope * box.grad[1]]);
-      localGrad = slopeGrad;
+          ? vec3Normalize([-slope * deckBox.grad[1], deckBox.grad[1], deckBox.grad[2]])
+          : vec3Normalize([deckBox.grad[0], deckBox.grad[1], -slope * deckBox.grad[1]]);
+      localGrad = deckGrad;
+
+      const railHeight = node.railHeight ?? 0;
+      const railThickness = node.railThickness ?? 0.28;
+      if (railHeight > 0.001) {
+        const halfRailThick = 0.5 * railThickness;
+        const halfRailH = 0.5 * railHeight;
+        const signLat = latCoord < 0 ? -1 : 1;
+        const dRun = Math.abs(runCoord) - safeHalfLen;
+        const dRailLat = Math.abs(Math.abs(latCoord) - (node.halfWidth - halfRailThick)) - halfRailThick;
+        const dRailY = (Math.abs(localP[1] - (yTop + halfRailH)) - halfRailH) * cosTheta;
+        const dRail =
+          Math.hypot(Math.max(dRun, 0), Math.max(dRailY, 0), Math.max(dRailLat, 0)) +
+          Math.min(Math.max(dRun, Math.max(dRailY, dRailLat)), 0);
+        if (dRail < localD) {
+          localD = dRail;
+          const signInRail = Math.abs(latCoord) < node.halfWidth - halfRailThick ? -1 : 1;
+          const railLatNormal = signLat * signInRail;
+          localGrad =
+            node.axis === 'x'
+              ? vec3Normalize([0, 0.35, railLatNormal])
+              : vec3Normalize([railLatNormal, 0.35, 0]);
+        }
+      }
       break;
     }
     case 'sweptTrack': {
-      const mid: Vec3 = [
-        0.5 * (node.start[0] + node.end[0]),
-        0.5 * (node.start[1] + node.end[1]),
-        0.5 * (node.start[2] + node.end[2]),
-      ];
-      const halfLen = Math.max(0.5 * vec3Length(vec3Sub(node.end, node.start)), 0.1);
-      const box = jetBoxLocal(vec3Sub(localP, mid), [
-        node.halfWidth,
-        Math.max(0.075, 0.5 * node.thickness),
-        halfLen,
+      const bax = node.end[0] - node.start[0];
+      const bay = node.end[1] - node.start[1];
+      const baz = node.end[2] - node.start[2];
+      const pax = localP[0] - node.start[0];
+      const pay = localP[1] - node.start[1];
+      const paz = localP[2] - node.start[2];
+
+      const l2 = Math.max(bax * bax + bay * bay + baz * baz, 1e-5);
+      const t = Math.min(1, Math.max(0, (pax * bax + pay * bay + paz * baz) / l2));
+      const sx = node.start[0] + bax * t;
+      const sy = node.start[1] + bay * t;
+      const sz = node.start[2] + baz * t;
+
+      const dpx = localP[0] - sx;
+      const dpy = localP[1] - sy;
+      const dpz = localP[2] - sz;
+
+      const horizLen = Math.max(Math.hypot(bax, baz), 1e-5);
+      const tx = bax / horizLen;
+      const tz = baz / horizLen;
+      const nx = -tz;
+      const nz = tx;
+
+      const lat = dpx * nx + dpz * nz;
+      const along = dpx * tx + dpz * tz;
+      const slopeCos = horizLen / Math.sqrt(l2);
+      const slopeTan = bay / horizLen;
+      const halfThick = Math.max(0.075, 0.5 * node.thickness);
+
+      const dAlong = Math.abs(along) - 0.08;
+      const dDeckY = (Math.abs(dpy + halfThick) - halfThick) * slopeCos;
+      const dDeckLat = Math.abs(lat) - node.halfWidth;
+      let dTrack =
+        Math.hypot(Math.max(dAlong, 0), Math.max(dDeckY, 0), Math.max(dDeckLat, 0)) +
+        Math.min(Math.max(dAlong, Math.max(dDeckY, dDeckLat)), 0);
+
+      const deckNormalY = dpy + halfThick >= 0 ? 1 : -1;
+      let trackGrad = vec3Normalize([
+        -tx * slopeTan * deckNormalY,
+        deckNormalY,
+        -tz * slopeTan * deckNormalY,
       ]);
-      localD = box.d;
-      localGrad = box.grad;
+
+      const railHeight = node.railHeight ?? 0;
+      const railThickness = node.railThickness ?? 0.28;
+      if (railHeight > 0.001) {
+        const halfRailThick = 0.5 * railThickness;
+        const halfRailH = 0.5 * railHeight;
+        const dRailLat = Math.abs(Math.abs(lat) - (node.halfWidth - halfRailThick)) - halfRailThick;
+        const dRailY = (Math.abs(dpy - halfRailH) - halfRailH) * slopeCos;
+        const dRail =
+          Math.hypot(Math.max(dAlong, 0), Math.max(dRailY, 0), Math.max(dRailLat, 0)) +
+          Math.min(Math.max(dAlong, Math.max(dRailY, dRailLat)), 0);
+        if (dRail < dTrack) {
+          dTrack = dRail;
+          const signLat = lat < 0 ? -1 : 1;
+          const signInRail = Math.abs(lat) < node.halfWidth - halfRailThick ? -1 : 1;
+          const latDir = signLat * signInRail;
+          trackGrad = vec3Normalize([nx * latDir, 0.25, nz * latDir]);
+        }
+      }
+
+      localD = dTrack;
+      localGrad = trackGrad;
       break;
     }
   }
@@ -682,6 +759,33 @@ export function evaluateJetSdfTree(
     acc = combineJetSamples(node.kind, acc, next, k, kernel);
   }
   return acc;
+}
+
+/**
+ * Evaluate a full `CourseSpec` or `SdfNode` scene as a single-pass `JetSdfSample` (`jSDF`).
+ */
+export function evalSceneJetCpu(
+  courseOrNode: CourseSpec | SdfNode,
+  p: Vec3,
+  time: number,
+  kernel: SmoothKernelKind = 'quadratic',
+): JetSdfSample {
+  const root =
+    'nodes' in courseOrNode && 'startPos' in courseOrNode
+      ? buildCourseSceneTree(courseOrNode)
+      : courseOrNode;
+  return evaluateJetSdfTree(root, p, time, kernel);
+}
+
+/**
+ * Compute the 1-pass analytical surface normal from `jSDF` with zero finite-difference taps.
+ */
+export function analyticalJetNormal(
+  courseOrNode: CourseSpec | SdfNode,
+  p: Vec3,
+  time: number,
+): Vec3 {
+  return evalSceneJetCpu(courseOrNode, p, time).normal;
 }
 
 // ============================================================================

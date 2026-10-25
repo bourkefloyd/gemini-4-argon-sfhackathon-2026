@@ -428,6 +428,8 @@ export interface CpuWorldEvaluator {
   normal(p: Vec3, time: number): Vec3;
   /** Full contact evaluation for a sphere of `radius` centered at `center` */
   queryContact(center: Vec3, radius: number, time: number): SdfContactQuery;
+  /** Analytical 1-Jet (`jSDF`) contact evaluation propagating exact gradient & meniscus velocity */
+  queryJetContact?(center: Vec3, radius: number, time: number): SdfContactQuery;
   /** Continuous Collision Detection (CCD) 12-step sphere-cast along `displacement` */
   sphereCast(origin: Vec3, radius: number, displacement: Vec3, time: number, maxSteps?: number): SphereCastHit;
   /** Check if the line-of-sight from `cameraPos` to `marblePos` is occluded by world geometry */
