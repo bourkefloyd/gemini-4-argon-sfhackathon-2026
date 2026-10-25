@@ -19,6 +19,14 @@ import {
   stepAutoGovernorScale,
 } from '../src/rendering';
 import { HUD_SYNC_HZ, HUD_SYNC_INTERVAL_SEC } from '../src/App';
+import { createModeAwareWorldEvaluator, createMarbleSimulation } from '../src/physics';
+import { createIsometricCameraRig } from '../src/camera';
+import {
+  measureSdfRayCaliper,
+  SDF_WIZARD_STEPS,
+  SDF_WIZARD_STEP_DURATION_SEC,
+  SDF_WIZARD_TOTAL_DURATION_SEC,
+} from '../src/ui';
 
 describe('60+ FPS Shader & Frame-Time Profiler Optimization Pass', () => {
   it('reduces per-pixel SDF primitive evaluations by > 60% across playable courses', () => {
@@ -109,5 +117,48 @@ describe('60+ FPS Shader & Frame-Time Profiler Optimization Pass', () => {
   it('throttles React HUD state sync to 20 Hz (every 50 ms)', () => {
     expect(HUD_SYNC_HZ).toBe(20);
     expect(HUD_SYNC_INTERVAL_SEC).toBe(0.05);
+  });
+
+  it('compiles all 5 SDF X-Ray Debug & Measurement Wizard modes (uDebugVizMode 1..5) and measures live caliper rays', () => {
+    expect(SDF_WIZARD_STEPS).toHaveLength(5);
+    expect(SDF_WIZARD_STEP_DURATION_SEC).toBe(4.0);
+    expect(SDF_WIZARD_TOTAL_DURATION_SEC).toBe(20.0);
+
+    const glsl = compileCourseToGlsl(COURSE_7_SDF_SINGULARITY_LAB);
+    expect(glsl).toContain('uniform int uDebugVizMode;');
+    expect(glsl).toContain('vec3 evalStepCountHeatmapColor(int stepsTaken)');
+    expect(glsl).toContain('vec3 composeSdfDebugMode(');
+    expect(glsl).toContain('vec3 applySdfDebugViz(');
+    expect(glsl).toContain('if (uDebugVizMode > 0)');
+
+    // Measure live cursor caliper at screen center (NDC [0, 0]) toward marble & course track
+    const evaluator = createModeAwareWorldEvaluator(COURSE_1_PRACTICE_RACE);
+    const sim = createMarbleSimulation(COURSE_1_PRACTICE_RACE, evaluator);
+    const marbleState = sim.getState();
+    const camRig = createIsometricCameraRig(COURSE_1_PRACTICE_RACE);
+    const camState = camRig.update(1 / 60, COURSE_1_PRACTICE_RACE, marbleState, marbleState.position, evaluator, 0);
+
+    const centerCaliper = measureSdfRayCaliper(
+      [0, 0],
+      camState,
+      COURSE_1_PRACTICE_RACE,
+      marbleState,
+      evaluator,
+      0,
+      16 / 9,
+    );
+    expect(centerCaliper.hitSurface).toBe(true);
+    expect(centerCaliper.optimizedSteps).toBeGreaterThanOrEqual(1);
+    expect(centerCaliper.optimizedSteps).toBeLessThanOrEqual(64);
+    expect(centerCaliper.legacySteps).toBeGreaterThan(centerCaliper.optimizedSteps);
+    expect(centerCaliper.stepSavingsPercent).toBeGreaterThanOrEqual(12);
+    expect(centerCaliper.rayDistanceMeters).toBeGreaterThan(0);
+
+    const normLen = Math.hypot(
+      centerCaliper.normal[0],
+      centerCaliper.normal[1],
+      centerCaliper.normal[2],
+    );
+    expect(normLen).toBeCloseTo(1.0, 2);
   });
 });

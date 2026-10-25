@@ -50,7 +50,17 @@ import {
   INITIAL_DPR_CAP,
   type ShaderPixelEvaluationBenchmark,
 } from './rendering';
-import { ArcadeHud, ArchitectHookPanel, type LiveProfilerTelemetry } from './ui';
+import {
+  ArcadeHud,
+  ArchitectHookPanel,
+  type LiveProfilerTelemetry,
+  measureSdfRayCaliper,
+  SDF_WIZARD_STEP_DURATION_SEC,
+  SDF_WIZARD_TOTAL_DURATION_SEC,
+  type SdfCaliperMeasurement,
+  type SdfDebugVizMode,
+  SdfDebugWizard,
+} from './ui';
 import {
   createArcadeSensorySession,
   type TactileFeelState,
@@ -116,6 +126,11 @@ export interface MarblePlaytestTelemetry {
   readonly viewMode?: ViewportDisplayMode;
   readonly focusedPlayerIndex?: number;
   readonly debugDrawerOpen?: boolean;
+  readonly sdfWizardOpen?: boolean;
+  readonly debugVizMode?: SdfDebugVizMode;
+  readonly sdfWizardAutoTour?: boolean;
+  readonly sdfWizardElapsedSec?: number;
+  readonly sdfCaliper?: SdfCaliperMeasurement;
   readonly engineMode?: EngineComparisonMode;
   readonly gridCells?: readonly PlayerGridCellHudInfo[];
   readonly profiler?: LiveProfilerTelemetry;
@@ -174,6 +189,11 @@ export interface MarblePlaytestApi {
   cycleEngineMode?: () => MarblePlaytestTelemetry;
   getEngineMode?: () => EngineComparisonMode;
   getProfilerMetrics?: () => LiveProfilerTelemetry;
+  setSdfWizardOpen?: (open: boolean) => MarblePlaytestTelemetry;
+  toggleSdfWizard?: () => MarblePlaytestTelemetry;
+  setDebugVizMode?: (mode: SdfDebugVizMode) => MarblePlaytestTelemetry;
+  getDebugVizMode?: () => SdfDebugVizMode;
+  measureCaliperAtNdc?: (ndcX: number, ndcY: number) => SdfCaliperMeasurement;
 }
 
 declare global {
@@ -277,6 +297,20 @@ export const App: React.FC = () => {
   const [viewMode, setViewMode] = useState<ViewportDisplayMode>('fullscreen');
   const [focusedPlayerIndex, setFocusedPlayerIndex] = useState<number>(0);
   const [debugDrawerOpen, setDebugDrawerOpen] = useState<boolean>(false);
+  const [sdfWizardOpen, setSdfWizardOpen] = useState<boolean>(false);
+  const [debugVizMode, setDebugVizMode] = useState<SdfDebugVizMode>(0);
+  const [sdfWizardAutoTour, setSdfWizardAutoTour] = useState<boolean>(true);
+  const [sdfWizardElapsedSec, setSdfWizardElapsedSec] = useState<number>(0);
+  const [uiSdfCaliper, setUiSdfCaliper] = useState<SdfCaliperMeasurement>(() =>
+    measureSdfRayCaliper(
+      [0, 0],
+      cameraRigRef.current.getState(),
+      currentCourse,
+      simRef.current.getState(),
+      evaluatorRef.current,
+      0,
+    ),
+  );
   const [engineMode, setEngineMode] = useState<EngineComparisonMode>(0);
   const [uiGridCells, setUiGridCells] = useState<readonly PlayerGridCellHudInfo[]>([]);
   const [partyRoomCode, setPartyRoomCode] = useState<string>('ARGON-1');
@@ -334,6 +368,12 @@ export const App: React.FC = () => {
   const viewModeRef = useRef<ViewportDisplayMode>('fullscreen');
   const focusedPlayerIdxRef = useRef<number>(0);
   const debugDrawerOpenRef = useRef<boolean>(false);
+  const sdfWizardOpenRef = useRef<boolean>(false);
+  const debugVizModeRef = useRef<SdfDebugVizMode>(0);
+  const sdfWizardAutoTourRef = useRef<boolean>(true);
+  const sdfWizardElapsedRef = useRef<number>(0);
+  const sdfWizardDemoCsgFiredRef = useRef<boolean>(false);
+  const cursorNdcRef = useRef<readonly [number, number]>([0, 0]);
   const engineModeRef = useRef<EngineComparisonMode>(0);
   const gridCellsRef = useRef<readonly PlayerGridCellHudInfo[]>([]);
 
@@ -613,6 +653,69 @@ export const App: React.FC = () => {
       setDebugDrawerOpen(next);
     };
 
+    const computeCaliperSnapshot = (
+      ndc: readonly [number, number] = cursorNdcRef.current,
+    ): SdfCaliperMeasurement => {
+      const aspect = Math.max(1, window.innerWidth) / Math.max(1, window.innerHeight);
+      return measureSdfRayCaliper(
+        ndc,
+        cameraRigRef.current.getState(),
+        activeCourseRef.current,
+        simRef.current.getState(),
+        evaluatorRef.current,
+        simTimeRef.current,
+        aspect,
+      );
+    };
+
+    const setSdfWizardOpenInternal = (open: boolean) => {
+      sdfWizardOpenRef.current = open;
+      setSdfWizardOpen(open);
+      if (open) {
+        const nextMode: SdfDebugVizMode =
+          debugVizModeRef.current === 0 ? 1 : debugVizModeRef.current;
+        debugVizModeRef.current = nextMode;
+        setDebugVizMode(nextMode);
+        sdfWizardAutoTourRef.current = true;
+        setSdfWizardAutoTour(true);
+        sdfWizardElapsedRef.current = (nextMode - 1) * SDF_WIZARD_STEP_DURATION_SEC;
+        setSdfWizardElapsedSec(sdfWizardElapsedRef.current);
+        sdfWizardDemoCsgFiredRef.current = false;
+        setUiSdfCaliper(computeCaliperSnapshot());
+      } else {
+        debugVizModeRef.current = 0;
+        setDebugVizMode(0);
+        sdfWizardAutoTourRef.current = false;
+        setSdfWizardAutoTour(false);
+      }
+    };
+
+    const toggleSdfWizardInternal = () => {
+      setSdfWizardOpenInternal(!sdfWizardOpenRef.current);
+    };
+
+    const setDebugVizModeInternal = (mode: SdfDebugVizMode, pauseAutoTour = true) => {
+      const clamped = Math.max(0, Math.min(5, Math.floor(mode))) as SdfDebugVizMode;
+      debugVizModeRef.current = clamped;
+      setDebugVizMode(clamped);
+      if (clamped > 0 && !sdfWizardOpenRef.current) {
+        sdfWizardOpenRef.current = true;
+        setSdfWizardOpen(true);
+      } else if (clamped === 0 && sdfWizardOpenRef.current) {
+        sdfWizardOpenRef.current = false;
+        setSdfWizardOpen(false);
+      }
+      if (pauseAutoTour) {
+        sdfWizardAutoTourRef.current = false;
+        setSdfWizardAutoTour(false);
+      }
+      if (clamped > 0) {
+        sdfWizardElapsedRef.current = (clamped - 1) * SDF_WIZARD_STEP_DURATION_SEC;
+        setSdfWizardElapsedSec(sdfWizardElapsedRef.current);
+      }
+      setUiSdfCaliper(computeCaliperSnapshot());
+    };
+
     const setEngineModeInternal = (nextMode: EngineComparisonMode) => {
       const valid: EngineComparisonMode =
         nextMode === 1 ? 1 : nextMode === 2 ? 2 : 0;
@@ -636,6 +739,10 @@ export const App: React.FC = () => {
 
     const inputCtrl = createArcadeInputController(window, {
       onSelectCourse: (idx) => {
+        if (sdfWizardOpenRef.current && idx >= 0 && idx < 5) {
+          setDebugVizModeInternal((idx + 1) as SdfDebugVizMode, true);
+          return;
+        }
         if (viewModeRef.current === 'grid' && idx >= 0 && idx < 4) {
           selectGridPlayerInternal(idx);
           return;
@@ -674,6 +781,10 @@ export const App: React.FC = () => {
         firePortalInternal(end, pointerNdc);
       },
       onPointerHoverNdc: (pointerNdc, altKey) => {
+        cursorNdcRef.current = pointerNdc;
+        if (sdfWizardOpenRef.current) {
+          setUiSdfCaliper(computeCaliperSnapshot(pointerNdc));
+        }
         if (!altKey) {
           portalAimPreviewRef.current = undefined;
           return;
@@ -698,6 +809,9 @@ export const App: React.FC = () => {
       },
       onToggleDebugDrawer: () => {
         toggleDebugDrawerInternal();
+      },
+      onToggleSdfWizard: () => {
+        toggleSdfWizardInternal();
       },
       onCycleEngineMode: () => {
         cycleEngineModeInternal();
@@ -785,6 +899,11 @@ export const App: React.FC = () => {
         viewMode: viewModeRef.current,
         focusedPlayerIndex: focusedPlayerIdxRef.current,
         debugDrawerOpen: debugDrawerOpenRef.current,
+        sdfWizardOpen: sdfWizardOpenRef.current,
+        debugVizMode: debugVizModeRef.current,
+        sdfWizardAutoTour: sdfWizardAutoTourRef.current,
+        sdfWizardElapsedSec: sdfWizardElapsedRef.current,
+        sdfCaliper: sdfWizardOpenRef.current ? computeCaliperSnapshot() : undefined,
         engineMode: engineModeRef.current,
         gridCells: gridCellsRef.current,
         profiler: buildProfilerSnapshot(),
@@ -939,6 +1058,7 @@ export const App: React.FC = () => {
           portals: portalsRef.current,
           portalAimPreview: portalAimPreviewRef.current,
           engineMode: engineModeRef.current,
+          debugVizMode: debugVizModeRef.current,
         });
         setUiMarble(mState);
         setUiCamera(camState);
@@ -1021,6 +1141,29 @@ export const App: React.FC = () => {
         setDebugDrawerOpen(open);
         return buildTelemetrySnapshot();
       },
+      setSdfWizardOpen: (open) => {
+        setSdfWizardOpenInternal(open);
+        return buildTelemetrySnapshot();
+      },
+      toggleSdfWizard: () => {
+        toggleSdfWizardInternal();
+        return buildTelemetrySnapshot();
+      },
+      setDebugVizMode: (mode) => {
+        setDebugVizModeInternal(mode, true);
+        return buildTelemetrySnapshot();
+      },
+      getDebugVizMode: () => debugVizModeRef.current,
+      measureCaliperAtNdc: (ndcX, ndcY) => {
+        const nextNdc: readonly [number, number] = [
+          Math.max(-1, Math.min(1, ndcX)),
+          Math.max(-1, Math.min(1, ndcY)),
+        ];
+        cursorNdcRef.current = nextNdc;
+        const snap = computeCaliperSnapshot(nextNdc);
+        setUiSdfCaliper(snap);
+        return snap;
+      },
       selectGridPlayer: (slotIndex) => {
         selectGridPlayerInternal(slotIndex);
         return buildTelemetrySnapshot();
@@ -1070,6 +1213,8 @@ export const App: React.FC = () => {
     let lastSyncedArchitectOpen = architectOpenRef.current;
     let lastSyncedPartyOpen = partyOpenRef.current;
     let lastSyncedDebugOpen = debugDrawerOpenRef.current;
+    let lastSyncedWizardOpen = sdfWizardOpenRef.current;
+    let lastSyncedDebugVizMode = debugVizModeRef.current;
     let lastSyncedViewMode = viewModeRef.current;
 
     const tick = (nowMs: number) => {
@@ -1078,6 +1223,25 @@ export const App: React.FC = () => {
         const rawDt = Math.max(0.001, Math.min(0.08, (nowMs - lastTimeMs) / 1000));
         lastTimeMs = nowMs;
         simTimeRef.current += rawDt;
+
+        if (sdfWizardOpenRef.current && sdfWizardAutoTourRef.current) {
+          const nextElapsed =
+            (sdfWizardElapsedRef.current + rawDt) % SDF_WIZARD_TOTAL_DURATION_SEC;
+          sdfWizardElapsedRef.current = nextElapsed;
+          const nextStep = (Math.min(
+            5,
+            Math.max(1, Math.floor(nextElapsed / SDF_WIZARD_STEP_DURATION_SEC) + 1),
+          ) as SdfDebugVizMode);
+          if (nextStep !== debugVizModeRef.current) {
+            debugVizModeRef.current = nextStep;
+            setDebugVizMode(nextStep);
+            if (nextStep === 4 && !sdfWizardDemoCsgFiredRef.current) {
+              sdfWizardDemoCsgFiredRef.current = true;
+              triggerWeaponInternal('matterBomb');
+              firePortalInternal('blue');
+            }
+          }
+        }
 
         const instFps = 1.0 / rawDt;
         fpsRef.current = fpsRef.current * 0.92 + instFps * 0.08;
@@ -1509,6 +1673,7 @@ export const App: React.FC = () => {
           portals: portalsRef.current,
           portalAimPreview: portalAimPreviewRef.current,
           engineMode: engineModeRef.current,
+          debugVizMode: debugVizModeRef.current,
           gridTiles: viewModeRef.current === 'grid' ? tileDefs : undefined,
         });
 
@@ -1521,6 +1686,8 @@ export const App: React.FC = () => {
           architectOpenRef.current !== lastSyncedArchitectOpen ||
           partyOpenRef.current !== lastSyncedPartyOpen ||
           debugDrawerOpenRef.current !== lastSyncedDebugOpen ||
+          sdfWizardOpenRef.current !== lastSyncedWizardOpen ||
+          debugVizModeRef.current !== lastSyncedDebugVizMode ||
           viewModeRef.current !== lastSyncedViewMode;
 
         if (uiSyncAccumulator >= HUD_SYNC_INTERVAL_SEC || immediateStateChange) {
@@ -1529,6 +1696,8 @@ export const App: React.FC = () => {
           lastSyncedArchitectOpen = architectOpenRef.current;
           lastSyncedPartyOpen = partyOpenRef.current;
           lastSyncedDebugOpen = debugDrawerOpenRef.current;
+          lastSyncedWizardOpen = sdfWizardOpenRef.current;
+          lastSyncedDebugVizMode = debugVizModeRef.current;
           lastSyncedViewMode = viewModeRef.current;
 
           setUiMarble(marbleState);
@@ -1547,6 +1716,10 @@ export const App: React.FC = () => {
           setUiGridCells(nextGridCells);
           setPartyRoomCode(currentRoomCode);
           setUiProfiler(buildProfilerSnapshot());
+          if (sdfWizardOpenRef.current) {
+            setSdfWizardElapsedSec(sdfWizardElapsedRef.current);
+            setUiSdfCaliper(computeCaliperSnapshot());
+          }
         }
       } catch (err) {
         console.error('Frame tick error:', err);
@@ -1598,6 +1771,7 @@ export const App: React.FC = () => {
           viewMode={viewMode}
           focusedPlayerIndex={focusedPlayerIndex}
           debugDrawerOpen={debugDrawerOpen}
+          sdfWizardOpen={sdfWizardOpen}
           engineMode={engineMode}
           gridCells={uiGridCells}
           portals={uiPortals}
@@ -1646,6 +1820,9 @@ export const App: React.FC = () => {
             debugDrawerOpenRef.current = next;
             setDebugDrawerOpen(next);
           }}
+          onToggleSdfWizard={() => {
+            window.__MARBLE_PLAYTEST__?.toggleSdfWizard?.();
+          }}
           onCycleEngineMode={() => {
             window.__MARBLE_PLAYTEST__?.cycleEngineMode?.();
           }}
@@ -1660,6 +1837,44 @@ export const App: React.FC = () => {
                 runElapsedRef.current,
               ),
             );
+          }}
+        />
+
+        <SdfDebugWizard
+          isOpen={sdfWizardOpen}
+          activeMode={debugVizMode}
+          autoTourPlaying={sdfWizardAutoTour}
+          autoTourElapsedSec={sdfWizardElapsedSec}
+          caliper={uiSdfCaliper}
+          onSelectMode={(mode) => {
+            window.__MARBLE_PLAYTEST__?.setDebugVizMode?.(mode);
+          }}
+          onToggleAutoTour={() => {
+            const next = !sdfWizardAutoTourRef.current;
+            sdfWizardAutoTourRef.current = next;
+            setSdfWizardAutoTour(next);
+            if (next && debugVizModeRef.current === 0) {
+              debugVizModeRef.current = 1;
+              setDebugVizMode(1);
+              sdfWizardElapsedRef.current = 0;
+              setSdfWizardElapsedSec(0);
+            }
+          }}
+          onRestartAutoTour={() => {
+            debugVizModeRef.current = 1;
+            setDebugVizMode(1);
+            sdfWizardAutoTourRef.current = true;
+            setSdfWizardAutoTour(true);
+            sdfWizardElapsedRef.current = 0;
+            setSdfWizardElapsedSec(0);
+            sdfWizardDemoCsgFiredRef.current = false;
+          }}
+          onTriggerDemoCsgPulse={() => {
+            window.__MARBLE_PLAYTEST__?.triggerWeapon('matterBomb');
+            window.__MARBLE_PLAYTEST__?.firePortal('blue');
+          }}
+          onClose={() => {
+            window.__MARBLE_PLAYTEST__?.setSdfWizardOpen?.(false);
           }}
         />
 

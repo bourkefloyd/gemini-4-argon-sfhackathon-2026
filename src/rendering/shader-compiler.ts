@@ -1302,8 +1302,10 @@ void main() {
   vec3 portalEdgeGlow = vec3(0.0);
   float prevRadius = 0.0;
   float prevStep = 0.0;
+  int stepsTaken = 0;
 
   for (int i = 0; i < 64; i++) {
+    stepsTaken = i + 1;
     vec3 p = ro + rd * t;
     vec2 s = evalSceneSdf(p);
     vec2 ap = (uPortalPairCount > 0) ? evalPortalApertures(p, ignorePortalSide) : vec2(1000.0, -1.0);
@@ -1387,13 +1389,14 @@ void main() {
   }
 
   vec3 color = vec3(0.0);
+  vec3 hitPos = ro + rd * hit.x;
+  vec3 normal = vec3(0.0, 1.0, 0.0);
 
   if (hit.y < 0.0) {
     // Only evaluate O(1) cathedral megastructure on background misses
     color = renderSkyAndAbyss(ro, rd);
   } else {
-    vec3 hitPos = ro + rd * hit.x;
-    vec3 normal = calcWorldNormal(hitPos);
+    normal = calcWorldNormal(hitPos);
     vec3 V = -rd;
     float horizon = clamp(0.5 + 0.5 * rd.y, 0.0, 1.0);
     vec3 skyCol = mix(uSkyHorizon, uSkyZenith, pow(horizon, 0.75));
@@ -1455,6 +1458,11 @@ void main() {
 
   color += portalEdgeGlow;
   color += vec3(0.25, 1.0, 0.72) * volumetricGlow;
+
+  // 20-Second SDF X-Ray & Measurement Wizard Mode (uDebugVizMode == 1..5)
+  if (uDebugVizMode > 0) {
+    color = applySdfDebugViz(ro, rd, hit, hitPos, normal, stepsTaken, color);
+  }
 
   // Split-Screen A/B Mode (uEngineMode == 2): Glowing vertical comparison laser divider
   if (uEngineMode == 2) {

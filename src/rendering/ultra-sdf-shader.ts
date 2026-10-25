@@ -32,6 +32,8 @@ export function getUltraSdfShaderSnippet(): UltraSdfShaderPack {
   const glsl = `
 // Engine Comparison Mode: 0 = ULTRA SDF, 1 = BASIC POLYGON, 2 = SPLIT-SCREEN A/B
 uniform int uEngineMode;
+// 20-Second SDF X-Ray & Measurement Wizard Mode (0 = Off, 1..5 = Wizard Steps)
+uniform int uDebugVizMode;
 
 // Forward declarations for scene evaluators used by secondary reflection & refraction rays
 vec2 evalCourseWorldRaw(vec3 p);
@@ -527,6 +529,281 @@ vec3 shadeBasicPolygonMarble(vec3 p, vec3 smoothN, vec3 V) {
   vec3 baseCol = mix(uMarbleBaseColor, uMarbleVeinColor, 0.35 + 0.15 * triSplit);
   vec3 lit = baseCol * (0.32 + 0.68 * ndotl) + vec3(0.9) * flatSpec;
   return mix(lit, vec3(0.85, 0.98, 1.0), wire * 0.55);
+}
+
+/**
+ * Turbo-inspired perceptual colormap for Step-Count Heatmap (uDebugVizMode == 2):
+ *   1-12 steps  = deep cobalt -> emerald
+ *   13-30 steps = cyan -> neon lime/yellow
+ *   31-64 steps = hot orange -> magenta
+ */
+vec3 evalStepCountHeatmapColor(int stepsTaken) {
+  float x = clamp(float(stepsTaken) / 52.0, 0.0, 1.0);
+  vec3 c0 = vec3(0.07, 0.18, 0.68); // deep cobalt (1-8 steps)
+  vec3 c1 = vec3(0.04, 0.78, 0.64); // emerald/cyan (12 steps)
+  vec3 c2 = vec3(0.96, 0.88, 0.18); // bright yellow (26 steps)
+  vec3 c3 = vec3(1.00, 0.36, 0.08); // hot orange (42 steps)
+  vec3 c4 = vec3(0.98, 0.14, 0.78); // neon magenta (52+ steps)
+  if (x < 0.25) return mix(c0, c1, x / 0.25);
+  if (x < 0.52) return mix(c1, c2, (x - 0.25) / 0.27);
+  if (x < 0.78) return mix(c2, c3, (x - 0.52) / 0.26);
+  return mix(c3, c4, (x - 0.78) / 0.22);
+}
+
+/**
+ * Analytical ray-sphere intersection helper for drawing the 3D Unbounding Sphere Probe (Step 1)
+ * and the chain of 5 translucent Marching Spheres along a demonstration ray (Step 2).
+ */
+vec2 intersectDebugSphere(vec3 ro, vec3 rd, vec3 center, float radius) {
+  vec3 oc = ro - center;
+  float b = dot(oc, rd);
+  float c = dot(oc, oc) - radius * radius;
+  float h = b * b - c;
+  if (h < 0.0) return vec2(-1.0);
+  float s = sqrt(h);
+  return vec2(-b - s, -b + s);
+}
+
+/**
+ * Evaluates a single SDF Debug Visualization mode (1..4) so that Mode 5 (Live Curtain Sweep)
+ * can composite SDF X-Ray Math on the left of the scanner bar against the final Ultra Glass
+ * game on the right!
+ */
+vec3 composeSdfDebugMode(
+  int mode,
+  vec3 ro,
+  vec3 rd,
+  vec2 hit,
+  vec3 hitPos,
+  vec3 normal,
+  int stepsTaken,
+  vec3 baseUltraColor
+) {
+  bool isHit = hit.y >= 0.0;
+  float sceneT = isHit ? hit.x : 165.0;
+
+  // ============================================================================
+  // MODE 1: WHAT IS AN SDF? (Live 3D Distance Field Slicer & Isolines + Unbounding Sphere)
+  // ============================================================================
+  if (mode == 1) {
+    vec3 col = baseUltraColor * 0.32;
+
+    if (isHit) {
+      // Surface distance isoline contours wrt marble center + elevation contours
+      float dFromMarble = max(0.0, length(hitPos - uMarblePos) - uMarbleRadius);
+      float wave = abs(sin(dFromMarble * 6.2831853 * 2.0 - uTime * 2.4));
+      float isoRing = 1.0 - smoothstep(0.0, 0.14, wave);
+      float minorIso = 1.0 - smoothstep(0.0, 0.09, abs(sin(dFromMarble * 18.0)));
+      float zeroContour = exp(-dFromMarble * 6.5);
+
+      vec3 isoTint = mix(vec3(0.06, 0.88, 1.0), vec3(0.32, 1.0, 0.68), 0.5 + 0.5 * sin(dFromMarble * 1.4));
+      col += isoTint * (isoRing * 0.85 + minorIso * 0.32);
+      col = mix(col, vec3(1.0, 0.99, 1.0), clamp(zeroContour * 0.85, 0.0, 1.0));
+    }
+
+    // Horizontal 3D Cross-Section Slicer Plane at height y = uMarblePos.y
+    float planeY = uMarblePos.y;
+    if (abs(rd.y) > 0.002) {
+      float tPlane = (planeY - ro.y) / rd.y;
+      if (tPlane > 0.1 && tPlane < min(sceneT + 0.03, 95.0)) {
+        vec3 pSlice = ro + rd * tPlane;
+        float distToMarble = length(pSlice.xz - uMarblePos.xz);
+        if (distToMarble < 20.0) {
+          float dField = evalCourseWorldRaw(pSlice).x;
+          float dMarbleSlice = length(pSlice - uMarblePos) - uMarbleRadius;
+          float dTotal = min(dField, dMarbleSlice);
+
+          // Concentric neon cyan isoline rings every 0.5m in free space + razor-sharp white d = 0 contour
+          float halfMeterPhase = abs(fract(dTotal * 2.0 + 0.5) - 0.5) / 2.0;
+          float ring05 = 1.0 - smoothstep(0.0, 0.032, halfMeterPhase);
+          float sinBands = 0.5 + 0.5 * sin(dTotal * 18.0 - uTime * 3.0);
+          float zeroLine = 1.0 - smoothstep(0.0, 0.045, abs(dTotal));
+
+          vec3 fieldCol = (dTotal >= 0.0)
+            ? mix(vec3(0.02, 0.16, 0.34), vec3(0.08, 0.92, 1.0), ring05 * 0.88 + sinBands * 0.22)
+            : mix(vec3(0.38, 0.04, 0.22), vec3(1.0, 0.28, 0.62), ring05 * 0.85);
+          fieldCol = mix(fieldCol, vec3(1.0, 1.0, 1.0), zeroLine);
+
+          float radialFade = 1.0 - smoothstep(13.0, 20.0, distToMarble);
+          col = mix(col, fieldCol, radialFade * 0.84);
+        }
+      }
+    }
+
+    // Glowing 3D Unbounding Sphere Probe around a sample point above the marble/cursor
+    vec3 probeCenter = (uPortalAimPos.w > 0.5)
+      ? (uPortalAimPos.xyz + normalize(uPortalAimNormal.xyz) * 1.35)
+      : (uMarblePos + vec3(1.65 * cos(uTime * 0.9), 1.25, 1.65 * sin(uTime * 0.9)));
+    float safeRadius = clamp(evalCourseWorldRaw(probeCenter).x, 0.35, 3.2);
+    vec2 spHit = intersectDebugSphere(ro, rd, probeCenter, safeRadius);
+    if (spHit.x > 0.0 && spHit.x < sceneT) {
+      vec3 spPos = ro + rd * spHit.x;
+      vec3 spN = normalize(spPos - probeCenter);
+      float rim = pow(1.0 - abs(dot(spN, -rd)), 2.2);
+      float latGrid = 1.0 - smoothstep(0.0, 0.08, abs(sin(spPos.y * 10.0)));
+      vec3 probeCol = mix(vec3(0.12, 0.96, 1.0), vec3(1.0, 0.92, 0.32), rim * 0.65 + latGrid * 0.35);
+      col = mix(col, probeCol * 1.45, clamp(0.28 + 0.62 * rim + 0.25 * latGrid, 0.0, 0.92));
+    }
+
+    return col;
+  }
+
+  // ============================================================================
+  // MODE 2: SPHERE TRACING & STEP RULER (0-Triangle Step Heatmap + 5 Marching Spheres)
+  // ============================================================================
+  if (mode == 2) {
+    vec3 heat = evalStepCountHeatmapColor(stepsTaken);
+    if (isHit) {
+      vec2 fw = max(fwidth(hitPos.xz), vec2(0.002));
+      vec2 g = abs(fract(hitPos.xz - 0.5) - 0.5) / fw;
+      float wire = 1.0 - smoothstep(0.0, 1.35, min(g.x, g.y));
+      float ndotl = 0.55 + 0.45 * max(dot(normal, normalize(uSunDir)), 0.0);
+      float edgeSilhouette = pow(1.0 - clamp(dot(normal, -rd), 0.0, 1.0), 2.4);
+      heat = heat * ndotl + vec3(0.95, 1.0, 1.0) * wire * 0.24 + vec3(1.0, 0.45, 0.85) * edgeSilhouette * 0.35;
+    } else {
+      heat *= 0.62;
+    }
+
+    // Visible chain of 5 translucent Marching Spheres along a demonstration ray toward the marble
+    vec3 demoOrigin = uMarblePos + normalize(vec3(-2.6, 2.2, 2.8)) * 5.8;
+    vec3 demoDir = normalize(uMarblePos - demoOrigin);
+    float marchT = 0.25;
+    for (int mStep = 0; mStep < 5; mStep++) {
+      vec3 cPos = demoOrigin + demoDir * marchT;
+      float rSafe = clamp(min(evalCourseWorldRaw(cPos).x, length(cPos - uMarblePos) - uMarbleRadius), 0.22, 1.85);
+      vec2 mHit = intersectDebugSphere(ro, rd, cPos, rSafe);
+      if (mHit.x > 0.0 && mHit.x < sceneT) {
+        vec3 mPos = ro + rd * mHit.x;
+        vec3 mN = normalize(mPos - cPos);
+        float mRim = pow(1.0 - abs(dot(mN, -rd)), 2.0);
+        float stepHue = float(mStep) / 4.0;
+        vec3 sphereTint = mix(vec3(0.15, 0.98, 1.0), vec3(1.0, 0.84, 0.22), stepHue);
+        heat = mix(heat, sphereTint * 1.4, clamp(0.22 + 0.62 * mRim, 0.0, 0.88));
+      }
+      marchT += rSafe * 0.92;
+    }
+
+    return heat;
+  }
+
+  // ============================================================================
+  // MODE 3: 120 Hz jSDF GRADIENT & NORMAL FIELD (C-Infinity Smooth Normals, 0 deg Chatter)
+  // ============================================================================
+  if (mode == 3) {
+    if (!isHit) {
+      return baseUltraColor * 0.25;
+    }
+    vec3 normalRgb = normal * 0.5 + 0.5;
+    vec2 fw = max(fwidth(hitPos.xz), vec2(0.002));
+    vec2 g1 = abs(fract(hitPos.xz - 0.5) - 0.5) / fw;
+    float contourGrid = 1.0 - smoothstep(0.0, 1.35, min(g1.x, g1.y));
+
+    // Highlight smoothUnion (smin) C-infinity fillets where surface curvature smoothly blends
+    float filletCurvature = clamp(length(fwidth(normal)) * 7.5, 0.0, 1.0);
+    vec3 col = normalRgb * (0.78 + 0.22 * contourGrid);
+    col = mix(col, vec3(1.0, 0.96, 0.48), filletCurvature * 0.55);
+    col += vec3(0.9, 0.98, 1.0) * contourGrid * 0.22;
+    return col;
+  }
+
+  // ============================================================================
+  // MODE 4: 0 ms REALTIME CSG & PORTAL WARP X-RAY (Why Ours Beats Polygon Engines)
+  // ============================================================================
+  if (mode == 4) {
+    vec3 col = baseUltraColor * 0.38;
+    if (!isHit) return col;
+
+    // Highlight active CSG FieldMutation craters/bridges/ramps with glowing concentric rings
+    float csgEnergy = 0.0;
+    vec3 csgTint = vec3(1.0, 0.32, 0.78);
+    for (int i = 0; i < 16; i++) {
+      if (i >= uMutationCount) break;
+      vec3 mutCenter = uMutationsPosA[i].xyz;
+      float mutRadius = max(uMutationsPosA[i].w, 0.5);
+      float dMut = abs(length(hitPos - mutCenter) - mutRadius);
+      float ring = exp(-dMut * 3.2) * (0.65 + 0.35 * sin(dMut * 18.0 - uTime * 8.0));
+      int kind = int(round(uMutationsMeta[i].x));
+      vec3 kCol = (kind == 1)
+        ? vec3(1.0, 0.28, 0.68) // Subtract Sphere Crater
+        : (kind == 2)
+          ? vec3(0.18, 0.98, 0.82) // Ferrofluid Capsule Bridge
+          : vec3(1.0, 0.84, 0.22); // Pop-Ramp / Cryo
+      csgEnergy = max(csgEnergy, ring);
+      if (ring >= csgEnergy) csgTint = kCol;
+    }
+
+    // Fallback demonstration CSG X-Ray ring around the marble when no manual mutations are active yet
+    if (uMutationCount == 0) {
+      float dDemoCrater = abs(length(hitPos - uMarblePos) - 2.4);
+      float demoRing = exp(-dDemoCrater * 2.4) * (0.6 + 0.4 * sin(dDemoCrater * 16.0 - uTime * 6.0));
+      csgEnergy = max(csgEnergy, demoRing * 0.85);
+    }
+
+    // Highlight Blue & Orange Non-Euclidean Portal throats
+    float portalEnergy = 0.0;
+    vec3 portalTint = vec3(0.0, 0.88, 1.0);
+    if (uPortalPairCount > 0) {
+      float dPA = abs(length(hitPos - uPortalPosA[0].xyz) - uPortalPosA[0].w);
+      float dPB = abs(length(hitPos - uPortalPosB[0].xyz) - uPortalPosB[0].w);
+      float eA = exp(-dPA * 2.2) * (0.65 + 0.35 * sin(dPA * 16.0 - uTime * 7.5));
+      float eB = exp(-dPB * 2.2) * (0.65 + 0.35 * sin(dPB * 16.0 - uTime * 7.5));
+      if (eB > eA) {
+        portalEnergy = eB;
+        portalTint = vec3(1.0, 0.52, 0.08);
+      } else {
+        portalEnergy = eA;
+        portalTint = vec3(0.0, 0.88, 1.0);
+      }
+    }
+
+    col += csgTint * csgEnergy * 1.65 + portalTint * portalEnergy * 1.55;
+    return col;
+  }
+
+  return baseUltraColor;
+}
+
+/**
+ * Applies the active 20-Second SDF X-Ray & Measurement Wizard visualization mode (uDebugVizMode 1..5).
+ * Mode 5 animates a sweeping vertical X-Ray scanner bar across the viewport:
+ *   - Left of the scanner bar: live composite of SDF Isolines + Step Heatmap + jSDF Normals
+ *   - Right of the scanner bar: final Ultra Lockstep SDF optical glass game!
+ */
+vec3 applySdfDebugViz(
+  vec3 ro,
+  vec3 rd,
+  vec2 hit,
+  vec3 hitPos,
+  vec3 normal,
+  int stepsTaken,
+  vec3 baseUltraColor
+) {
+  if (uDebugVizMode <= 0) return baseUltraColor;
+
+  if (uDebugVizMode >= 1 && uDebugVizMode <= 4) {
+    return composeSdfDebugMode(uDebugVizMode, ro, rd, hit, hitPos, normal, stepsTaken, baseUltraColor);
+  }
+
+  // MODE 5: LIVE CURTAIN SWEEP (SDF X-Ray Math <-> Final Ultra Glass Game)
+  float sweepX = 0.15 + 0.70 * (0.5 + 0.5 * sin(uTime * 1.6));
+  float uvX = gl_FragCoord.x / max(uResolution.x, 1.0);
+  float distToBar = abs(uvX - sweepX) * uResolution.x;
+
+  vec3 xrayColor = baseUltraColor;
+  if (uvX < sweepX) {
+    vec3 isoCol = composeSdfDebugMode(1, ro, rd, hit, hitPos, normal, stepsTaken, baseUltraColor);
+    vec3 stepCol = composeSdfDebugMode(2, ro, rd, hit, hitPos, normal, stepsTaken, baseUltraColor);
+    vec3 normCol = composeSdfDebugMode(3, ro, rd, hit, hitPos, normal, stepsTaken, baseUltraColor);
+    xrayColor = mix(mix(isoCol, stepCol, 0.42), normCol, 0.32);
+  }
+
+  // Glowing vertical X-Ray scanner laser beam at sweepX
+  float beamCore = 1.0 - smoothstep(0.0, 2.2, distToBar);
+  float beamHalo = exp(-distToBar * 0.16);
+  float scanTick = step(0.55, fract(gl_FragCoord.y * 0.05 - uTime * 2.5));
+  vec3 scannerCol = mix(vec3(0.08, 0.96, 1.0), vec3(1.0, 0.88, 0.28), 0.45 + 0.55 * scanTick);
+
+  return mix(xrayColor, scannerCol * 1.65, clamp(beamCore + beamHalo * 0.52, 0.0, 1.0));
 }
 `;
 
