@@ -40,6 +40,7 @@ export interface ArcadeInputCallbacks {
   onToggleParty?: () => void;
   onToggleViewMode?: () => void;
   onToggleDebugDrawer?: () => void;
+  onToggleSdfWizard?: () => void;
   onCycleEngineMode?: () => void;
 }
 
@@ -128,6 +129,8 @@ export function createArcadeInputController(
       callbacks.onToggleParty?.();
     } else if (code === 'KeyK' && !isRepeat) {
       callbacks.onCycleEngineMode?.();
+    } else if ((code === 'KeyZ' || (code === 'KeyW' && ev.shiftKey)) && !isRepeat) {
+      callbacks.onToggleSdfWizard?.();
     } else if (code === 'Digit1') {
       callbacks.onSelectCourse?.(0);
     } else if (code === 'Digit2') {

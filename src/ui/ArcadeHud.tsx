@@ -88,6 +88,7 @@ export interface ArcadeHudProps {
   readonly viewMode?: ViewportDisplayMode;
   readonly focusedPlayerIndex?: number;
   readonly debugDrawerOpen?: boolean;
+  readonly sdfWizardOpen?: boolean;
   readonly engineMode?: EngineComparisonMode;
   readonly gridCells?: readonly PlayerGridCellHudInfo[];
   readonly portals?: readonly PortalPair[];
@@ -108,6 +109,7 @@ export interface ArcadeHudProps {
   readonly onToggleParty?: () => void;
   readonly onToggleViewMode?: () => void;
   readonly onToggleDebugDrawer?: () => void;
+  readonly onToggleSdfWizard?: () => void;
   readonly onCycleEngineMode?: () => void;
   readonly onSelectGridPlayer?: (slotIndex: number) => void;
   readonly onClearSavedGhosts?: () => void;
@@ -135,6 +137,7 @@ export const ArcadeHud: React.FC<ArcadeHudProps> = ({
   viewMode = 'fullscreen',
   focusedPlayerIndex = 0,
   debugDrawerOpen = false,
+  sdfWizardOpen = false,
   engineMode = 0,
   gridCells = [],
   portals = [],
@@ -155,6 +158,7 @@ export const ArcadeHud: React.FC<ArcadeHudProps> = ({
   onToggleParty,
   onToggleViewMode,
   onToggleDebugDrawer,
+  onToggleSdfWizard,
   onCycleEngineMode,
   onSelectGridPlayer,
   onClearSavedGhosts,
@@ -284,6 +288,16 @@ export const ArcadeHud: React.FC<ArcadeHudProps> = ({
           data-hud-interactive="true"
           aria-label="Primary View and Arena Actions"
         >
+          <button
+            type="button"
+            className={`hud-action-pill ${sdfWizardOpen ? 'hud-action-pill-active' : 'hud-action-pill-accent'}`}
+            onClick={() => onToggleSdfWizard?.()}
+            data-testid="hud-sdf-wizard-toggle"
+            title="Open 20-Second Interactive SDF X-Ray & Measurement Wizard [Z]"
+          >
+            [W] 20s SDF Wizard
+          </button>
+
           <button
             type="button"
             className={`hud-action-pill ${engineMode !== 0 ? 'hud-action-pill-active' : 'hud-action-pill-accent'}`}
