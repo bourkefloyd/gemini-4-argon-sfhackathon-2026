@@ -274,11 +274,31 @@ export const App: React.FC = () => {
   const [fps, setFps] = useState<number>(60);
   const [architectOpen, setArchitectOpen] = useState<boolean>(false);
   const [partyOpen, setPartyOpen] = useState<boolean>(false);
-  const [viewMode, setViewMode] = useState<ViewportDisplayMode>('fullscreen');
+  const initialViewMode: ViewportDisplayMode =
+    typeof window !== 'undefined' && window.location.search.includes('view=grid')
+      ? 'grid'
+      : 'fullscreen';
+  const defaultGridCells: readonly PlayerGridCellHudInfo[] = PLAYER_MARBLE_PALETTE.map(
+    (pal, idx) => {
+      const name =
+        idx === 0 ? 'YOU' : ['MAYA', 'DAN', 'ALEX', 'ZOE', 'KAI'][idx - 1] ?? `BOT_${idx}`;
+      return {
+        slotIndex: idx,
+        badgeTitle: `${pal.slotId} @${name}`,
+        subtitle: pal.marbleTitle,
+        speedUps: 0,
+        roomCode: 'ARGON',
+        accentColor: pal.hex,
+        status: 'racing',
+        isHuman: idx === 0,
+      };
+    },
+  );
+  const [viewMode, setViewMode] = useState<ViewportDisplayMode>(initialViewMode);
   const [focusedPlayerIndex, setFocusedPlayerIndex] = useState<number>(0);
   const [debugDrawerOpen, setDebugDrawerOpen] = useState<boolean>(false);
   const [engineMode, setEngineMode] = useState<EngineComparisonMode>(0);
-  const [uiGridCells, setUiGridCells] = useState<readonly PlayerGridCellHudInfo[]>([]);
+  const [uiGridCells, setUiGridCells] = useState<readonly PlayerGridCellHudInfo[]>(defaultGridCells);
   const [partyRoomCode, setPartyRoomCode] = useState<string>('ARGON');
   const [partyConnectedCount, setPartyConnectedCount] = useState<number>(1);
   const [crowdSeedPrompt, setCrowdSeedPrompt] = useState<string | null>(null);
@@ -316,11 +336,11 @@ export const App: React.FC = () => {
   const seenPartyMutationIdsRef = useRef<Set<string>>(new Set());
   const architectOpenRef = useRef<boolean>(false);
   const partyOpenRef = useRef<boolean>(false);
-  const viewModeRef = useRef<ViewportDisplayMode>('fullscreen');
+  const viewModeRef = useRef<ViewportDisplayMode>(initialViewMode);
   const focusedPlayerIdxRef = useRef<number>(0);
   const debugDrawerOpenRef = useRef<boolean>(false);
   const engineModeRef = useRef<EngineComparisonMode>(0);
-  const gridCellsRef = useRef<readonly PlayerGridCellHudInfo[]>([]);
+  const gridCellsRef = useRef<readonly PlayerGridCellHudInfo[]>(defaultGridCells);
 
   // Programmatic bot override state for `window.__MARBLE_PLAYTEST__`
   const botOverrideRef = useRef<{

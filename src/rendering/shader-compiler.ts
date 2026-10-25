@@ -659,22 +659,6 @@ vec2 evalSceneSdf(vec3 p) {
     }
   }
 
-  // Other Active Multiplayer Marbles SDF (material ID = 110.0 .. 115.0, branchless for fast SPIR-V compilation)
-  if (uOtherMarbleCount > 0) {
-    float d0 = length(p - uOtherMarblePosRad[0].xyz) - uOtherMarblePosRad[0].w;
-    float d1 = length(p - uOtherMarblePosRad[1].xyz) - uOtherMarblePosRad[1].w;
-    float d2 = length(p - uOtherMarblePosRad[2].xyz) - uOtherMarblePosRad[2].w;
-    float d3 = length(p - uOtherMarblePosRad[3].xyz) - uOtherMarblePosRad[3].w;
-    float d4 = length(p - uOtherMarblePosRad[4].xyz) - uOtherMarblePosRad[4].w;
-    float d5 = length(p - uOtherMarblePosRad[5].xyz) - uOtherMarblePosRad[5].w;
-    vec2 m01 = mix(vec2(d0, 110.0), vec2(d1, 111.0), step(d1, d0));
-    vec2 m23 = mix(vec2(d2, 112.0), vec2(d3, 113.0), step(d3, d2));
-    vec2 m45 = mix(vec2(d4, 114.0), vec2(d5, 115.0), step(d5, d4));
-    vec2 m03 = mix(m01, m23, step(m23.x, m01.x));
-    vec2 mBest = mix(m03, m45, step(m45.x, m03.x));
-    res = mix(res, mBest, step(mBest.x, res.x));
-  }
-
   // Hovering holographic Goal Halo Torus above the Goal Pad (material ID = 101.0)
   vec3 gp = p - (uGoalPos + vec3(0.0, 1.35 + 0.18 * sin(uTime * 3.2), 0.0));
   float c = cos(uTime * 1.8);
@@ -1066,7 +1050,7 @@ vec3 shadeGhostMarble(vec3 p, vec3 n, vec3 V, vec3 ro) {
  * Shades other active multiplayer glass marbles (P1..P6) with their distinct PLAYER_MARBLE_PALETTE color,
  * internal cat's-eye swirl, Fresnel rim glow, and dual-coat specular highlight.
  */
-vec3 shadeOtherPlayerMarble(vec3 p, vec3 n, vec3 V, int idx) {
+vec3 shadeOtherPlayerMarble(vec3 p, vec3 V, int idx) {
   float fi = float(idx);
   vec4 posRad = uOtherMarblePosRad[0] * step(abs(fi - 0.0), 0.25)
               + uOtherMarblePosRad[1] * step(abs(fi - 1.0), 0.25)
@@ -1084,6 +1068,7 @@ vec3 shadeOtherPlayerMarble(vec3 p, vec3 n, vec3 V, int idx) {
   float mRad = max(posRad.w, 0.05);
   vec3 baseCol = colVec.rgb;
   vec3 localP = (p - mCenter) / mRad;
+  vec3 n = normalize(localP);
 
   float swirl = 0.5 + 0.5 * sin(localP.x * 6.5 + cos(localP.z * 6.5 + uTime * 2.5) * 1.8);
   float equator = exp(-abs(localP.y) * 5.0);
@@ -1138,6 +1123,21 @@ float computeKappaOverRelaxation(float d, float prevD, float prevStep) {
   float slope = (prevStep > 1e-4) ? clamp((d - prevD) / prevStep, -1.0, 1.0) : -1.0;
   float omegaMax = (slope < -0.75) ? 1.16 : 1.38;
   return 1.0 + (omegaMax - 1.0) * curvatureDamping;
+}
+
+void checkOtherMarbleSphere(vec3 ro, vec3 rd, vec4 om, float matId, inout vec2 hit) {
+  if (om.w > 0.05) {
+    vec3 oc = ro - om.xyz;
+    float bSph = dot(oc, rd);
+    float cSph = dot(oc, oc) - om.w * om.w;
+    float disc = bSph * bSph - cSph;
+    if (disc > 0.0) {
+      float tSph = -bSph - sqrt(disc);
+      if (tSph > 0.05 && tSph < hit.x) {
+        hit = vec2(tSph, matId);
+      }
+    }
+  }
 }
 
 void main() {
@@ -1244,18 +1244,29 @@ void main() {
     }
   }
 
+  // Exact O(1) analytic ray-sphere intersection for other active multiplayer marbles (P1..P6)
+  if (uOtherMarbleCount > 0) {
+    checkOtherMarbleSphere(ro, rd, uOtherMarblePosRad[0], 110.0, hit);
+    if (uOtherMarbleCount > 1) checkOtherMarbleSphere(ro, rd, uOtherMarblePosRad[1], 111.0, hit);
+    if (uOtherMarbleCount > 2) checkOtherMarbleSphere(ro, rd, uOtherMarblePosRad[2], 112.0, hit);
+    if (uOtherMarbleCount > 3) checkOtherMarbleSphere(ro, rd, uOtherMarblePosRad[3], 113.0, hit);
+    if (uOtherMarbleCount > 4) checkOtherMarbleSphere(ro, rd, uOtherMarblePosRad[4], 114.0, hit);
+    if (uOtherMarbleCount > 5) checkOtherMarbleSphere(ro, rd, uOtherMarblePosRad[5], 115.0, hit);
+  }
+
   vec3 skyCol = renderSkyAndAbyss(ro, rd);
   vec3 color = skyCol;
 
   if (hit.y >= 0.0) {
     vec3 hitPos = ro + rd * hit.x;
-    vec3 normal = calcWorldNormal(hitPos);
     vec3 V = -rd;
 
     if (hit.y > 109.5) {
       int omIdx = clamp(int(round(hit.y - 110.0)), 0, 5);
-      color = shadeOtherPlayerMarble(hitPos, normal, V, omIdx);
-    } else if (hit.y > 105.5) {
+      color = shadeOtherPlayerMarble(hitPos, V, omIdx);
+    } else {
+      vec3 normal = calcWorldNormal(hitPos);
+      if (hit.y > 105.5) {
       // Live 3D Aim Ring / Trajectory Preview (106.0)
       vec3 aimBase = uPortalAimNormal.w > 1.5 ? vec3(0.0, 0.847, 1.0) : vec3(1.0, 0.482, 0.0);
       float dash = 0.5 + 0.5 * sin((hitPos.x + hitPos.y + hitPos.z) * 10.0 - uTime * 12.0);
@@ -1296,6 +1307,7 @@ void main() {
       color = shadePlayerMarble(hitPos, normal, V);
     } else {
       color = shadeCourseSurface(hitPos, normal, V, hit.y);
+    }
     }
 
     // Volumetric abyss fog & distance atmospheric perspective

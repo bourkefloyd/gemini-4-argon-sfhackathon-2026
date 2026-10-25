@@ -462,7 +462,7 @@ export const ArcadeHud: React.FC<ArcadeHudProps> = ({
                   style={{ background: cell.accentColor }}
                 />
                 <span className="hud-grid-corner-label">
-                  {cell.badgeTitle} · {cell.speedUps.toFixed(1)} u/s
+                  {cell.badgeTitle} · {(cell.speedUps ?? 0).toFixed(1)} u/s
                 </span>
               </div>
             </div>

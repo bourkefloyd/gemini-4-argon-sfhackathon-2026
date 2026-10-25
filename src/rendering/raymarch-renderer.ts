@@ -621,11 +621,17 @@ export function createRaymarchRenderer(
     const gridTiles = frame.gridTiles;
     if (gridTiles && gridTiles.length > 0) {
       gl.enable(gl.SCISSOR_TEST);
-      for (const tile of gridTiles) {
-        const vx = Math.max(0, Math.floor(tile.viewport.x));
-        const vy = Math.max(0, Math.floor(tile.viewport.y));
-        const vw = Math.max(1, Math.floor(tile.viewport.width));
-        const vh = Math.max(1, Math.floor(tile.viewport.height));
+      const cols = gridTiles.length > 4 ? 3 : 2;
+      const colW = Math.max(1, Math.floor(canvas.width / cols));
+      const rowH = Math.max(1, Math.floor(canvas.height / 2));
+      for (let idx = 0; idx < gridTiles.length; idx++) {
+        const tile = gridTiles[idx];
+        const col = idx % cols;
+        const row = Math.floor(idx / cols);
+        const vx = col * colW;
+        const vw = col === cols - 1 ? Math.max(1, canvas.width - vx) : colW;
+        const vy = row === 0 ? rowH : 0;
+        const vh = row === 0 ? Math.max(1, canvas.height - rowH) : rowH;
 
         gl.viewport(vx, vy, vw, vh);
         gl.scissor(vx, vy, vw, vh);
@@ -683,7 +689,7 @@ export function createRaymarchRenderer(
         gl.uniform1i(locations.uGhostActive, tGhostActive ? 1 : 0);
         gl.uniform3f(locations.uGhostPos, tGhostPos[0], tGhostPos[1], tGhostPos[2]);
         gl.uniform4f(locations.uGhostQuat, tGhostQuat[0], tGhostQuat[1], tGhostQuat[2], tGhostQuat[3]);
-        gl.uniform3f(locations.uGhostColor, tGhostCol[0], tGhostCol[1], tGhostCol[2]);
+        gl.uniform4f(locations.uGhostColor, tGhostCol[0], tGhostCol[1], tGhostCol[2], 0.52);
 
         uploadOtherMarbles(tile.otherMarbles ?? frame.otherMarbles);
 
