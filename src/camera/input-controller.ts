@@ -10,7 +10,7 @@
  *   - `R`: Respawn at checkpoint
  *   - `C`: Cycle Camera Zoom Stop (Isometric Classic / Close Action / Tactical Overview)
  *   - `M`: Cycle Marble Visual Shader Preset
- *   - `1` / `2` / `3`: Switch playable courses immediately
+ *   - `1`–`6`: Switch the classic campaign courses immediately
  */
 
 export interface TrackballUiTelemetry {
@@ -90,6 +90,12 @@ export function createArcadeInputController(
       callbacks.onSelectCourse?.(1);
     } else if (code === 'Digit3') {
       callbacks.onSelectCourse?.(2);
+    } else if (code === 'Digit4') {
+      callbacks.onSelectCourse?.(3);
+    } else if (code === 'Digit5') {
+      callbacks.onSelectCourse?.(4);
+    } else if (code === 'Digit6') {
+      callbacks.onSelectCourse?.(5);
     }
   }
 

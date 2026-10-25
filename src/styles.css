@@ -64,7 +64,7 @@ body,
 
 .hud-top-bar {
   display: grid;
-  grid-template-columns: minmax(250px, 320px) 1fr minmax(290px, 370px);
+  grid-template-columns: minmax(240px, 300px) 1fr minmax(320px, 460px);
   align-items: start;
   gap: 16px;
 }

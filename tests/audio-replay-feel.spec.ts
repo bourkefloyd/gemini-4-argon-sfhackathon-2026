@@ -106,11 +106,11 @@ describe('Stage 2 Worker 3 — YM2151 Synth, Tactile Trackball Feel, Glass Stres
       const evaluator = createCpuWorldEvaluator(COURSE_1_PRACTICE_RACE);
       const tracker = createTactileFeelTracker();
 
-      // Narrow Abyss Bridge on Course 1 is centered at x = 24.6, yTop = 1.0, z = -25.6 with halfWidth = 1.65.
-      // Place the marble right at the eastern unrailed cliff lip: x = 24.6 + 1.55 = 26.15
+      // Narrow Abyss Bridge on Course 1 is centered at x = 24.6, yTop = 1.0, z = -25.6
+      // with halfExtents.x = 1.85. Place the marble on the eastern unrailed lip.
       const lipMarble = {
         ...createInitialMarbleState(COURSE_1_PRACTICE_RACE),
-        position: [26.12, 1.55, -25.6] as const,
+        position: [26.35, 1.55, -25.6] as const,
         velocity: [2.5, 0, -4.0] as const,
         surfaceMaterial: 'standard' as const,
       };

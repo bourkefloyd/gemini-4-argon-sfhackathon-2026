@@ -104,15 +104,27 @@ const NORMAL_EPS = 0.0025;
 const SEAM_BIAS_EPS = 0.03;
 const SEAM_SUPPORT_MIN_Y = 0.68;
 
-// Pre-allocated evaluation stacks (zero GC allocations at 120 Hz)
-const DIST_STACK = new Float32Array(MAX_RPN_STACK);
+// Pre-allocated evaluation stacks (zero GC allocations at 120 Hz).
+// Distances stay in float64 so smooth-union blends match the CPU AST winner.
+const DIST_STACK = new Float64Array(MAX_RPN_STACK);
 const MAT_STACK = new Uint8Array(MAX_RPN_STACK);
-const VEL_X_STACK = new Float32Array(MAX_RPN_STACK);
-const VEL_Y_STACK = new Float32Array(MAX_RPN_STACK);
-const VEL_Z_STACK = new Float32Array(MAX_RPN_STACK);
-const CONV_X_STACK = new Float32Array(MAX_RPN_STACK);
-const CONV_Y_STACK = new Float32Array(MAX_RPN_STACK);
-const CONV_Z_STACK = new Float32Array(MAX_RPN_STACK);
+const VEL_X_STACK = new Float64Array(MAX_RPN_STACK);
+const VEL_Y_STACK = new Float64Array(MAX_RPN_STACK);
+const VEL_Z_STACK = new Float64Array(MAX_RPN_STACK);
+const CONV_X_STACK = new Float64Array(MAX_RPN_STACK);
+const CONV_Y_STACK = new Float64Array(MAX_RPN_STACK);
+const CONV_Z_STACK = new Float64Array(MAX_RPN_STACK);
+
+/** Goal (5) and start (6) inlays sit inside standard decks; keep them on sub-millimeter ties. */
+function bytecodeTakesB(dA: number, dB: number, matA: number, matB: number): boolean {
+  if (Math.abs(dA - dB) <= 1e-4) {
+    const inlayA = matA === 5 || matA === 6;
+    const inlayB = matB === 5 || matB === 6;
+    if (inlayB && !inlayA) return true;
+    if (inlayA && !inlayB) return false;
+  }
+  return dB < dA;
+}
 
 function keystreamWord(seed: number, wordIndex: number): number {
   let x = (seed + Math.imul(wordIndex + 1, 0x9e3779b9)) | 0;
@@ -681,7 +693,7 @@ export function evalMsdfBytecodeDistance(
       const dB = DIST_STACK[sp];
       const dA = DIST_STACK[sp - 1];
       if (op === MsdfOpcode.CsgUnion) {
-        if (dB < dA) {
+        if (bytecodeTakesB(dA, dB, MAT_STACK[sp - 1], MAT_STACK[sp])) {
           DIST_STACK[sp - 1] = dB;
           MAT_STACK[sp - 1] = MAT_STACK[sp];
         }
@@ -693,7 +705,9 @@ export function evalMsdfBytecodeDistance(
         const h = k > absDiff ? (k - absDiff) * invK : 0.0;
         const minD = dA < dB ? dA : dB;
         DIST_STACK[sp - 1] = minD - 0.25 * h * h * k;
-        if (dB < dA) MAT_STACK[sp - 1] = MAT_STACK[sp];
+        if (bytecodeTakesB(dA, dB, MAT_STACK[sp - 1], MAT_STACK[sp])) {
+          MAT_STACK[sp - 1] = MAT_STACK[sp];
+        }
       } else if (op === MsdfOpcode.CsgSubtract) {
         const negB = -dB;
         DIST_STACK[sp - 1] = dA > negB ? dA : negB;
@@ -1005,7 +1019,7 @@ export function evalMsdfBytecode(
       const dA = DIST_STACK[sp - 1];
 
       if (op === MsdfOpcode.CsgUnion) {
-        if (dB < dA) {
+        if (bytecodeTakesB(dA, dB, MAT_STACK[sp - 1], MAT_STACK[sp])) {
           DIST_STACK[sp - 1] = dB;
           MAT_STACK[sp - 1] = MAT_STACK[sp];
           VEL_X_STACK[sp - 1] = VEL_X_STACK[sp];
@@ -1022,7 +1036,7 @@ export function evalMsdfBytecode(
         const absDiff = diff < 0 ? -diff : diff;
         const h = k > absDiff ? (k - absDiff) * invK : 0.0;
         DIST_STACK[sp - 1] = (dA < dB ? dA : dB) - 0.25 * h * h * k;
-        if (dB < dA) {
+        if (bytecodeTakesB(dA, dB, MAT_STACK[sp - 1], MAT_STACK[sp])) {
           MAT_STACK[sp - 1] = MAT_STACK[sp];
           VEL_X_STACK[sp - 1] = VEL_X_STACK[sp];
           VEL_Y_STACK[sp - 1] = VEL_Y_STACK[sp];

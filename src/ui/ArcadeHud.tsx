@@ -166,13 +166,14 @@ export const ArcadeHud: React.FC<ArcadeHudProps> = ({
 
         {/* RIGHT: Course Switcher & Quick Controls */}
         <div className="hud-panel hud-controls-panel" data-hud-interactive="true">
-          <div className="hud-eyebrow">SELECT COURSE [1 / 2] & CAMERA [C]</div>
+          <div className="hud-eyebrow">SELECT COURSE [1–6] & CAMERA [C]</div>
           <div className="hud-course-tabs">
             {courses.map((c, idx) => (
               <button
                 key={c.id}
                 type="button"
                 className={`hud-btn ${idx === activeCourseIndex ? 'hud-btn-active' : ''}`}
+                title={c.name}
                 onClick={() => onSelectCourse(idx)}
               >
                 [{idx + 1}] {c.name}
