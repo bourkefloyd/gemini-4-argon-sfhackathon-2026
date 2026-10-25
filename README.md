@@ -1,3 +1,56 @@
+# Lockstep Jet-SDFs for a real-time WebGPU marble
+
+Research landing page for the clean-room Marble Madness remake, and the builder guide for the Gemini 4 Argon SF Hackathon. The paper is [paper/README.md](paper/README.md). Numbers below are the ones computed in the notebooks and `tests/security-bytecode.spec.ts`.
+
+**Paper:** [Lockstep Analytical Jet-SDFs, Non-Euclidean Portals, and One-Way Geometric Compilation for Real-Time WebGPU Physics Games](paper/README.md)  
+**Notebooks:** [frontier and inventions](notebooks/sdf_frontier_and_inventions.ipynb) · [graphics, physics, living SDF](notebooks/sdf_marble_madness_guide.ipynb)  
+**Figures:** [docs/figures/](docs/figures/)
+
+## Abstract
+
+A 120 Hz marble and a WebGPU picture share one analytic distance. The symplectic jet (`jSDF`) carries \((d, \nabla d, \partial_t d)\) through a smooth-minimum in one pass: \(4.25\times\) a 4-tap tetrahedral normal in the notebook loop, and a \(1.92\times\) meniscus stretch where \(\|\nabla d\| = 0.522\). The metric-bridged portal (`pSDF`) stays Lipschitz \(1.000\) across the aperture (clipped disc: \(25.7\)). \(\kappa\text{-March}\) cuts mean sphere-trace steps by \(35.9\%\). One-way `.msdf` bytecode is up to \(9.21\times\) the AST, the sparse brick atlas is \(41.86\times\)–\(581.28\times\), and a 120 Hz proof-of-play replay verifies in \(8.19\)–\(9.87\,\mathrm{ms}\). Course synthesis packs six sections into `gemini-4-argon` with a \(95\%\) implicit-cache discount.
+
+## Key empirical results
+
+| Result | Measured value | Where |
+| --- | --- | --- |
+| `jSDF` vs 4-tap tetrahedron | **\(4.25\times\)** (20.3 ms vs 86.4 ms / 1k queries) | Frontier notebook |
+| Meniscus launch, \(\|\nabla d\| = 0.522\) | **\(1.92\times\)** (\(-2.458\) vs \(-1.283\)) | Frontier notebook |
+| `pSDF` Lipschitz, neighbor texels | **\(1.000\)** (random rim pairs \(0.994\)) | Frontier notebook |
+| Clipped-disc Lipschitz, same grid | **\(25.7\)** | Frontier notebook |
+| \(\kappa\text{-March}\) step count | \(22.12 \to 14.19\) (**\(35.9\%\)**) | Frontier notebook |
+| `.msdf` RPN vs AST | **\(9.21\times\)** Practice, \(6.95\times\) Intermediate, \(8.70\times\) dense | Security tests |
+| Bytecode size | Intermediate **\(41.5\%\)** smaller (5,036 B → 2,944 B) | Security tests |
+| Sparse brick atlas vs AST | **\(41.86\times\)–\(581.28\times\)** | Security tests |
+| `.mpop` proof of play | **\(8.19\)–\(9.87\,\mathrm{ms}\)** for 470 ticks | Security tests |
+| Look-ahead bot | **\(>1{,}000\,\mathrm{Hz}\)** wall-clock, 120 Hz physics step | `tests/bot-playtest.spec.ts` |
+
+The checked-in bot gate is \(>1{,}000\,\mathrm{Hz}\). A \(2{,}900\)–\(9{,}600\,\mathrm{Hz}\) band is not in those assertions.
+
+## Figures
+
+![Industry frontier](docs/figures/sdf-industry-frontier-plot.png)
+
+![Jet meniscus launch](docs/figures/sdf-jsdf-meniscus-launch.png)
+
+![Portal field and shadow](docs/figures/sdf-portal-field-and-shadow.png)
+
+![Hard seam versus smooth fillet](docs/figures/sdf-ch2-hard-vs-smooth-seam.png)
+
+![Sphere tracing](docs/figures/sdf-ch3-sphere-tracing.png)
+
+![Field mutations](docs/figures/sdf-ch5-field-mutations.png)
+
+![Playtest Build 1](docs/figures/playtest-build-1.png)
+
+![Portals and weapons](docs/figures/portals-weapons.png)
+
+![Campaign courses](docs/figures/courses-campaign.png)
+
+Run the game with `npm install` and `npm run dev` (Vite on port 5173). `npm test` reruns the security table, the solvability gate, and the bot rollout.
+
+---
+
 # Gemini 4 Argon SF Hackathon — team guide
 
 Practical notes for a team hacking at this event. Event facts come from the [official details page](https://cerebralvalley.ai/e/gemini-4-argon-sf/details) as fetched on 2026-10-25. Builder facts come from Bourke’s shared Google Doc, [Build with Gemini 4 Argon: 1-day hackathon builder guide](https://docs.google.com/document/d/1kN0n6hPNNTIHMVqf5-hDACrZuIg4KFrWiYpla4WQW8w/edit?usp=sharing), read the same day. Anything neither source states is listed under [What these sources do not say](#what-these-sources-do-not-say). Do not treat those gaps as rules.
