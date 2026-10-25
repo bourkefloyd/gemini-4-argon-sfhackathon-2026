@@ -9,9 +9,11 @@
  *   5. Gameplay Feel Bible (6-DOF Slip/Backspin, Tourist vs. Speedrun Lines, Living SDF Hazards & Portals)
  *   6. Player's 120 Hz Run Telemetry History (death coordinates, slip/brake heatmaps, speed profile, completion splits)
  *
- * Designed around `gemini-4-argon`'s 1,000,000-token context window with 95% automatic
- * implicit prefix caching: static codebase & mathematical invariants form the deterministic
- * prefix, while live 120 Hz player telemetry and the user's natural-language intent sit at the tail.
+ * Honesty Pass & Codex F3 Fix:
+ *   - Removes all artificial `6.2x–18.5x` section inflation multipliers.
+ *   - Computes honest pre-call token estimates (`Math.ceil(charCount / 3.85)`) clearly labeled
+ *     as `Est. Packed Input Tokens (chars/4)` when offline, and reconciles with Google's
+ *     real `usageMetadata` when `executionSource` is live.
  */
 
 import {
@@ -43,12 +45,22 @@ export interface ContextSectionTelemetry {
   readonly summary: string;
 }
 
+export interface ArgonUsageMetadata {
+  readonly promptTokenCount: number;
+  readonly candidatesTokenCount: number;
+  readonly thoughtsTokenCount?: number;
+  readonly cachedContentTokenCount?: number;
+  readonly totalTokenCount: number;
+}
+
 export interface ArgonContextBundle {
   readonly modelId: 'gemini-4-argon';
   readonly companionModelId: 'gemini-3.8-flash';
   readonly verifierAgentId: 'antigravity-preview-09-2026';
   readonly thinkingLevel: 'high';
   readonly contextWindowLimit: 1_000_000;
+  readonly tokenEstimationMethod: 'chars/4';
+  readonly totalCharsPacked: number;
   readonly totalTokensPacked: number;
   readonly cachedPrefixTokens: number;
   readonly dynamicTailTokens: number;
@@ -61,6 +73,7 @@ export interface ArgonContextBundle {
   readonly cachedPrefixPrompt: string;
   readonly dynamicTelemetryPrompt: string;
   readonly fullPromptText: string;
+  readonly liveUsageMetadata?: ArgonUsageMetadata | null;
 }
 
 export interface PackArgonContextOptions {
@@ -123,8 +136,53 @@ const GAMEPLAY_FEEL_BIBLE_DIGEST = `// === MARBLE MADNESS SDF GAMEPLAY & LEVEL D
 //    - Linked Blue/Orange Torus Portals ("Speedy marble goes in, speedy marble comes out") preserving scalar speed ||v||.
 `;
 
-function estimateTokens(charCount: number, multiplier = 1): number {
-  return Math.max(1, Math.round((charCount / 3.85) * multiplier));
+/**
+ * Honest pre-call token estimator (`Math.ceil(charCount / 3.85)`) with zero inflation multipliers.
+ */
+export function estimateTokensFromChars(charCount: number): number {
+  return Math.max(1, Math.ceil(charCount / 3.85));
+}
+
+/**
+ * Reconciles an estimated `ArgonContextBundle` with real `usageMetadata` returned by Google's API.
+ */
+export function reconcileContextBundleWithUsageMetadata(
+  bundle: ArgonContextBundle,
+  usage: ArgonUsageMetadata | null | undefined,
+): ArgonContextBundle {
+  if (!usage || usage.promptTokenCount <= 0) {
+    return bundle;
+  }
+  const ratio = usage.promptTokenCount / Math.max(1, bundle.totalTokensPacked);
+  const reconciledSections = bundle.sections.map((sec) => ({
+    ...sec,
+    tokenCount: Math.max(1, Math.round(sec.tokenCount * ratio)),
+  }));
+  const cachedPrefixTokens =
+    usage.cachedContentTokenCount !== undefined && usage.cachedContentTokenCount > 0
+      ? usage.cachedContentTokenCount
+      : reconciledSections
+          .filter((s) => s.cachedImplicitly)
+          .reduce((acc, s) => acc + s.tokenCount, 0);
+  const dynamicTailTokens = Math.max(
+    1,
+    usage.promptTokenCount - cachedPrefixTokens,
+  );
+  const effectiveBillableInputTokens =
+    cachedPrefixTokens * 0.05 + dynamicTailTokens;
+  const estimatedInputCostUsd =
+    Math.round(((effectiveBillableInputTokens / 1_000_000) * 2.0) * 1_000_000) /
+    1_000_000;
+
+  return {
+    ...bundle,
+    totalTokensPacked: usage.promptTokenCount,
+    cachedPrefixTokens,
+    dynamicTailTokens,
+    estimatedInputCostUsd,
+    sections: reconciledSections,
+    liveUsageMetadata: usage,
+  };
 }
 
 /**
@@ -148,7 +206,6 @@ function buildSpatialSdfAtlasDigest(
     ...course.hazards.map((h) => [h.center[0], h.center[1] + 0.5, h.center[2]] as Vec3),
   ];
 
-  // Fill remaining lattice probes along the bounding box between startPos and goalPos
   const minX = Math.min(course.startPos[0], course.goalPos[0]) - 6;
   const maxX = Math.max(course.startPos[0], course.goalPos[0]) + 6;
   const minZ = Math.min(course.startPos[2], course.goalPos[2]) - 6;
@@ -183,8 +240,8 @@ function buildSpatialSdfAtlasDigest(
 }
 
 /**
- * Packs the complete 1M-token Argon context bundle and computes exact per-surface
- * token telemetry for the In-Game Architect Drawer and `/api/argon` swarm endpoint.
+ * Packs the complete Argon context bundle and computes honest pre-call token estimates
+ * (`Math.ceil(charCount / 3.85)`) with zero inflation multipliers.
  */
 export function packArgon1MContext(
   options: PackArgonContextOptions,
@@ -235,25 +292,24 @@ export function packArgon1MContext(
     2,
   );
 
-  // Compute realistic 1M-window token telemetry across the full multi-resolution context pack
-  // (including unrolled SDF ASTs, multi-course shader permutations, and 120 Hz frame history buffer)
+  const sdfAndSpatialChars =
+    SDF_EVALUATOR_AND_PHYSICS_DIGEST.length + spatialAtlas.text.length;
+  const catalogChars = catalogPayload.length;
+
   const sections: ContextSectionTelemetry[] = [
     {
       id: 'engineContracts',
       label: 'Engine Contracts (SDF / Physics / Course AST)',
       charCount: ENGINE_CONTRACTS_DIGEST.length,
-      tokenCount: estimateTokens(ENGINE_CONTRACTS_DIGEST.length, 6.2),
+      tokenCount: estimateTokensFromChars(ENGINE_CONTRACTS_DIGEST.length),
       cachedImplicitly: true,
       summary: 'Frozen TypeScript contracts: 10 SDF primitives, 5 CSG ops, 9 materials, 120 Hz config',
     },
     {
       id: 'sdfEvaluatorAndPhysics',
       label: 'CPU/GPU SDF Kernel & 120 Hz CCD Solver',
-      charCount: SDF_EVALUATOR_AND_PHYSICS_DIGEST.length + spatialAtlas.text.length,
-      tokenCount: estimateTokens(
-        SDF_EVALUATOR_AND_PHYSICS_DIGEST.length + spatialAtlas.text.length,
-        14.5,
-      ),
+      charCount: sdfAndSpatialChars,
+      tokenCount: estimateTokensFromChars(sdfAndSpatialChars),
       cachedImplicitly: true,
       summary: `Lockstep CPU/GPU math + ${spatialAtlas.probesEvaluated} spatial SDF & tetrahedral normal probes`,
     },
@@ -261,15 +317,15 @@ export function packArgon1MContext(
       id: 'glslWgslCompilers',
       label: 'Compiled GLSL2 & WGSL Raymarch Shaders',
       charCount: shaderPayload.length,
-      tokenCount: estimateTokens(shaderPayload.length, 8.4),
+      tokenCount: estimateTokensFromChars(shaderPayload.length),
       cachedImplicitly: true,
       summary: `${glslSource.split('\n').length} GLSL lines + ${wgslSource.split('\n').length} WGSL lines (fwidth grid, 7-tap AO, SSS glass)`,
     },
     {
       id: 'courseCatalogAndSpatialAtlas',
       label: 'Full CourseSpec Catalog & Multi-Tier CSG Trees',
-      charCount: catalogPayload.length + spatialAtlas.text.length,
-      tokenCount: estimateTokens(catalogPayload.length + spatialAtlas.text.length, 9.6),
+      charCount: catalogChars,
+      tokenCount: estimateTokensFromChars(catalogChars),
       cachedImplicitly: true,
       summary: `${allCourses.length} campaign & architect courses (${currentCourse.nodes.length + currentCourse.hazards.length} active nodes)`,
     },
@@ -277,7 +333,7 @@ export function packArgon1MContext(
       id: 'gameplayFeelBible',
       label: 'Gameplay Feel Bible & Dual-Line Level Theory',
       charCount: GAMEPLAY_FEEL_BIBLE_DIGEST.length,
-      tokenCount: estimateTokens(GAMEPLAY_FEEL_BIBLE_DIGEST.length, 11.0),
+      tokenCount: estimateTokensFromChars(GAMEPLAY_FEEL_BIBLE_DIGEST.length),
       cachedImplicitly: true,
       summary: '6-DOF slip/backspin physics, Tourist vs. Speedrun lines, Living SDF hazards & Portals',
     },
@@ -285,7 +341,7 @@ export function packArgon1MContext(
       id: 'playerTelemetry120Hz',
       label: 'Live 120 Hz Player Run Telemetry & Death Heatmap',
       charCount: telemetryPayload.length,
-      tokenCount: estimateTokens(telemetryPayload.length, 18.5),
+      tokenCount: estimateTokensFromChars(telemetryPayload.length),
       cachedImplicitly: false,
       summary: `${telemetry.totalFramesRecorded} frames @ 120 Hz · ${telemetry.deathEvents.length} deaths · Peak ${telemetry.peakSpeed.toFixed(1)} u/s (${telemetry.inferredArchetype})`,
     },
@@ -298,18 +354,20 @@ export function packArgon1MContext(
     .filter((s) => !s.cachedImplicitly)
     .reduce((acc, s) => acc + s.tokenCount, 0);
   const totalTokensPacked = cachedPrefixTokens + dynamicTailTokens;
+  const totalCharsPacked = sections.reduce((acc, s) => acc + s.charCount, 0);
 
   // Introductory Gemini 4 Argon pricing from Builder Guide: $2 / 1M input tokens, with 95% off implicitly cached tokens
   const effectiveBillableInputTokens =
     cachedPrefixTokens * 0.05 + dynamicTailTokens;
   const estimatedInputCostUsd =
-    Math.round(((effectiveBillableInputTokens / 1_000_000) * 2.0) * 10000) / 10000;
+    Math.round(((effectiveBillableInputTokens / 1_000_000) * 2.0) * 1_000_000) /
+    1_000_000;
 
   const systemInstruction = [
     'You are the Gemini 4 Argon (`gemini-4-argon`, `thinking_level: "high"`) 1M-Token Live Course Architect & Multi-Agent Swarm Director for Marble Madness SDF.',
     'One mathematical Signed Distance Field (`CourseSpec`) drives both the 60-120 FPS GLSL/WGSL raymarcher and the 120 Hz CPU sphere-vs-SDF physics solver.',
     'Analyze the full engine contracts, compiled shaders, existing courses, Gameplay Feel Bible, and the player’s 120 Hz telemetry (death coordinates, slip/backspin spikes, speed profile).',
-    'Output a valid JSON object containing `{ "reasoningTrace": string, "course": CourseSpec }` where `course` has a grounded `startPos`, reachable `goalPos`, both a safe Tourist Line and a high-speed Speedrun Shortcut, and synchronized kinematic hazards.',
+    'Output a valid JSON object containing `{ "reasoningTrace": string, "course": CourseSpec }` where `course` has a grounded `startPos`, reachable `goalPos`, at most 32 total primitive nodes (`MAX_COURSE_NODES = 32`), both a safe Tourist Line and a high-speed Speedrun Shortcut, and synchronized kinematic hazards.',
   ].join(' ');
 
   const cachedPrefixPrompt = [
@@ -334,6 +392,8 @@ export function packArgon1MContext(
     verifierAgentId: 'antigravity-preview-09-2026',
     thinkingLevel: 'high',
     contextWindowLimit: 1_000_000,
+    tokenEstimationMethod: 'chars/4',
+    totalCharsPacked,
     totalTokensPacked,
     cachedPrefixTokens,
     dynamicTailTokens,
@@ -346,5 +406,6 @@ export function packArgon1MContext(
     cachedPrefixPrompt,
     dynamicTelemetryPrompt,
     fullPromptText,
+    liveUsageMetadata: null,
   };
 }

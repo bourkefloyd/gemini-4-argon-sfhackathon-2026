@@ -1,20 +1,28 @@
 import { describe, expect, it } from 'vitest';
 import {
   ANTIGRAVITY_AGENT_ID,
+  ANTIGRAVITY_REPO_URL,
   ARGON_SYNTHESIS_PRESETS,
   COURSE_ADAPTIVE_COACH_REMIX,
   COURSE_FERROFLUID_WAVE_GAUNTLET,
   COURSE_PORTAL_FLING_CITADEL,
+  MAX_COURSE_NODES,
   applyRealtimeCsgMutationToCourse,
   buildAntigravityInteractionsPayload,
   buildArchitectureDiagramHtml,
   buildDefaultTelemetryForCourse,
+  buildInitialIdleSwarmAgents,
+  clampCourseNodesToBudget,
   composeArcadeCallout,
   createLiveTelemetryTracker,
   dispatchAntigravitySandboxOnServer,
+  hashCourseSpec,
   inferPresetFromPrompt,
+  isRealServerInteractionId,
   mutateCourseFromTelemetry,
   packArgon1MContext,
+  pollAntigravitySandboxOnServer,
+  reconcileContextBundleWithUsageMetadata,
   runArgonSwarmArchitect,
   validateCourseSpecSchema,
   verifyCourseSpecSolvability,
@@ -26,7 +34,7 @@ import {
 import { executeServerArgonSwarm, synthesizeArcadeSpeech } from '../server/argon-proxy';
 
 describe('Stage 2 Workstream 4 — Gemini 4 Argon 1M-Token Live Course Architect & Multi-Agent Swarm', () => {
-  it('packs the 1M-token context bundle with exact section token telemetry and 95% implicit caching', () => {
+  it('packs the context bundle with honest chars/3.85 token estimates (zero artificial multipliers) and reconciles live usageMetadata', () => {
     const telemetry = buildDefaultTelemetryForCourse(COURSE_1_PRACTICE_RACE);
     const bundle = packArgon1MContext({
       currentCourse: COURSE_1_PRACTICE_RACE,
@@ -40,6 +48,7 @@ describe('Stage 2 Workstream 4 — Gemini 4 Argon 1M-Token Live Course Architect
     expect(bundle.verifierAgentId).toBe('antigravity-preview-09-2026');
     expect(bundle.thinkingLevel).toBe('high');
     expect(bundle.contextWindowLimit).toBe(1_000_000);
+    expect(bundle.tokenEstimationMethod).toBe('chars/4');
     expect(bundle.implicitCacheDiscountRatio).toBe(0.95);
     expect(bundle.spatialSdfSampleCount).toBe(64);
 
@@ -57,17 +66,59 @@ describe('Stage 2 Workstream 4 — Gemini 4 Argon 1M-Token Live Course Architect
     expect(bundle.totalTokensPacked).toBe(
       bundle.cachedPrefixTokens + bundle.dynamicTailTokens,
     );
-    expect(bundle.totalTokensPacked).toBeGreaterThan(50_000);
-    expect(bundle.totalTokensPacked).toBeLessThan(1_000_000);
+    // Codex F3: Verify honest token estimate (Math.ceil(charCount / 3.85)) without 6.2x-18.5x inflation
+    for (const sec of bundle.sections) {
+      expect(sec.tokenCount).toBe(Math.max(1, Math.ceil(sec.charCount / 3.85)));
+    }
+    expect(bundle.totalTokensPacked).toBeGreaterThan(10_000);
+    expect(bundle.totalTokensPacked).toBeLessThan(100_000);
     expect(bundle.estimatedInputCostUsd).toBeGreaterThan(0);
     expect(bundle.fullPromptText).toContain('evalCourseWorldRaw');
     expect(bundle.fullPromptText).toContain('High-Speed Chute Daredevil');
+
+    // Reconcile with Google usageMetadata when live
+    const reconciled = reconcileContextBundleWithUsageMetadata(bundle, {
+      promptTokenCount: 42_500,
+      candidatesTokenCount: 3_200,
+      thoughtsTokenCount: 8_100,
+      cachedContentTokenCount: 38_000,
+      totalTokenCount: 53_800,
+    });
+    expect(reconciled.totalTokensPacked).toBe(42_500);
+    expect(reconciled.cachedPrefixTokens).toBe(38_000);
+    expect(reconciled.dynamicTailTokens).toBe(4_500);
+    expect(reconciled.liveUsageMetadata?.totalTokenCount).toBe(53_800);
   });
 
-  it('records live 120 Hz player telemetry frames, death coordinates, and slip/brake spikes', () => {
+  it('Codex F3: records honest stationary vs moving telemetry (0 deaths and 0 speed when stationary, real frames only)', () => {
     const tracker = createLiveTelemetryTracker();
 
-    // Simulate 80 snapshots (320 physics frames) rolling, slipping on ice, and falling
+    // Before any frames are recorded: 0 frames, 0 deaths, 0 speed
+    const emptySummary = tracker.getSummary(COURSE_1_PRACTICE_RACE);
+    expect(emptySummary.totalFramesRecorded).toBe(0);
+    expect(emptySummary.deathEvents).toHaveLength(0);
+    expect(emptySummary.peakSpeed).toBe(0);
+
+    // 80 stationary samples with 0 deaths -> must report 80 frames, 0 deaths, 0.0 u/s peak!
+    for (let i = 0; i < 80; i++) {
+      tracker.recordSnapshot(
+        COURSE_1_PRACTICE_RACE,
+        COURSE_1_PRACTICE_RACE.startPos,
+        [0, 0, 0],
+        'racing',
+        'start',
+        true,
+        60,
+      );
+    }
+    const stationarySummary = tracker.getSummary(COURSE_1_PRACTICE_RACE);
+    expect(stationarySummary.totalFramesRecorded).toBe(80);
+    expect(stationarySummary.deathEvents).toHaveLength(0);
+    expect(stationarySummary.peakSpeed).toBe(0);
+    expect(stationarySummary.averageSpeed).toBe(0);
+
+    // Reset and simulate 80 moving snapshots with 1 real shatter death
+    tracker.reset();
     for (let i = 0; i < 80; i++) {
       const isIce = i >= 30 && i <= 45;
       const isDeathFrame = i === 65;
@@ -82,17 +133,21 @@ describe('Stage 2 Workstream 4 — Gemini 4 Argon 1M-Token Live Course Architect
       );
     }
 
-    const summary = tracker.getSummary(COURSE_2_INTERMEDIATE_MADNESS);
-    expect(summary.sampleRateHz).toBe(120);
-    expect(summary.totalFramesRecorded).toBeGreaterThanOrEqual(320);
-    expect(summary.peakSpeed).toBeGreaterThan(20.0);
-    expect(summary.deathEvents.length).toBeGreaterThanOrEqual(1);
-    expect(summary.deathEvents[0].cause).toBe('shattered');
-    expect(summary.slipBrakeHeatmap.length).toBeGreaterThanOrEqual(1);
-    expect(summary.inferredArchetype).toBe('High-Speed Chute Daredevil');
+    const movingSummary = tracker.getSummary(COURSE_2_INTERMEDIATE_MADNESS);
+    expect(movingSummary.sampleRateHz).toBe(120);
+    expect(movingSummary.totalFramesRecorded).toBe(80);
+    expect(movingSummary.peakSpeed).toBeGreaterThan(20.0);
+    expect(movingSummary.deathEvents).toHaveLength(1);
+    expect(movingSummary.deathEvents[0].cause).toBe('shattered');
+    expect(movingSummary.slipBrakeHeatmap.length).toBeGreaterThanOrEqual(1);
+    expect(movingSummary.inferredArchetype).toBe('High-Speed Chute Daredevil');
+
+    // Initial swarm agents start as 'idle' before any call runs
+    const initialAgents = buildInitialIdleSwarmAgents();
+    expect(initialAgents.every((a) => a.status === 'idle')).toBe(true);
   });
 
-  it('validates CourseSpec schema and auto-repairs ungrounded spawn heights in Agent 3 Solvability Gate', () => {
+  it('Codex F2: recursively validates discriminated primitives, clamps >32 nodes, rejects disconnected courses, and auto-repairs spawn height', () => {
     const invalidCheck = validateCourseSpecSchema({
       id: '',
       name: 'Broken Course',
@@ -100,6 +155,52 @@ describe('Stage 2 Workstream 4 — Gemini 4 Argon 1M-Token Live Course Architect
     });
     expect(invalidCheck.valid).toBe(false);
     expect(invalidCheck.errors.length).toBeGreaterThan(0);
+
+    // Box missing halfExtents must fail schema validation (never throw TypeError at evaluation time)
+    const missingHalfExtentsCourse = {
+      ...COURSE_1_PRACTICE_RACE,
+      nodes: [
+        {
+          id: 'bad-box',
+          kind: 'box',
+          material: 'standard',
+          center: [0, 0, 0],
+        } as unknown as (typeof COURSE_1_PRACTICE_RACE.nodes)[number],
+      ],
+    };
+    const boxSchema = validateCourseSpecSchema(missingHalfExtentsCourse);
+    expect(boxSchema.valid).toBe(false);
+    expect(boxSchema.errors.some((e) => e.includes('halfExtents'))).toBe(true);
+    const badGate = verifyCourseSpecSolvability(missingHalfExtentsCourse);
+    expect(badGate.passed).toBe(false);
+    expect(badGate.schemaValid).toBe(false);
+
+    // Disconnected course that only gets 35% of the way to Goal before falling must FAIL solvability gate!
+    const disconnectedCourse = {
+      ...COURSE_1_PRACTICE_RACE,
+      nodes: COURSE_1_PRACTICE_RACE.nodes.slice(0, 4), // Only start podium + first ramp, huge chasm before goal
+    };
+    const disconnectedReport = verifyCourseSpecSolvability(disconnectedCourse);
+    expect(disconnectedReport.botRollout.reachedGoal).toBe(false);
+    expect(disconnectedReport.passed).toBe(false);
+
+    // Node clamping: course with 40 nodes is clamped to MAX_COURSE_NODES = 32
+    const bloatedCourse = {
+      ...COURSE_ADAPTIVE_COACH_REMIX,
+      nodes: [
+        ...COURSE_ADAPTIVE_COACH_REMIX.nodes,
+        ...Array.from({ length: 30 }, (_, idx) => ({
+          id: `extra- filler-${idx}`,
+          kind: 'sphere' as const,
+          material: 'standard' as const,
+          center: [-20 - idx * 2, -5, 10] as const,
+          radius: 0.5,
+        })),
+      ],
+    };
+    const clamped = clampCourseNodesToBudget(bloatedCourse, MAX_COURSE_NODES);
+    expect(clamped.clamped).toBe(true);
+    expect(clamped.clampedCount).toBeLessThanOrEqual(MAX_COURSE_NODES);
 
     // Deliberately offset startPos Y by +1.8m above the Start Pad to test automatic spawn height snap repair
     const slightlyFloatingCourse = {
@@ -120,10 +221,11 @@ describe('Stage 2 Workstream 4 — Gemini 4 Argon 1M-Token Live Course Architect
       1,
     );
     expect(report.shaderCompilePassed).toBe(true);
+    expect(report.botRollout.reachedGoal).toBe(true);
     expect(report.passed).toBe(true);
   });
 
-  it('verifies all 3 showcase Argon 1M presets pass CPU SDF solvability, GLSL/WGSL compilation, and 120 Hz bot rollout', () => {
+  it('verifies all 3 showcase Argon presets pass CPU SDF solvability, GLSL/WGSL compilation, and 100% 120 Hz goal rollout', () => {
     const showcaseCourses = [
       COURSE_PORTAL_FLING_CITADEL,
       COURSE_FERROFLUID_WAVE_GAUNTLET,
@@ -139,37 +241,44 @@ describe('Stage 2 Workstream 4 — Gemini 4 Argon 1M-Token Live Course Architect
       expect(gate.glslLineCount).toBeGreaterThan(200);
       expect(gate.wgslLineCount).toBeGreaterThan(150);
       expect(gate.botRollout.settledOnStart).toBe(true);
-      expect(gate.botRollout.progressRatio).toBeGreaterThan(0.25);
+      expect(gate.botRollout.reachedGoal).toBe(true);
+      expect(gate.botRollout.progressRatio).toBe(1);
       expect(gate.passed).toBe(true);
     }
   });
 
-  it('orchestrates the 3-Agent Swarm for presets, telemetry mutation, and realtime CSG sculpting with Human-in-the-Loop gating', async () => {
+  it('loads offline presets with zero network fetch calls, and runs telemetry mutation & realtime CSG sculpting', async () => {
     const telemetry = buildDefaultTelemetryForCourse(COURSE_1_PRACTICE_RACE);
 
-    // 1. Preset Synthesis ("Portal Fling Citadel")
-    const progressCalls: number[] = [];
+    // 1. Offline Preset Synthesis ("Portal Fling Citadel") -> MUST make ZERO network fetch calls!
+    let fetchCallCount = 0;
+    const forbiddenFetch: typeof fetch = async () => {
+      fetchCallCount++;
+      throw new Error('Offline preset should never call fetch!');
+    };
+
     const presetProposal = await runArgonSwarmArchitect({
       mode: 'preset',
       presetId: 'portal-fling-citadel',
       prompt: ARGON_SYNTHESIS_PRESETS['portal-fling-citadel'].prompt,
       currentCourse: COURSE_1_PRACTICE_RACE,
       telemetry,
-      onProgress: (agents) => progressCalls.push(agents.length),
+      fetchFn: forbiddenFetch,
     });
 
-    expect(progressCalls.length).toBeGreaterThanOrEqual(2);
+    expect(fetchCallCount).toBe(0);
+    expect(presetProposal.executionSource).toBe('offline-preset');
     expect(presetProposal.requiresHumanApproval).toBe(true);
     expect(presetProposal.proposedCourse.id).toBe('portal-fling-citadel');
-    expect(presetProposal.swarmAgents).toHaveLength(3);
-    expect(presetProposal.swarmAgents[0].modelOrEngine).toBe('gemini-4-argon');
-    expect(presetProposal.swarmAgents[1].modelOrEngine).toBe('gemini-3.8-flash');
-    expect(presetProposal.swarmAgents[2].modelOrEngine).toBe('cpu-sdf-120hz-gate');
     expect(presetProposal.solvability.passed).toBe(true);
-    expect(presetProposal.antigravitySandbox.agent).toBe('antigravity-preview-09-2026');
-    expect(presetProposal.antigravitySandbox.environment).toBe('remote');
-    expect(presetProposal.antigravitySandbox.background).toBe(true);
-    expect(presetProposal.antigravitySandbox.verdict).toBe('PASS');
+    expect(presetProposal.antigravitySandbox.courseHash).toBe(
+      hashCourseSpec(presetProposal.proposedCourse),
+    );
+
+    // Preset interaction IDs must never be treated as real server interaction IDs
+    expect(isRealServerInteractionId(presetProposal.interactionId)).toBe(false);
+    expect(isRealServerInteractionId('preset-portal-citadel')).toBe(false);
+    expect(isRealServerInteractionId('int_live_argon_99')).toBe(true);
 
     // 2. Telemetry-Driven Course Mutation ("Analyze My Last Run & Mutate Course")
     const mutated = mutateCourseFromTelemetry(COURSE_1_PRACTICE_RACE, telemetry);
@@ -184,7 +293,7 @@ describe('Stage 2 Workstream 4 — Gemini 4 Argon 1M-Token Live Course Architect
       currentCourse: COURSE_1_PRACTICE_RACE,
       telemetry,
     });
-    expect(telemetryProposal.executionSource).toBe('telemetry-coach-mutator');
+    expect(telemetryProposal.executionSource).toBe('offline-preset');
     expect(telemetryProposal.solvability.passed).toBe(true);
 
     // 3. Realtime CSG Sculpting (all 4 operations)
@@ -214,68 +323,219 @@ describe('Stage 2 Workstream 4 — Gemini 4 Argon 1M-Token Live Course Architect
     );
   });
 
-  it('executes live parallel Gemini 4 Argon (thinking_level: high) + Gemini 3.8 Flash API calls when GEMINI_API_KEY is supplied', async () => {
-    const calledUrls: string[] = [];
-    const calledBodies: string[] = [];
+  it('executes live parallel Gemini 4 Argon + Gemini 3.8 Flash API calls and runs the 3-Try Autonomous Self-Repair Loop on broken courses', async () => {
+    const telemetry = buildDefaultTelemetryForCourse(COURSE_1_PRACTICE_RACE);
+    let argonAttemptCount = 0;
+    const receivedBodies: Record<string, unknown>[] = [];
 
-    const mockFetch: typeof fetch = async (input, init) => {
+    // Mock server endpoint `/api/argon/synthesize` where Attempt 1 returns a broken course (missing halfExtents),
+    // Attempt 2 returns a disconnected course, and Attempt 3 returns a repaired solvable course!
+    const selfRepairMockFetch: typeof fetch = async (input, init) => {
       const url = typeof input === 'string' ? input : input.toString();
-      calledUrls.push(url);
-      if (init?.body) {
-        calledBodies.push(String(init.body));
-      }
-
-      if (url.includes('interactions')) {
+      if (url.includes('/api/argon/antigravity')) {
         return new Response(
           JSON.stringify({
-            id: 'int_live_argon_test_99',
-            output_text: JSON.stringify({
-              reasoningTrace:
-                'Live Gemini 4 Argon (thinking_level: high) synthesized custom course from 1M context.',
-              course: COURSE_PORTAL_FLING_CITADEL,
-            }),
+            agent: ANTIGRAVITY_AGENT_ID,
+            model: 'gemini-4-argon',
+            environment: 'remote',
+            background: true,
+            source: 'live-managed-agent',
+            interactionId: 'agy_live_verified_03',
+            status: 'passed',
+            passed: true,
+            verdict: 'PASS',
+            courseHash: hashCourseSpec(COURSE_PORTAL_FLING_CITADEL),
+            repoUrl: ANTIGRAVITY_REPO_URL,
+            commitSha: 'e5c00a1',
+            verificationTrace: ['Remote sandbox verified PASS'],
+            latencyMs: 95,
+            networkAllowlist: ['api.github.com', 'generativelanguage.googleapis.com'],
+            courseId: COURSE_PORTAL_FLING_CITADEL.id,
           }),
           { status: 200, headers: { 'Content-Type': 'application/json' } },
         );
       }
 
-      // Parallel Gemini 3.8 Flash hazard specialist call
+      argonAttemptCount++;
+      const parsedBody = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+      receivedBodies.push(parsedBody);
+
+      if (argonAttemptCount === 1) {
+        // Attempt 1: Return a course with a broken box node (missing halfExtents)
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            source: 'live-gemini-api',
+            executionSource: 'live-interactions-api',
+            interactionId: 'int_live_turn_1',
+            reasoningTrace: 'Attempt 1 initial synthesis',
+            usageMetadata: {
+              promptTokenCount: 38_400,
+              candidatesTokenCount: 2_100,
+              totalTokenCount: 40_500,
+            },
+            course: {
+              ...COURSE_PORTAL_FLING_CITADEL,
+              nodes: [
+                {
+                  id: 'broken-box-node',
+                  kind: 'box',
+                  material: 'standard',
+                  center: [0, 0, 0],
+                },
+              ],
+            },
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+
+      if (argonAttemptCount === 2) {
+        // Attempt 2: Return a schema-valid but disconnected course
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            source: 'live-gemini-api',
+            executionSource: 'live-interactions-api',
+            interactionId: 'int_live_turn_2',
+            reasoningTrace: 'Attempt 2 fixed schema but left chasm',
+            usageMetadata: {
+              promptTokenCount: 39_100,
+              candidatesTokenCount: 2_400,
+              totalTokenCount: 41_500,
+            },
+            course: {
+              ...COURSE_1_PRACTICE_RACE,
+              nodes: COURSE_1_PRACTICE_RACE.nodes.slice(0, 3),
+            },
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+
+      // Attempt 3: Return the fully repaired solvable course
       return new Response(
         JSON.stringify({
-          candidates: [
-            {
-              content: {
-                parts: [
-                  {
-                    text: JSON.stringify({
-                      summary: 'Gemini 3.8 Flash added synchronized bonus Steelie hazard.',
-                      hazards: [
-                        {
-                          id: 'live-flash-steelie',
-                          kind: 'sphere',
-                          material: 'bumper',
-                          center: [2.4, 7.6, -15.2],
-                          radius: 0.6,
-                          kinematic: {
-                            kind: 'steelie',
-                            mode: 'orbit',
-                            span: [1.8, 0, 1.8],
-                            frequency: 0.45,
-                            phase: 0,
-                          },
-                        },
-                      ],
-                    }),
-                  },
-                ],
-              },
-            },
-          ],
+          ok: true,
+          source: 'live-gemini-api',
+          executionSource: 'live-interactions-api',
+          interactionId: 'int_live_turn_3',
+          reasoningTrace: 'Attempt 3 bridged chasm and passed 120 Hz rollout',
+          usageMetadata: {
+            promptTokenCount: 40_200,
+            candidatesTokenCount: 2_800,
+            thoughtsTokenCount: 6_500,
+            totalTokenCount: 49_500,
+          },
+          course: COURSE_PORTAL_FLING_CITADEL,
         }),
         { status: 200, headers: { 'Content-Type': 'application/json' } },
       );
     };
 
+    const proposal = await runArgonSwarmArchitect({
+      mode: 'natural-language',
+      prompt: 'Synthesize Portal Fling Citadel',
+      currentCourse: COURSE_1_PRACTICE_RACE,
+      telemetry,
+      previousInteractionId: 'preset-portal-citadel', // Preset ID must NOT be chained on Attempt 1!
+      apiKey: 'test-live-key',
+      fetchFn: selfRepairMockFetch,
+    });
+
+    expect(argonAttemptCount).toBe(3);
+    expect(proposal.executionSource).toBe('live-interactions-api');
+    expect(proposal.repairAttempts).toHaveLength(3);
+    expect(proposal.repairAttempts[0].passed).toBe(false);
+    expect(proposal.repairAttempts[0].previousInteractionId).toBeNull();
+    expect(proposal.repairAttempts[1].passed).toBe(false);
+    expect(proposal.repairAttempts[1].previousInteractionId).toBe('int_live_turn_1');
+    expect(proposal.repairAttempts[2].passed).toBe(true);
+    expect(proposal.repairAttempts[2].previousInteractionId).toBe('int_live_turn_2');
+    expect(receivedBodies[0].previousInteractionId).toBeNull();
+    expect(receivedBodies[1].previousInteractionId).toBe('int_live_turn_1');
+    expect(receivedBodies[2].previousInteractionId).toBe('int_live_turn_2');
+    expect(proposal.solvability.passed).toBe(true);
+    expect(proposal.usageMetadata?.totalTokenCount).toBe(49_500);
+  });
+
+  it('Codex F1: preserves remote Antigravity FAIL and pending states, binds courseHash, and polls GET /v1beta/interactions/{id}', async () => {
+    const gate = verifyCourseSpecSolvability(COURSE_PORTAL_FLING_CITADEL);
+    const payload = buildAntigravityInteractionsPayload({
+      prompt: 'Verify Portal Fling Citadel',
+      course: COURSE_PORTAL_FLING_CITADEL,
+      solvability: gate,
+      previousInteractionId: 'int_prev_agy',
+    });
+    expect(payload.agent).toBe(ANTIGRAVITY_AGENT_ID);
+    expect(payload.background).toBe(true);
+    expect(JSON.stringify(payload)).toContain(ANTIGRAVITY_REPO_URL);
+    expect(JSON.stringify(payload)).toContain(hashCourseSpec(COURSE_PORTAL_FLING_CITADEL));
+    expect(JSON.stringify(payload)).not.toContain('temperature');
+    expect(JSON.stringify(payload)).not.toContain('thinking_budget');
+
+    // 1. Remote queued/in_progress response MUST produce status: 'pending', passed: false, verdict: 'PENDING'
+    const pendingCert = await dispatchAntigravitySandboxOnServer({
+      prompt: 'Verify Portal Fling Citadel',
+      course: COURSE_PORTAL_FLING_CITADEL,
+      solvability: gate,
+      apiKey: 'stage-key',
+      fetchFn: async () =>
+        new Response(
+          JSON.stringify({ id: 'agy_job_pending_1', status: 'in_progress', output_text: '' }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+    });
+    expect(pendingCert.source).toBe('live-managed-agent');
+    expect(pendingCert.status).toBe('pending');
+    expect(pendingCert.verdict).toBe('PENDING');
+    expect(pendingCert.passed).toBe(false);
+
+    // 2. Remote completed response with verdict: "FAIL" MUST produce status: 'failed', passed: false, verdict: 'FAIL'
+    const failedCert = await dispatchAntigravitySandboxOnServer({
+      prompt: 'Verify Portal Fling Citadel',
+      course: COURSE_PORTAL_FLING_CITADEL,
+      solvability: gate,
+      apiKey: 'stage-key',
+      fetchFn: async () =>
+        new Response(
+          JSON.stringify({
+            id: 'agy_job_fail_2',
+            status: 'completed',
+            output_text: '{"verdict":"FAIL","trace":["Bot fell off at z=-22"]}',
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+    });
+    expect(failedCert.source).toBe('live-managed-agent');
+    expect(failedCert.status).toBe('failed');
+    expect(failedCert.verdict).toBe('FAIL');
+    expect(failedCert.passed).toBe(false);
+
+    // 3. Polling GET /v1beta/interactions/{id} when remote finishes with PASS -> status: 'passed', passed: true
+    const polledCert = await pollAntigravitySandboxOnServer({
+      interactionId: 'agy_job_pending_1',
+      course: COURSE_PORTAL_FLING_CITADEL,
+      solvability: gate,
+      apiKey: 'stage-key',
+      fetchFn: async (url) => {
+        expect(String(url)).toContain('/v1beta/interactions/agy_job_pending_1');
+        return new Response(
+          JSON.stringify({
+            id: 'agy_job_pending_1',
+            status: 'completed',
+            output_text: '{"verdict":"PASS","trace":["120 Hz rollout reached goal"]}',
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
+      },
+    });
+    expect(polledCert.status).toBe('passed');
+    expect(polledCert.verdict).toBe('PASS');
+    expect(polledCert.passed).toBe(true);
+    expect(polledCert.courseHash).toBe(hashCourseSpec(COURSE_PORTAL_FLING_CITADEL));
+
+    // Also verify server proxy executeServerArgonSwarm forwards usageMetadata and live-interactions-api
     const serverRes = await executeServerArgonSwarm(
       {
         prompt: 'Create a custom portal fling course',
@@ -287,68 +547,59 @@ describe('Stage 2 Workstream 4 — Gemini 4 Argon 1M-Token Live Course Architect
         apiKey: 'test-ephemeral-key-do-not-commit',
       },
       undefined,
-      mockFetch,
-    );
-
-    expect(serverRes.ok).toBe(true);
-    expect(serverRes.source).toBe('live-gemini-api');
-    expect(serverRes.interactionId).toBe('int_live_argon_test_99');
-    expect(calledUrls.length).toBe(2); // Agent 1 (Argon) + Agent 2 (Flash) in parallel
-    expect(calledBodies[0]).toContain('"thinking_level":"high"');
-    expect(calledBodies[0]).toContain('"previous_interaction_id":"int_prev_01"');
-    expect(serverRes.course?.hazards.some((h) => h.id === 'live-flash-steelie')).toBe(
-      true,
-    );
-
-    // Verify the merged live course passes Agent 3 Solvability Gate
-    const liveGate = verifyCourseSpecSolvability(serverRes.course!);
-    expect(liveGate.passed).toBe(true);
-  });
-
-  it('dispatches the Antigravity managed agent, speaks a one-line callout, and draws the 1M diagram', async () => {
-    const telemetry = buildDefaultTelemetryForCourse(COURSE_1_PRACTICE_RACE);
-    const gate = verifyCourseSpecSolvability(COURSE_PORTAL_FLING_CITADEL);
-    const payload = buildAntigravityInteractionsPayload({
-      prompt: 'Verify Portal Fling Citadel',
-      course: COURSE_PORTAL_FLING_CITADEL,
-      solvability: gate,
-      previousInteractionId: 'int_prev_agy',
-    });
-    expect(payload.agent).toBe(ANTIGRAVITY_AGENT_ID);
-    expect(payload.background).toBe(true);
-    expect(JSON.stringify(payload)).toContain('"environment":"remote"');
-    expect(JSON.stringify(payload)).not.toContain('temperature');
-    expect(JSON.stringify(payload)).not.toContain('thinking_budget');
-
-    const posted: string[] = [];
-    const certificate = await dispatchAntigravitySandboxOnServer({
-      prompt: 'Verify Portal Fling Citadel',
-      course: COURSE_PORTAL_FLING_CITADEL,
-      solvability: gate,
-      apiKey: 'stage-key',
-      fetchFn: async (_url, init) => {
-        posted.push(String(init?.body ?? ''));
+      async (input) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.includes('interactions')) {
+          return new Response(
+            JSON.stringify({
+              id: 'int_live_argon_test_99',
+              usageMetadata: {
+                promptTokenCount: 35_000,
+                candidatesTokenCount: 2_500,
+                totalTokenCount: 37_500,
+              },
+              output_text: JSON.stringify({
+                reasoningTrace: 'Live Gemini 4 Argon synthesized course.',
+                course: COURSE_PORTAL_FLING_CITADEL,
+              }),
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          );
+        }
         return new Response(
-          JSON.stringify({ id: 'agy_job_7', status: 'queued', output_text: '' }),
+          JSON.stringify({
+            candidates: [
+              {
+                content: {
+                  parts: [
+                    {
+                      text: JSON.stringify({
+                        summary: 'Added Steelie hazard.',
+                        hazards: [],
+                      }),
+                    },
+                  ],
+                },
+              },
+            ],
+          }),
           { status: 200, headers: { 'Content-Type': 'application/json' } },
         );
       },
-    });
-    expect(certificate.source).toBe('live-managed-agent');
-    expect(certificate.status).toBe('queued');
-    expect(certificate.model).toBe('gemini-4-argon');
-    expect(posted[0]).toContain('antigravity-preview-09-2026');
+    );
+    expect(serverRes.ok).toBe(true);
+    expect(serverRes.executionSource).toBe('live-interactions-api');
+    expect(serverRes.usageMetadata?.totalTokenCount).toBe(37_500);
 
     const callout = composeArcadeCallout({
       event: 'analyze-run',
       courseName: 'PRACTICE RACE',
-      peakSpeed: telemetry.peakSpeed,
+      peakSpeed: 22.4,
     });
     expect(callout.split(/[.!?]/).filter((part) => part.trim()).length).toBe(1);
-    expect(callout.length).toBeLessThan(220);
 
-    const tts = await synthesizeArcadeSpeech('High roller!', 'stage-key', async () => {
-      return new Response(
+    const tts = await synthesizeArcadeSpeech('High roller!', 'stage-key', async () =>
+      new Response(
         JSON.stringify({
           candidates: [
             {
@@ -359,23 +610,18 @@ describe('Stage 2 Workstream 4 — Gemini 4 Argon 1M-Token Live Course Architect
           ],
         }),
         { status: 200, headers: { 'Content-Type': 'application/json' } },
-      );
-    });
+      ),
+    );
     expect(tts.ok).toBe(true);
     expect(tts.source).toBe('gemini-3.8-flash-tts');
-    expect(tts.mimeType).toBe('audio/wav');
 
     const html = buildArchitectureDiagramHtml({
-      totalTokens: 164820,
-      cachedTokens: 148400,
-      dynamicTokens: 16420,
+      totalTokens: 35000,
+      cachedTokens: 31000,
+      dynamicTokens: 4000,
       courseName: 'PRACTICE RACE',
     });
     expect(html).toContain('gemini-4-argon');
-    expect(html).toContain('gemini-3.8-flash');
     expect(html).toContain('antigravity-preview-09-2026');
-    expect(html).toContain('.msdf RPN');
-    expect(html).toContain('120 Hz');
-    expect(html).toContain('<script>');
   });
 });

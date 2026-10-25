@@ -2,33 +2,39 @@
  * AI Course Architect (Gemini 4 Argon 1M-Token Context & Multi-Agent Swarm Director)
  * (`src/ui/ArchitectHookPanel.tsx`)
  *
- * Provides:
- * - Live 1M-Token Context Meter (breakdown of Engine Contracts, CPU/GPU SDF Kernel,
- *   GLSL2/WGSL Shaders, Course Catalog, Gameplay Feel Bible, and 120 Hz Run Telemetry)
- * - Parallel 3-Agent Swarm Status:
- *     1. Agent 1 (`gemini-4-argon`, `thinking_level: "high"`): Lead Course Architect
- *     2. Agent 2 (`gemini-3.8-flash`, parallel worker): Hazard & Portal Specialist
- *     3. Agent 3 (CPU SDF Solvability & Shader Gate): `createCpuWorldEvaluator` +
- *        `compileCourseToGlsl`/`Wgsl` + 120 Hz Bot Rollout verification
- * - "Analyze My Last Run & Mutate Course" telemetry-driven flow sculptor
- * - 3 Pre-computed Argon 1M Showcase Presets ("Portal Fling Citadel",
- *   "Ferrofluid Wave Gauntlet", "Adaptive Coach Remix") + Realtime CSG Mutations
- * - Human-in-the-Loop Preview & "Approve & Hot-Swap Course" confirmation gate
+ * Honesty Pass, 3-Try Self-Repair Loop & Antigravity Verifier:
+ * - Prominent execution source badge on every synthesis result:
+ *     `🟢 LIVE GEMINI 4 ARGON API` vs `⚡ OFFLINE INSTANT PRESET`
+ *   driven strictly by `executionSource` (`'live-interactions-api' | 'live-generate-content' | 'offline-preset'`).
+ * - Real token counts from Google's `usageMetadata` when `executionSource` is live, and
+ *   clearly labeled `Est. Packed Input Tokens (chars/4)` when offline.
+ * - Real server error alert banner when `/api/argon/synthesize` returns an error.
+ * - Visible `[Cancel Request]` button wired to an `AbortController` while a live call is in flight.
+ * - Step-by-step 3-Try Autonomous Self-Repair Loop log (`Attempt 1/3 -> Attempt 2/3 -> Attempt 3/3`).
+ * - Real Antigravity Sandbox Verifier status (`'pending' | 'passed' | 'failed' | 'unavailable'`)
+ *   bound to `hashCourseSpec(course)`, plus strict `solvability.passed === true` gating on EVERY apply path.
+ * - Explicit `"Load Demo Sample Telemetry"` button clearly labeled `DEMO SAMPLE` (0 fabricated deaths when stationary).
  */
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ARGON_SYNTHESIS_PRESETS,
   announceArcadeCallout,
+  buildDefaultTelemetryForCourse,
+  buildInitialIdleSwarmAgents,
   createArchitectVoiceInput,
   createLiveTelemetryTracker,
   fetchArgonServerStatus,
+  hashCourseSpec,
+  isRealServerInteractionId,
   packArgon1MContext,
+  pollAntigravitySandboxVerification,
   runArgonSwarmArchitect,
   verifyCourseSpecSolvability,
   type ArcadeAnnounceEvent,
   type ArgonPresetId,
   type RealtimeCsgMutationKind,
+  type SelfRepairAttemptRecord,
   type SwarmAgentExecutionTrace,
   type SwarmSynthesisProposal,
 } from '../argon';
@@ -151,6 +157,7 @@ const ARCHITECT_SCOPED_STYLES = `
   display: flex;
   gap: 8px;
   align-items: center;
+  flex-wrap: wrap;
 }
 .argon-preset-grid {
   display: grid;
@@ -192,6 +199,53 @@ const ARCHITECT_SCOPED_STYLES = `
   white-space: pre-wrap;
   user-select: text;
 }
+.argon-source-badge-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(40, 247, 156, 0.18);
+  border: 1.5px solid #28f79c;
+  color: #28f79c;
+  border-radius: 6px;
+  padding: 3px 8px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 800;
+}
+.argon-source-badge-offline {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(255, 210, 63, 0.16);
+  border: 1.5px solid #ffd23f;
+  color: #ffd23f;
+  border-radius: 6px;
+  padding: 3px 8px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 800;
+}
+.argon-alert-banner {
+  background: rgba(255, 72, 102, 0.16);
+  border: 1px solid #ff4866;
+  color: #ffccd5;
+  border-radius: 6px;
+  padding: 6px 9px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.35;
+}
+.argon-repair-log {
+  background: rgba(18, 28, 56, 0.9);
+  border: 1px solid rgba(60, 232, 255, 0.35);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
 `;
 
 export const ArchitectHookPanel: React.FC<ArchitectHookPanelProps> = ({
@@ -200,10 +254,12 @@ export const ArchitectHookPanel: React.FC<ArchitectHookPanelProps> = ({
   currentCourse,
   compiledShaders,
   onApplyCustomCourse,
-  seedPrompt = null,
+  seedPrompt,
 }) => {
   const telemetryTrackerRef = useRef(createLiveTelemetryTracker());
+  const abortControllerRef = useRef<AbortController | null>(null);
   const [telemetryTick, setTelemetryTick] = useState<number>(0);
+  const [useDemoSampleTelemetry, setUseDemoSampleTelemetry] = useState<boolean>(false);
 
   const [jsonText, setJsonText] = useState<string>(() =>
     JSON.stringify(currentCourse, null, 2),
@@ -211,23 +267,22 @@ export const ArchitectHookPanel: React.FC<ArchitectHookPanelProps> = ({
   const [promptText, setPromptText] = useState<string>(
     'Synthesize Portal Fling Citadel: helical ice chute with linked Blue/Orange SDF Portals & synchronized slamming pistons',
   );
-  useEffect(() => {
-    if (seedPrompt && seedPrompt.trim().length > 0) {
-      setPromptText(seedPrompt);
-    }
-  }, [seedPrompt]);
   const [userApiKey, setUserApiKey] = useState<string>('');
   const [hasServerEnvKey, setHasServerEnvKey] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [serverAlertBanner, setServerAlertBanner] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'swarm' | 'spec' | 'glsl' | 'wgsl'>('swarm');
 
   const [isSynthesizing, setIsSynthesizing] = useState<boolean>(false);
+  const [isPollingAntigravity, setIsPollingAntigravity] = useState<boolean>(false);
   const [previousInteractionId, setPreviousInteractionId] = useState<string | null>(null);
   const [pendingProposal, setPendingProposal] = useState<SwarmSynthesisProposal | null>(null);
+  const [repairAttempts, setRepairAttempts] = useState<readonly SelfRepairAttemptRecord[]>([]);
   const [approvedBanner, setApprovedBanner] = useState<string | null>(null);
   const [diagramOpen, setDiagramOpen] = useState<boolean>(false);
   const [micState, setMicState] = useState<'idle' | 'listening' | 'unsupported'>('idle');
   const [callout, setCallout] = useState<string | null>(null);
+
   const voiceInput = useMemo(
     () =>
       createArchitectVoiceInput({
@@ -236,27 +291,38 @@ export const ArchitectHookPanel: React.FC<ArchitectHookPanelProps> = ({
       }),
     [],
   );
+
+  // Codex F3: Initialize swarm agent statuses to 'idle' before a call runs
   const [swarmAgents, setSwarmAgents] = useState<readonly SwarmAgentExecutionTrace[]>(
-    () => ARGON_SYNTHESIS_PRESETS['portal-fling-citadel'].swarmAgents,
+    () => buildInitialIdleSwarmAgents(),
   );
 
-  // Continuously sample 120 Hz telemetry from window.__MARBLE_PLAYTEST__ in the background
+  // Sample real physics frames from window.__MARBLE_PLAYTEST__ only when racing & moving
   useEffect(() => {
     const interval = window.setInterval(() => {
       const api = window.__MARBLE_PLAYTEST__;
       if (!api) return;
       const snap = api.getTelemetry();
-      telemetryTrackerRef.current.recordSnapshot(
-        snap.course,
-        snap.position,
-        snap.velocity,
-        snap.status,
-        snap.surfaceMaterial,
-        snap.grounded,
-        snap.timeRemainingSec,
-      );
-      if (isOpen) {
-        setTelemetryTick((t) => t + 1);
+      const speed = Math.hypot(snap.velocity[0], snap.velocity[1], snap.velocity[2]);
+      const isMovingOrTerminal =
+        speed > 0.05 ||
+        snap.status === 'fell' ||
+        snap.status === 'shattered' ||
+        snap.status === 'sunk' ||
+        snap.status === 'goal';
+      if (isMovingOrTerminal) {
+        telemetryTrackerRef.current.recordSnapshot(
+          snap.course,
+          snap.position,
+          snap.velocity,
+          snap.status,
+          snap.surfaceMaterial,
+          snap.grounded,
+          snap.timeRemainingSec,
+        );
+        if (isOpen) {
+          setTelemetryTick((t) => t + 1);
+        }
       }
     }, 250);
     return () => window.clearInterval(interval);
@@ -273,10 +339,19 @@ export const ArchitectHookPanel: React.FC<ArchitectHookPanelProps> = ({
     setErrorMsg(null);
   }, [currentCourse]);
 
+  useEffect(() => {
+    if (seedPrompt && seedPrompt.trim().length > 0) {
+      setPromptText(seedPrompt);
+    }
+  }, [seedPrompt]);
+
   const liveTelemetry = useMemo(
-    () => telemetryTrackerRef.current.getSummary(currentCourse),
+    () =>
+      useDemoSampleTelemetry
+        ? buildDefaultTelemetryForCourse(currentCourse)
+        : telemetryTrackerRef.current.getSummary(currentCourse),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [currentCourse, telemetryTick],
+    [currentCourse, telemetryTick, useDemoSampleTelemetry],
   );
 
   const contextBundle = useMemo(
@@ -295,6 +370,11 @@ export const ArchitectHookPanel: React.FC<ArchitectHookPanelProps> = ({
   const glslLines = compiledShaders.glsl.split('\n').length;
   const wgslLines = compiledShaders.wgsl.split('\n').length;
 
+  const isLiveProposal =
+    pendingProposal?.executionSource === 'live-interactions-api' ||
+    pendingProposal?.executionSource === 'live-generate-content';
+  const activeUsageMetadata = isLiveProposal ? pendingProposal?.usageMetadata : null;
+
   const speakCallout = (event: ArcadeAnnounceEvent, title?: string) => {
     void announceArcadeCallout(
       {
@@ -308,15 +388,32 @@ export const ArchitectHookPanel: React.FC<ArchitectHookPanelProps> = ({
     ).then((announcement) => setCallout(announcement.text));
   };
 
+  const handleCancelInFlightRequest = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    setIsSynthesizing(false);
+    setServerAlertBanner('Live Gemini 4 Argon request cancelled by user.');
+  };
+
   const executeSwarm = async (options: {
     mode: 'preset' | 'telemetry-mutation' | 'natural-language' | 'realtime-csg';
     presetId?: ArgonPresetId;
     csgMutationKind?: RealtimeCsgMutationKind;
     customPrompt?: string;
   }) => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
     setIsSynthesizing(true);
     setErrorMsg(null);
+    setServerAlertBanner(null);
     setApprovedBanner(null);
+    setRepairAttempts([]);
 
     try {
       const effectivePrompt = options.customPrompt ?? promptText;
@@ -333,14 +430,26 @@ export const ArchitectHookPanel: React.FC<ArchitectHookPanelProps> = ({
         compiledShaders,
         telemetry: liveTelemetry,
         apiKey: userApiKey.trim() || undefined,
-        previousInteractionId,
+        // Chain previous_interaction_id ONLY when it is a real server-issued interaction ID
+        previousInteractionId: isRealServerInteractionId(previousInteractionId)
+          ? previousInteractionId
+          : null,
+        signal: controller.signal,
         onProgress: (agents) => setSwarmAgents(agents),
+        onRepairAttempt: (attempts) => setRepairAttempts(attempts),
       });
 
       setSwarmAgents(proposal.swarmAgents);
-      setPreviousInteractionId(proposal.interactionId);
+      setRepairAttempts(proposal.repairAttempts);
+      if (proposal.serverError) {
+        setServerAlertBanner(proposal.serverError);
+      }
+      if (isRealServerInteractionId(proposal.interactionId)) {
+        setPreviousInteractionId(proposal.interactionId);
+      }
       setPendingProposal(proposal);
       setJsonText(JSON.stringify(proposal.proposedCourse, null, 2));
+
       const announceEvent: ArcadeAnnounceEvent =
         options.mode === 'telemetry-mutation'
           ? 'analyze-run'
@@ -351,14 +460,62 @@ export const ArchitectHookPanel: React.FC<ArchitectHookPanelProps> = ({
               : 'mutate-course';
       speakCallout(announceEvent, proposal.title);
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : String(err));
+      const msg = err instanceof Error ? err.message : String(err);
+      setErrorMsg(msg);
+      setServerAlertBanner(msg);
     } finally {
       setIsSynthesizing(false);
+      abortControllerRef.current = null;
     }
   };
 
+  const handlePollAntigravity = async () => {
+    if (!pendingProposal) return;
+    setIsPollingAntigravity(true);
+    try {
+      const updatedCert = await pollAntigravitySandboxVerification({
+        interactionId: pendingProposal.antigravitySandbox.interactionId,
+        course: pendingProposal.proposedCourse,
+        solvability: pendingProposal.solvability,
+        apiKey: userApiKey.trim() || undefined,
+      });
+      setPendingProposal({
+        ...pendingProposal,
+        antigravitySandbox: updatedCert,
+      });
+    } finally {
+      setIsPollingAntigravity(false);
+    }
+  };
+
+  // Codex F1 & F2: Gate Approve & Hot-Swap on solvability.passed === true AND Antigravity not failing/pending,
+  // plus verify courseHash binding matches the proposedCourse
+  const canApproveProposal = Boolean(
+    pendingProposal &&
+      pendingProposal.solvability.passed === true &&
+      pendingProposal.antigravitySandbox.courseHash ===
+        hashCourseSpec(pendingProposal.proposedCourse) &&
+      pendingProposal.antigravitySandbox.status !== 'failed' &&
+      pendingProposal.antigravitySandbox.status !== 'pending',
+  );
+
   const handleApproveProposal = () => {
     if (!pendingProposal) return;
+    if (!pendingProposal.solvability.passed) {
+      setErrorMsg(
+        `Cannot hot-swap course: Solvability Gate failed (${pendingProposal.solvability.diagnostics.join(' ')})`,
+      );
+      return;
+    }
+    if (
+      pendingProposal.antigravitySandbox.status === 'failed' ||
+      pendingProposal.antigravitySandbox.status === 'pending'
+    ) {
+      setErrorMsg(
+        `Cannot hot-swap course while Antigravity Sandbox status is "${pendingProposal.antigravitySandbox.status}".`,
+      );
+      return;
+    }
     const approvedCourse = pendingProposal.proposedCourse;
     onApplyCustomCourse(approvedCourse);
     speakCallout('approved', approvedCourse.name);
@@ -368,17 +525,20 @@ export const ArchitectHookPanel: React.FC<ArchitectHookPanelProps> = ({
     setPendingProposal(null);
   };
 
+  // Codex F2: Enforce solvabilityReport.passed === true on EVERY apply path (including raw JSON apply!)
   const handleApplyJson = () => {
     try {
       const parsed = JSON.parse(jsonText) as CourseSpec;
       const gate = verifyCourseSpecSolvability(parsed);
-      if (!gate.schemaValid) {
-        throw new Error(gate.diagnostics.join(' '));
+      if (!gate.passed) {
+        throw new Error(
+          `Solvability Gate rejected CourseSpec: ${gate.diagnostics.join(' ')}`,
+        );
       }
       setErrorMsg(null);
       onApplyCustomCourse(gate.verifiedCourse);
       setApprovedBanner(
-        `HOT-COMPILED "${gate.verifiedCourse.name}" (Spawn d=${gate.startDistance.toFixed(2)}m · ${gate.glslLineCount} GLSL2 lines)`,
+        `HOT-COMPILED "${gate.verifiedCourse.name}" (Spawn d=${gate.startDistance.toFixed(2)}m · ${gate.glslLineCount} GLSL2 lines · 100% Goal Rollout Verified)`,
       );
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
@@ -387,11 +547,11 @@ export const ArchitectHookPanel: React.FC<ArchitectHookPanelProps> = ({
 
   const cachedBarPct = Math.min(
     85,
-    Math.max(12, (contextBundle.cachedPrefixTokens / 250_000) * 100),
+    Math.max(12, (contextBundle.cachedPrefixTokens / 100_000) * 100),
   );
   const dynamicBarPct = Math.min(
     15,
-    Math.max(4, (contextBundle.dynamicTailTokens / 250_000) * 100),
+    Math.max(4, (contextBundle.dynamicTailTokens / 100_000) * 100),
   );
 
   return (
@@ -414,15 +574,39 @@ export const ArchitectHookPanel: React.FC<ArchitectHookPanelProps> = ({
         </button>
       </div>
 
-      {/* 1M-TOKEN CONTEXT UTILIZATION METER */}
+      {/* REAL SERVER ERROR ALERT BANNER */}
+      {serverAlertBanner && (
+        <div
+          className="argon-alert-banner"
+          role="alert"
+          data-testid="argon-server-error-banner"
+        >
+          <strong>API / SERVER NOTICE:</strong> {serverAlertBanner}
+        </div>
+      )}
+
+      {/* 1M-TOKEN CONTEXT UTILIZATION METER (HONESTY PASS: LIVE usageMetadata vs Est. chars/4) */}
       <div className="argon-meter-card" data-testid="argon-context-meter">
         <div className="argon-meter-top">
-          <span>
-            <strong>1M-TOKEN WINDOW:</strong>{' '}
-            {contextBundle.totalTokensPacked.toLocaleString()} / 1,000,000 TOKENS
-          </span>
+          {activeUsageMetadata ? (
+            <span data-testid="argon-token-label-live">
+              <strong>LIVE GOOGLE usageMetadata:</strong>{' '}
+              {activeUsageMetadata.promptTokenCount.toLocaleString()} in ·{' '}
+              {activeUsageMetadata.candidatesTokenCount.toLocaleString()} out
+              {activeUsageMetadata.thoughtsTokenCount
+                ? ` · ${activeUsageMetadata.thoughtsTokenCount.toLocaleString()} thinking`
+                : ''}{' '}
+              ({activeUsageMetadata.totalTokenCount.toLocaleString()} total / 1,000,000)
+            </span>
+          ) : (
+            <span data-testid="argon-token-label-estimated">
+              <strong>Est. Packed Input Tokens (chars/4):</strong>{' '}
+              {contextBundle.totalTokensPacked.toLocaleString()} / 1,000,000 TOKENS (
+              {contextBundle.totalCharsPacked.toLocaleString()} chars)
+            </span>
+          )}
           <span className="text-emerald">
-            95% IMPLICIT CACHE · ~${contextBundle.estimatedInputCostUsd.toFixed(3)}
+            95% IMPLICIT CACHE · ~${contextBundle.estimatedInputCostUsd.toFixed(4)}
           </span>
         </div>
         <div className="argon-meter-bar">
@@ -477,7 +661,7 @@ export const ArchitectHookPanel: React.FC<ArchitectHookPanelProps> = ({
           placeholder={
             hasServerEnvKey
               ? 'Server GEMINI_API_KEY active (or override here)'
-              : 'Optional: Paste GEMINI_API_KEY for live Argon API (instant 1M trace ready)'
+              : 'Optional: Paste GEMINI_API_KEY for live Argon API (offline presets ready)'
           }
           value={userApiKey}
           onChange={(e) => setUserApiKey(e.target.value)}
@@ -486,7 +670,7 @@ export const ArchitectHookPanel: React.FC<ArchitectHookPanelProps> = ({
         <span className="hud-badge hud-badge-cyan">
           {hasServerEnvKey || userApiKey.trim().length > 8
             ? 'LIVE API KEY'
-            : '1M TRACE READY'}
+            : 'OFFLINE PRESET MODE'}
         </span>
       </div>
 
@@ -542,11 +726,22 @@ export const ArchitectHookPanel: React.FC<ArchitectHookPanelProps> = ({
           >
             {isSynthesizing ? 'RUNNING 3-AGENT SWARM...' : 'SYNTHESIZE WITH ARGON SWARM'}
           </button>
+          {isSynthesizing && (
+            <button
+              type="button"
+              className="hud-btn hud-btn-sm"
+              style={{ borderColor: '#ff4866', color: '#ff99aa' }}
+              data-testid="btn-cancel-argon-request"
+              onClick={handleCancelInFlightRequest}
+            >
+              [CANCEL REQUEST]
+            </button>
+          )}
         </div>
 
-        {/* 3 INSTANT SHOWCASE PRESETS */}
+        {/* 3 INSTANT OFFLINE SHOWCASE PRESETS (ZERO NETWORK FETCH CALLS) */}
         <div className="architect-label" style={{ marginTop: '4px' }}>
-          INSTANT 1M-TOKEN SHOWCASE SYNTHESIS TRACES:
+          OFFLINE INSTANT PRESETS (ZERO NETWORK FETCH):
         </div>
         <div className="argon-preset-grid">
           <button
@@ -594,15 +789,86 @@ export const ArchitectHookPanel: React.FC<ArchitectHookPanelProps> = ({
         </div>
       </div>
 
+      {/* 3-TRY AUTONOMOUS SELF-REPAIR LOOP LOG */}
+      {repairAttempts.length > 0 && (
+        <div className="argon-repair-log" data-testid="argon-self-repair-log">
+          <div style={{ fontWeight: 700, color: '#3ce8ff' }}>
+            3-TRY AUTONOMOUS SELF-REPAIR LOOP ({repairAttempts.length}/3 ATTEMPTS):
+          </div>
+          {repairAttempts.map((att) => (
+            <div
+              key={att.attempt}
+              data-testid={`self-repair-attempt-${att.attempt}`}
+              style={{
+                borderLeft: `2px solid ${att.passed ? '#28f79c' : '#ffd23f'}`,
+                paddingLeft: '6px',
+              }}
+            >
+              <div>
+                <strong>
+                  Attempt {att.attempt}/{att.maxAttempts}
+                </strong>{' '}
+                ({att.latencyMs}ms · id={att.interactionId}
+                {att.previousInteractionId
+                  ? ` · chained prev=${att.previousInteractionId}`
+                  : ''}
+                ):{' '}
+                <span style={{ color: att.passed ? '#28f79c' : '#ffd23f' }}>
+                  {att.passed ? 'PASSED GATE' : 'FAILED GATE -> REPAIRING'}
+                </span>
+              </div>
+              {att.diagnosticsSent.length > 0 && (
+                <div style={{ color: '#ffb3c1' }}>
+                  Diagnostics fed to Argon: {att.diagnosticsSent.join(' | ')}
+                </div>
+              )}
+              <div style={{ color: '#c8e6ff' }}>{att.fixSummary}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* HUMAN-IN-THE-LOOP PREVIEW & APPROVE CARD */}
       {pendingProposal && (
         <div className="argon-hitl-card" data-testid="hitl-approval-card">
+          {/* HONESTY PASS: PROMINENT EXECUTION SOURCE BADGE */}
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              flexWrap: 'wrap',
+              gap: '6px',
+            }}
+          >
+            <span
+              className={
+                pendingProposal.executionSource === 'live-interactions-api' ||
+                pendingProposal.executionSource === 'live-generate-content'
+                  ? 'argon-source-badge-live'
+                  : 'argon-source-badge-offline'
+              }
+              data-testid="execution-source-badge"
+            >
+              {pendingProposal.executionSource === 'live-interactions-api' ||
+              pendingProposal.executionSource === 'live-generate-content'
+                ? '🟢 LIVE GEMINI 4 ARGON API'
+                : '⚡ OFFLINE INSTANT PRESET'}
+            </span>
+            <span
+              style={{ fontFamily: 'var(--font-mono)', fontSize: '9.5px', color: '#b8d8ff' }}
+              data-testid="execution-source-value"
+            >
+              source={pendingProposal.executionSource}
+            </span>
+          </div>
+
           <div className="argon-agent-header">
             <span className="text-emerald">
-              HUMAN-IN-THE-LOOP GATE // READY TO HOT-SWAP: {pendingProposal.proposedCourse.name}
+              HUMAN-IN-THE-LOOP GATE // {pendingProposal.proposedCourse.name}
             </span>
             <span className="hud-badge hud-badge-cyan">
-              {pendingProposal.solvability.passed ? 'GATE PASSED' : 'REPAIRED'}
+              {pendingProposal.solvability.passed ? 'GATE PASSED' : 'GATE FAILED'}
             </span>
           </div>
           <div
@@ -610,18 +876,23 @@ export const ArchitectHookPanel: React.FC<ArchitectHookPanelProps> = ({
             style={{ fontFamily: 'var(--font-mono)', fontSize: '10px', color: '#ffd29a' }}
           >
             Antigravity Sandbox Verifier (`{pendingProposal.antigravitySandbox.agent}`):{' '}
-            {pendingProposal.antigravitySandbox.verdict} · {pendingProposal.antigravitySandbox.source}{' '}
-            · env {pendingProposal.antigravitySandbox.environment}
+            status=<strong>{pendingProposal.antigravitySandbox.status}</strong> · verdict=
+            <strong>{pendingProposal.antigravitySandbox.verdict}</strong> ·{' '}
+            {pendingProposal.antigravitySandbox.source} · hash=
+            {pendingProposal.antigravitySandbox.courseHash}
           </div>
           <pre className="argon-trace-pre" data-testid="antigravity-verification-trace">
             {pendingProposal.antigravitySandbox.verificationTrace.join('\n')}
           </pre>
           <div style={{ fontFamily: 'var(--font-mono)', fontSize: '10px', color: '#d8f3ff' }}>
-            Spawn d={pendingProposal.solvability.startDistance.toFixed(2)}m (Grounded) ·{' '}
+            Spawn d={pendingProposal.solvability.startDistance.toFixed(2)}m (
+            {pendingProposal.solvability.startGrounded ? 'Grounded' : 'Ungrounded'}) ·{' '}
             {pendingProposal.solvability.glslLineCount} GLSL2 /{' '}
             {pendingProposal.solvability.wgslLineCount} WGSL lines · 120 Hz Bot Rollout:{' '}
-            {Math.round(pendingProposal.solvability.botRollout.progressRatio * 100)}% progress (Peak{' '}
-            {pendingProposal.solvability.botRollout.peakSpeed.toFixed(1)} u/s)
+            {pendingProposal.solvability.botRollout.reachedGoal
+              ? '100% Goal Reached'
+              : `${Math.round(pendingProposal.solvability.botRollout.progressRatio * 100)}% (Goal Not Reached)`}{' '}
+            (Peak {pendingProposal.solvability.botRollout.peakSpeed.toFixed(1)} u/s)
           </div>
           <pre className="argon-trace-pre">{pendingProposal.reasoningTrace}</pre>
           <div className="argon-hitl-actions">
@@ -629,10 +900,27 @@ export const ArchitectHookPanel: React.FC<ArchitectHookPanelProps> = ({
               type="button"
               className="hud-btn hud-btn-primary"
               data-testid="btn-approve-hotswap"
+              disabled={!canApproveProposal}
               onClick={handleApproveProposal}
+              title={
+                canApproveProposal
+                  ? 'Approve and hot-swap verified course into the live engine'
+                  : 'Disabled until Solvability Gate passes (reachedGoal === true) and Antigravity is not pending/failed'
+              }
             >
               APPROVE &amp; HOT-SWAP COURSE
             </button>
+            {pendingProposal.antigravitySandbox.status === 'pending' && (
+              <button
+                type="button"
+                className="hud-btn hud-btn-sm"
+                data-testid="btn-poll-antigravity"
+                disabled={isPollingAntigravity}
+                onClick={handlePollAntigravity}
+              >
+                {isPollingAntigravity ? 'POLLING SANDBOX...' : 'POLL ANTIGRAVITY STATUS'}
+              </button>
+            )}
             <button
               type="button"
               className="hud-btn hud-btn-sm"
@@ -712,13 +1000,13 @@ export const ArchitectHookPanel: React.FC<ArchitectHookPanelProps> = ({
               <span className="text-emerald">
                 {pendingProposal
                   ? `${pendingProposal.antigravitySandbox.verdict} · ${pendingProposal.antigravitySandbox.status.toUpperCase()}`
-                  : 'READY'}
+                  : 'IDLE'}
               </span>
             </div>
             <div style={{ color: 'var(--text-muted)' }}>
               {pendingProposal
                 ? pendingProposal.antigravitySandbox.verificationTrace[0]
-                : 'Remote sandbox (environment remote, background true, model gemini-4-argon) signs the certificate before you approve.'}
+                : 'Remote sandbox (environment remote, background true, model gemini-4-argon) binds certificate to courseHash.'}
             </div>
           </div>
           {callout && (
@@ -805,9 +1093,40 @@ export const ArchitectHookPanel: React.FC<ArchitectHookPanelProps> = ({
             </button>
           </div>
 
-          <div className="architect-label" style={{ marginTop: '4px' }}>
-            120 HZ TELEMETRY DIAGNOSIS ({liveTelemetry.totalFramesRecorded} FRAMES ·{' '}
-            {liveTelemetry.deathEvents.length} DEATHS · PEAK {liveTelemetry.peakSpeed.toFixed(1)} U/S):
+          <div
+            className="architect-label"
+            style={{
+              marginTop: '4px',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              gap: '6px',
+            }}
+          >
+            <span>
+              120 HZ TELEMETRY DIAGNOSIS ({liveTelemetry.totalFramesRecorded} FRAMES ·{' '}
+              {liveTelemetry.deathEvents.length} DEATHS · PEAK{' '}
+              {liveTelemetry.peakSpeed.toFixed(1)} U/S):
+              {useDemoSampleTelemetry && (
+                <span
+                  className="hud-badge hud-badge-cyan"
+                  style={{ marginLeft: '6px' }}
+                  data-testid="demo-sample-telemetry-badge"
+                >
+                  DEMO SAMPLE
+                </span>
+              )}
+            </span>
+            <button
+              type="button"
+              className="hud-btn hud-btn-sm"
+              data-testid="btn-load-demo-sample-telemetry"
+              onClick={() => setUseDemoSampleTelemetry((prev) => !prev)}
+            >
+              {useDemoSampleTelemetry
+                ? 'USE LIVE RUN TELEMETRY'
+                : 'Load Demo Sample Telemetry'}
+            </button>
           </div>
           <div style={{ fontFamily: 'var(--font-mono)', fontSize: '9.5px', color: '#b9d8f8', lineHeight: 1.35 }}>
             {liveTelemetry.coachingDiagnosis}
@@ -826,6 +1145,7 @@ export const ArchitectHookPanel: React.FC<ArchitectHookPanelProps> = ({
             <button
               type="button"
               className="hud-btn hud-btn-primary"
+              data-testid="btn-apply-raw-json"
               onClick={handleApplyJson}
             >
               HOT-COMPILE &amp; PLAY COURSESPEC
