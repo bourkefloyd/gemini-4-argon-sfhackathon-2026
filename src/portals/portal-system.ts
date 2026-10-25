@@ -126,7 +126,8 @@ export function getDefaultCoursePortals(course: CourseSpec): readonly PortalPair
     }));
   }
 
-  switch (course.id) {
+  const baseId = course.id.replace(/-argon-mutated$/, '');
+  switch (baseId) {
     case 'practice-race':
       return [
         {
@@ -229,49 +230,8 @@ export function getDefaultCoursePortals(course: CourseSpec): readonly PortalPair
         },
       ];
 
-    default: {
-      // Fallback landmark portal pair for custom/architect courses (e.g. Ramp Track / Spiral Citadel)
-      const toGoal = vSub(course.goalPos, course.startPos);
-      const horizDir = vNorm([toGoal[0], 0, toGoal[2]], [0, 0, -1]);
-      const entryPos: Vec3 = [
-        course.startPos[0] + horizDir[0] * 4.5,
-        course.startPos[1] - 0.15,
-        course.startPos[2] + horizDir[2] * 4.5,
-      ];
-      const entryNormal = vNorm([-horizDir[0] * 0.92, 0.38, -horizDir[2] * 0.92], [0, 0.38, 0.92]);
-      const entryBasis = computePortalBasis(entryNormal, [0, 1, 0]);
-
-      const nextTerraceTarget =
-        course.checkpoints && course.checkpoints.length > 0
-          ? course.checkpoints[course.checkpoints.length - 1].position
-          : vAdd(course.startPos, vScale(toGoal, 0.65));
-      const toGoalFromExit = vNorm(
-        [course.goalPos[0] - nextTerraceTarget[0], 0, course.goalPos[2] - nextTerraceTarget[2]],
-        horizDir,
-      );
-      const invSqrt2 = Math.SQRT1_2;
-      const exitNormal = vNorm(
-        [toGoalFromExit[0] * invSqrt2, invSqrt2, toGoalFromExit[2] * invSqrt2],
-        [0, invSqrt2, -invSqrt2],
-      );
-      const exitBasis = computePortalBasis(exitNormal, [0, 1, 0]);
-
-      return [
-        {
-          id: `${course.id}-landmark-portal`,
-          posA: entryPos,
-          normalA: entryBasis.normal,
-          upA: entryBasis.up,
-          posB: [nextTerraceTarget[0], nextTerraceTarget[1] + 0.85, nextTerraceTarget[2]],
-          normalB: exitBasis.normal,
-          upB: exitBasis.up,
-          radius: DEFAULT_PORTAL_RADIUS,
-          activeA: true,
-          activeB: true,
-          flingBoost: DEFAULT_PORTAL_FLING_BOOST,
-        },
-      ];
-    }
+    default:
+      return [];
   }
 }
 

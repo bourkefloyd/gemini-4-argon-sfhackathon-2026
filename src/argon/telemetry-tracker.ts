@@ -5,6 +5,9 @@
  * (`gemini-4-argon`, `thinking_level: "high"`) can diagnose exact failure coordinates,
  * slip/backspin brake spikes, speed distributions, and completion splits inside its
  * 1M-token context window.
+ *
+ * Honesty Pass: Never fabricates fake deaths or fake frames when no run has been recorded;
+ * reports actual recorded frame & death counts (0 before play, real events during play).
  */
 
 import type { CourseSpec, SurfaceMaterial, Vec3 } from '../contracts';
@@ -41,7 +44,8 @@ export type PlayerPlaystyleArchetype =
   | 'High-Speed Chute Daredevil'
   | 'Precision Catwalk Tactician'
   | 'Edge-Carving Rim-Saver'
-  | 'Aggressive Trackball Brawler';
+  | 'Aggressive Trackball Brawler'
+  | 'Awaiting Live Run Telemetry';
 
 export interface PlayerRunTelemetrySummary {
   readonly courseId: string;
@@ -63,6 +67,7 @@ export interface PlayerRunTelemetrySummary {
   readonly trajectoryPolyline: readonly Vec3[];
   readonly inferredArchetype: PlayerPlaystyleArchetype;
   readonly coachingDiagnosis: string;
+  readonly isBaselineSample?: boolean;
 }
 
 function roundVec3(v: Vec3): Vec3 {
@@ -91,9 +96,40 @@ function findNearestNodeId(course: CourseSpec, pos: Vec3): string {
 }
 
 /**
- * Generates a rich, realistic baseline 120 Hz telemetry trace for a given `CourseSpec`
- * when the player opens the Architect Drawer before completing a full run, or merges
- * live recorded frames captured from `window.__MARBLE_PLAYTEST__`.
+ * Honest zero-fabrication initial state when no live run frames have been recorded yet.
+ */
+export function buildEmptyLiveTelemetryForCourse(
+  course: CourseSpec,
+): PlayerRunTelemetrySummary {
+  return {
+    courseId: course.id,
+    courseName: course.name,
+    sampleRateHz: 120,
+    totalFramesRecorded: 0,
+    durationSec: 0,
+    peakSpeed: 0,
+    averageSpeed: 0,
+    airborneRatio: 0,
+    groundedRatio: 1,
+    completionSplits: [],
+    deathEvents: [],
+    slipBrakeHeatmap: [],
+    speedProfileHistogram: [
+      { bucketLabel: '0–6 u/s (Creep / Precision)', ratio: 0 },
+      { bucketLabel: '6–14 u/s (Tourist Cruise)', ratio: 0 },
+      { bucketLabel: '14–20 u/s (Banked Carve)', ratio: 0 },
+      { bucketLabel: '20–24+ u/s (Terminal Fling)', ratio: 0 },
+    ],
+    trajectoryPolyline: [roundVec3(course.startPos)],
+    inferredArchetype: 'Awaiting Live Run Telemetry',
+    coachingDiagnosis: `0 frames recorded on ${course.name} so far. Roll the marble to capture real 120 Hz velocity, slip, and death telemetry, or synthesize directly from course geometry.`,
+    isBaselineSample: false,
+  };
+}
+
+/**
+ * Generates a reference sample 120 Hz telemetry trace for a given `CourseSpec`
+ * (used by unit tests and explicitly labeled sample coaching benchmarks).
  */
 export function buildDefaultTelemetryForCourse(
   course: CourseSpec,
@@ -131,9 +167,11 @@ export function buildDefaultTelemetryForCourse(
       id: `${course.id}-death-3`,
       courseId: course.id,
       timestampSec: 23.1,
-      cause: course.hazards.some((h) => h.material === 'acid') || course.nodes.some((n) => n.material === 'acid')
-        ? 'sunk'
-        : 'fell',
+      cause:
+        course.hazards.some((h) => h.material === 'acid') ||
+        course.nodes.some((n) => n.material === 'acid')
+          ? 'sunk'
+          : 'fell',
       position: roundVec3([goal[0] - 1.1, goal[1] - 0.8, goal[2] + 4.2]),
       velocity: [14.8, -6.5, -16.4],
       speed: 23.02,
@@ -220,8 +258,8 @@ export function buildDefaultTelemetryForCourse(
     ],
     trajectoryPolyline,
     inferredArchetype: 'High-Speed Chute Daredevil',
-    coachingDiagnosis:
-      `Player carries high entry speed (20.7–23.4 u/s) out of steep chutes on ${course.name}, triggering late backspin-brake skids and overshooting unrailed turn apexes near ${deathEvents[0].nearestNodeId} and ${deathEvents[1].nearestNodeId}. Recommend sculpting smooth-unioned outer catch-berms (railHeight >= 1.05m), inserting a high-friction sticky brake strip before the final abyss catwalk, and phase-locking piston hazards to reward a 19 u/s speedrun line.`,
+    coachingDiagnosis: `Player carries high entry speed (20.7–23.4 u/s) out of steep chutes on ${course.name}, triggering late backspin-brake skids and overshooting unrailed turn apexes near ${deathEvents[0].nearestNodeId} and ${deathEvents[1].nearestNodeId}. Recommend sculpting smooth-unioned outer catch-berms (railHeight >= 1.05m), inserting a high-friction sticky brake strip before the final abyss catwalk, and phase-locking piston hazards to reward a 19 u/s speedrun line.`,
+    isBaselineSample: true,
   };
 }
 
@@ -273,11 +311,11 @@ export function createLiveTelemetryTracker(): LiveTelemetryTracker {
     grounded: boolean,
     timeRemainingSec: number,
   ) {
-    framesRecorded += 4; // Sampled every ~4 physics ticks
-    if (grounded) groundedFrames += 4;
+    framesRecorded += 1;
+    if (grounded) groundedFrames += 1;
 
     const speed = Math.hypot(velocity[0], velocity[1], velocity[2]);
-    speedSum += speed * 4;
+    speedSum += speed;
     if (speed > peakSpeed) peakSpeed = speed;
 
     if (speed < 6) bucketCounts[0]++;
@@ -331,9 +369,8 @@ export function createLiveTelemetryTracker(): LiveTelemetryTracker {
   }
 
   function getSummary(course: CourseSpec): PlayerRunTelemetrySummary {
-    const baseline = buildDefaultTelemetryForCourse(course);
-    if (framesRecorded < 60) {
-      return baseline;
+    if (framesRecorded === 0) {
+      return buildEmptyLiveTelemetryForCourse(course);
     }
 
     const totalBuckets = Math.max(
@@ -342,9 +379,6 @@ export function createLiveTelemetryTracker(): LiveTelemetryTracker {
     );
     const avgSpeed = Math.round((speedSum / framesRecorded) * 100) / 100;
     const groundedRatio = Math.round((groundedFrames / framesRecorded) * 100) / 100;
-    const mergedDeaths = deaths.length > 0 ? deaths : baseline.deathEvents;
-    const mergedSlips = slips.length > 0 ? slips : baseline.slipBrakeHeatmap;
-    const mergedSplits = splits.length > 0 ? splits : baseline.completionSplits;
 
     const archetype: PlayerPlaystyleArchetype =
       peakSpeed >= 19.5
@@ -353,19 +387,24 @@ export function createLiveTelemetryTracker(): LiveTelemetryTracker {
           ? 'Precision Catwalk Tactician'
           : 'Edge-Carving Rim-Saver';
 
+    const diagnosis =
+      deaths.length > 0
+        ? `Recorded ${framesRecorded} live frames (${deaths.length} real death(s) near ${deaths[0].nearestNodeId}, peak ${peakSpeed.toFixed(1)} u/s). Recommend sculpting catch-berms and sticky brake zones near [${deaths[0].position.join(', ')}].`
+        : `Recorded ${framesRecorded} live frames on ${course.name} with 0 deaths (peak ${peakSpeed.toFixed(1)} u/s, avg ${avgSpeed.toFixed(1)} u/s, ${archetype}).`;
+
     return {
       courseId: course.id,
       courseName: course.name,
       sampleRateHz: 120,
-      totalFramesRecorded: Math.max(framesRecorded, baseline.totalFramesRecorded),
-      durationSec: Math.round((Math.max(framesRecorded, 1800) / 120) * 10) / 10,
-      peakSpeed: Math.round(Math.max(peakSpeed, baseline.peakSpeed) * 100) / 100,
-      averageSpeed: Math.max(avgSpeed, 11.4),
+      totalFramesRecorded: framesRecorded,
+      durationSec: Math.round((framesRecorded / 120) * 10) / 10,
+      peakSpeed: Math.round(peakSpeed * 100) / 100,
+      averageSpeed: avgSpeed,
       airborneRatio: Math.round((1 - groundedRatio) * 100) / 100,
       groundedRatio,
-      completionSplits: mergedSplits,
-      deathEvents: mergedDeaths,
-      slipBrakeHeatmap: mergedSlips,
+      completionSplits: [...splits],
+      deathEvents: [...deaths],
+      slipBrakeHeatmap: [...slips],
       speedProfileHistogram: [
         {
           bucketLabel: '0–6 u/s (Creep / Precision)',
@@ -385,9 +424,10 @@ export function createLiveTelemetryTracker(): LiveTelemetryTracker {
         },
       ],
       trajectoryPolyline:
-        trajectory.length >= 4 ? trajectory : baseline.trajectoryPolyline,
+        trajectory.length > 0 ? [...trajectory] : [roundVec3(course.startPos)],
       inferredArchetype: archetype,
-      coachingDiagnosis: baseline.coachingDiagnosis,
+      coachingDiagnosis: diagnosis,
+      isBaselineSample: false,
     };
   }
 

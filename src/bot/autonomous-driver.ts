@@ -212,7 +212,8 @@ export function buildCourseWaypoints(
   course: CourseSpec,
   style: BotPlayStyle = 'tourist',
 ): BotWaypoint[] {
-  if (course.id === 'practice-race') {
+  const baseCourseId = course.id.replace(/-argon-mutated$/, '');
+  if (baseCourseId === 'practice-race') {
     const isSpeedrun = style === 'speedrunner';
     if (isSpeedrun) {
       const speedrunRaw: RawWaypointNode[] = [
