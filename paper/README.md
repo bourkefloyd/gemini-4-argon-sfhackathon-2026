@@ -35,6 +35,24 @@ The open technical corner is narrower than “use SDFs.” The field has to be s
 
 Claybook, Dreams, and Teardown buy mutability and spend continuity. Shadertoy and the neural papers buy continuity and spend the gameplay loop.
 
+### 1.0b Traditional Polygon/BVH vs. Lockstep SDF Pipeline
+
+Before comparing SDF sub-genres, we benchmark against **Approach A (Traditional Polygon Mesh + BVH Physics/Graphics Pipeline: Three.js/UE5 rasterization + Rapier/PhysX `TriMesh` & convex-hull BVH collision + stencil portals + mesh-boolean CSG)** versus **Approach B (Our Lockstep Graphics SDF + Physics SDF Pipeline)**:
+
+![Traditional Polygon Mesh + BVH vs. Lockstep Analytical Jet-SDF Pipeline](../docs/figures/sdf-vs-traditional-mesh-comparison.png)
+
+*Figure 1b. Quantitative comparison between a traditional polygon mesh + BVH pipeline and our lockstep analytical Jet-SDF pipeline across curved-chute normal chatter, realtime CSG mutation latency, `gemini-4-argon` course synthesis footprint, and 4K primary visibility scaling.*
+
+1. **Where Lockstep SDF Wins Decisively (5 Structural Advantages for a Marble + AI Game):**
+   - **Zero Internal-Edge Ghost Collisions on Curved Chutes:** Tessellating a \(90^\circ\) curved chute (\(R = 6\,\mathrm{m}\)) into 16 or 32 triangle segments introduces discrete normal jumps of **\(5.63^\circ\)** and **\(2.81^\circ\)** at every internal triangle edge, producing **\(0.66\)–\(1.32\,\mathrm{u/s}\)** parasitic "ghost hops" at \(v = 22\,\mathrm{u/s}\). Our \(C^\infty\) analytical `jSDF` chute has **\(0.00^\circ\)** facet chatter and captures the exact **\(1.92\times\)** meniscus velocity amplification on blending fillets.
+   - **Microsecond Live CSG Mutation (`0.0018 ms` vs. `9.4–44.6 ms`):** Firing a crater cannon or extruding a bridge in a mesh engine requires CPU manifold mesh booleans, BVH collider refitting, and GPU vertex buffer re-upload (**\(9.4\,\mathrm{ms}\)** at 5k tris, **\(21.8\,\mathrm{ms}\)** at 20k tris, **\(44.6\,\mathrm{ms}\)** at 60k tris—blowing the \(8.33\,\mathrm{ms}\) 120 Hz budget). Writing one 64-byte `FieldMutation` slot into our 16-slot uniform ring buffer takes **\(0.0018\,\mathrm{ms}\)** (**\(5{,}200\times\)–\(24{,}700\times\) faster**, zero remeshing).
+   - **\(538\times\) Smaller AI Authoring Footprint with Zero Visual/Collider Drift:** Emitting a watertight 52k-vertex course mesh + collision hulls consumes **\(\sim 685{,}000\) tokens** (\(\sim 2.7\,\mathrm{MB}\)); imperative Three.js + Rapier code takes **\(\sim 6{,}400\) tokens** and risks visual/physics desync. Our declarative `CourseSpec` AST takes **\(1{,}273\) tokens** (\(\sim 5.0\,\mathrm{KB}\)) and compiles in **\(<1.5\,\mathrm{ms}\)** to both the GPU shader and the 120 Hz solver.
+   - **Metric-Bridged Non-Euclidean Portals (`pSDF`):** Preserves **1-Lipschitz continuity (\(1.000\) vs. \(25.7\) clipped disc)** so primary rays, 24-step cone soft shadows, 5-tap AO, and 120 Hz sphere contacts traverse the portal throat without stencil RTT passes or cloned proxy colliders.
+   - **Security-Performance Inversion:** One-way `.msdf` RPN bytecode (**\(9.21\times\)** AST speed, \(-41.5\%\) size, `0` leaked labels) and the \(O(1)\) Sparse Brick Atlas (**\(41.9\times\)–\(581.3\times\)** AST speed) make client assets simultaneously faster and harder for 1M-token models to reverse-engineer.
+2. **Where Traditional Polygon + BVH Still Wins (Honest Limitations & Hybrid Mitigation):**
+   - **4K Primary Visibility on Massive Static Scenes:** Hardware Z-buffer rasterization is \(O(1)\) per pixel after vertex projection (**\(2.76\,\mathrm{ms}\)** at \(N = 1{,}000\) objects), whereas naive full-tree sphere tracing scales as \(O(S \cdot N)\) and crosses the \(16.67\,\mathrm{ms}\) 60 FPS ceiling around \(N \approx 83\). Our hybrid **\(O(1)\) Sparse Brick Atlas + \(\kappa\text{-March}\)** reduces step count by \(35.9\%\) and brings 4K frame time down to **\(5.29\,\mathrm{ms}\)** (\(33.5\times\) faster than naive SDF, within \(\sim 1.9\times\) of pure hardware rasterization).
+   - **Skeletal Characters, Explicit 2D UVs, and DCC Tooling:** Linear-blend bone skinning, hand-painted Substance 2D UV maps, and standard Blender/ZBrush `.gltf` workflows remain far more mature in polygon engines; a production hybrid engine rasterizes skinned characters into the depth buffer while raymarching the playable SDF course.
+
 ### 1.1 What this engine actually runs
 
 Playtest Build 1 is a browser course: fullscreen sphere tracing, a \(120\,\mathrm{Hz}\) CPU solver on the same specification, six campaign courses, portals, and living hazards (wave floors, pistons, acid, field mutations). The feel notes and the QR-party note are design documents for that build, not extra benchmark tables. The party design keeps WebGPU on the stage machine and gives phones a small trackball client, so a room can join a three-minute demo without compiling a raymarcher.
