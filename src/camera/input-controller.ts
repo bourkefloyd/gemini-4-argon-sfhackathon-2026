@@ -4,14 +4,19 @@
  * Unifies:
  * - WASD / Arrow Keys digital movement with smooth analog ramp
  * - Virtual Trackball mouse-drag / pointer-drag impulse (drag anywhere on canvas to spin the marble)
- * - Right-drag or Q/E to orbit camera yaw
+ * - Right-drag or `[` / `]` to orbit camera yaw
  * - Hotkeys:
  *   - `Space`: Jump / Hop
  *   - `R`: Respawn at checkpoint
  *   - `C`: Cycle Camera Zoom Stop (Isometric Classic / Close Action / Tactical Overview)
  *   - `M`: Cycle Marble Visual Shader Preset
+ *   - `N`: Toggle YM2151 synth mute
+ *   - `Q` / `E`: Place Blue / Orange SDF portals (short right-click also places Orange)
+ *   - `F` / `V` / `B` / `X`: CSG Crater Bomb / Bridge Extruder / Pop-Ramp / Cryo Freeze
  *   - `1`–`6`: Switch the classic campaign courses immediately
  */
+
+import type { WeaponAbilityId } from '../contracts';
 
 export interface TrackballUiTelemetry {
   readonly active: boolean;
@@ -28,6 +33,8 @@ export interface ArcadeInputCallbacks {
   onToggleArchitectPanel?: () => void;
   onToggleAudioMute?: () => void;
   onUserGesture?: () => void;
+  onFirePortal?: (end: 'blue' | 'orange', pointerNdc?: readonly [number, number]) => void;
+  onTriggerWeapon?: (ability: WeaponAbilityId) => void;
 }
 
 export interface ArcadeInputController {
@@ -52,10 +59,18 @@ export function createArcadeInputController(
   // Virtual trackball pointer state
   let pointerDragging = false;
   let orbitDragging = false;
+  let rightClickDownPos: [number, number] | null = null;
   let pointerOrigin: [number, number] = [0, 0];
   let pointerCurrent: [number, number] = [0, 0];
+  let lastPointerNdc: [number, number] | undefined = undefined;
   let smoothedRight = 0;
   let smoothedUp = 0;
+
+  function computeNdc(clientX: number, clientY: number): [number, number] {
+    const w = Math.max(1, window.innerWidth);
+    const h = Math.max(1, window.innerHeight);
+    return [(clientX / w) * 2 - 1, 1 - (clientY / h) * 2];
+  }
 
   function isTypingInInput(ev: Event): boolean {
     const el = ev.target as HTMLElement | null;
@@ -68,6 +83,7 @@ export function createArcadeInputController(
     if (isTypingInInput(ev)) return;
     callbacks.onUserGesture?.();
     const code = ev.code;
+    const isRepeat = keysDown.has(code);
     keysDown.add(code);
 
     if (code === 'Space') {
@@ -82,8 +98,20 @@ export function createArcadeInputController(
       callbacks.onCycleMarblePreset?.();
     } else if (code === 'KeyG') {
       callbacks.onToggleArchitectPanel?.();
-    } else if (code === 'KeyN') {
+    } else if (code === 'KeyN' && !isRepeat) {
       callbacks.onToggleAudioMute?.();
+    } else if (code === 'KeyQ' && !isRepeat) {
+      callbacks.onFirePortal?.('blue', lastPointerNdc);
+    } else if (code === 'KeyE' && !isRepeat) {
+      callbacks.onFirePortal?.('orange', lastPointerNdc);
+    } else if (code === 'KeyF' && !isRepeat) {
+      callbacks.onTriggerWeapon?.('matterBomb');
+    } else if (code === 'KeyV' && !isRepeat) {
+      callbacks.onTriggerWeapon?.('bridgeExtruder');
+    } else if (code === 'KeyB' && !isRepeat) {
+      callbacks.onTriggerWeapon?.('popRamp');
+    } else if (code === 'KeyX' && !isRepeat) {
+      callbacks.onTriggerWeapon?.('cryoFreeze');
     } else if (code === 'Digit1') {
       callbacks.onSelectCourse?.(0);
     } else if (code === 'Digit2') {
@@ -110,7 +138,11 @@ export function createArcadeInputController(
     if (target && target.closest('[data-hud-interactive="true"]')) {
       return;
     }
-    if (ev.button === 2 || ev.shiftKey) {
+    lastPointerNdc = computeNdc(ev.clientX, ev.clientY);
+    if (ev.button === 2) {
+      rightClickDownPos = [ev.clientX, ev.clientY];
+      orbitDragging = true;
+    } else if (ev.shiftKey) {
       orbitDragging = true;
     } else {
       pointerDragging = true;
@@ -120,6 +152,7 @@ export function createArcadeInputController(
   }
 
   function onPointerMove(ev: PointerEvent) {
+    lastPointerNdc = computeNdc(ev.clientX, ev.clientY);
     if (!pointerDragging && !orbitDragging) return;
     if (orbitDragging) {
       const dx = ev.clientX - pointerCurrent[0];
@@ -128,7 +161,14 @@ export function createArcadeInputController(
     pointerCurrent = [ev.clientX, ev.clientY];
   }
 
-  function onPointerUp() {
+  function onPointerUp(ev: PointerEvent) {
+    if (rightClickDownPos) {
+      const moved = Math.hypot(ev.clientX - rightClickDownPos[0], ev.clientY - rightClickDownPos[1]);
+      if (moved < 8) {
+        callbacks.onFirePortal?.('orange', computeNdc(ev.clientX, ev.clientY));
+      }
+      rightClickDownPos = null;
+    }
     pointerDragging = false;
     orbitDragging = false;
   }
@@ -155,11 +195,11 @@ export function createArcadeInputController(
   ) {
     const safeDt = Math.min(Math.max(dt, 0.001), 0.1);
 
-    // Camera yaw orbit via Q/E
-    if (keysDown.has('KeyQ')) {
+    // Camera yaw orbit via [ / ]
+    if (keysDown.has('BracketLeft')) {
       callbacks.onOrbitCameraYaw?.(-65 * safeDt);
     }
-    if (keysDown.has('KeyE')) {
+    if (keysDown.has('BracketRight')) {
       callbacks.onOrbitCameraYaw?.(65 * safeDt);
     }
 

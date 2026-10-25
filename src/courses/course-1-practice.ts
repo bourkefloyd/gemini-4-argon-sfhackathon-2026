@@ -51,6 +51,21 @@ export const COURSE_1_PRACTICE_RACE: CourseSpec = {
       radius: 3.5,
     },
   ],
+  portals: [
+    {
+      id: 'practice-chute-fling-portal',
+      posA: [0.4, 5.42, -19.35],
+      normalA: [0.0, 0.22, 0.9755],
+      upA: [0.0, 0.9755, -0.22],
+      posB: [24.6, 1.95, -18.2],
+      normalB: [0.0, 0.36, -0.933],
+      upB: [0.0, 0.933, 0.36],
+      radius: 1.38,
+      activeA: true,
+      activeB: true,
+      flingBoost: 1.0,
+    },
+  ],
   hazardManifest: [
     {
       id: 'banked-s-chute',

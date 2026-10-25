@@ -54,6 +54,12 @@ export interface MarbleState {
   readonly jumpBufferTimer: number;
   /** Cooldown before next jump impulse */
   readonly jumpCooldown: number;
+  /** Cooldown after portal traversal to prevent immediate re-entry ping-pong */
+  readonly portalCooldown?: number;
+  /** Most recent portal traversal count */
+  readonly portalCrossings?: number;
+  /** Last portal exit speed (units/sec) */
+  readonly lastPortalExitSpeed?: number;
   /** Active checkpoint respawn position */
   readonly respawnPos: Vec3;
   /** Selected visual marble shader preset index */

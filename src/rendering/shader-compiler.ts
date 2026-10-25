@@ -261,6 +261,21 @@ uniform vec3 uSunDir;
 ${shatterSnippet}
 ${shockwaveSnippet}
 
+// Realtime CSG FieldMutation Ring Buffer (uMutations, MAX_MUTATIONS = 16)
+uniform int uMutationCount;
+uniform vec4 uMutationsPosA[16]; // xyz = posA, w = radius
+uniform vec4 uMutationsPosB[16]; // xyz = posB, w = blendK
+uniform vec4 uMutationsMeta[16]; // x = kindCode (1..4), y = materialId, z = spawnTime, w = ttl
+
+// Non-Euclidean Raymarched SDF Portal Pairs (MAX_PORTAL_PAIRS = 2)
+uniform int uPortalPairCount;
+uniform vec4 uPortalPosA[2];    // xyz = posA, w = radius
+uniform vec4 uPortalNormalA[2]; // xyz = normalA, w = activeA
+uniform vec4 uPortalUpA[2];     // xyz = upA, w = flingBoost
+uniform vec4 uPortalPosB[2];    // xyz = posB, w = radius
+uniform vec4 uPortalNormalB[2]; // xyz = normalB, w = activeB
+uniform vec4 uPortalUpB[2];     // xyz = upB, w = 0.0
+
 vec3 rotateByQuatInverse(vec3 d, vec4 q) {
   vec3 t = 2.0 * cross(q.xyz, d);
   return d - q.w * t + cross(q.xyz, t);
@@ -427,8 +442,94 @@ ${bodyLines.join('\n')}
   return ${finalVar};
 }
 
-vec2 evalWorldSdf(vec3 p) {
+float sdTectonicRamp(vec3 p, vec3 posA, vec3 posB, float radius) {
+  vec3 dp = p - posA;
+  float dirLen = max(length(posB.xz), 1e-5);
+  vec2 fwd = posB.xz / dirLen;
+  vec2 right = vec2(-fwd.y, fwd.x);
+  float runCoord = dot(dp.xz, fwd);
+  float latCoord = dot(dp.xz, right);
+  float safeLen = max(radius, 0.05);
+  float tanT = (0.5 * posB.y) / safeLen;
+  float cosT = inversesqrt(1.0 + tanT * tanT);
+  float yTop = (runCoord / safeLen) * (0.5 * posB.y);
+  vec3 q = vec3(abs(runCoord) - safeLen, (abs(dp.y - (yTop - 0.45)) - 0.45) * cosT, abs(latCoord) - safeLen * 0.85);
+  return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0);
+}
+
+vec2 applyFieldMutations(vec2 world, vec3 p) {
+  for (int i = 0; i < 8; i++) {
+    if (i < uMutationCount) {
+      vec4 pa = uMutationsPosA[i];
+      vec3 dp = p - pa.xyz;
+      float radius = pa.w;
+      float boundR = radius + 2.4;
+      float distSq = dot(dp, dp);
+      if (distSq <= boundR * boundR) {
+        vec4 meta = uMutationsMeta[i];
+        vec4 pb = uMutationsPosB[i];
+        int kind = int(round(meta.x));
+        float matId = meta.y;
+        float blendK = max(pb.w, 1e-4);
+
+        if (kind == 1) {
+          float dSphere = sqrt(distSq) - radius;
+          world = opSmoothSubtract(world, vec2(dSphere, matId), blendK);
+        } else if (kind == 2) {
+          float dCap = sdCapsule(p, pa.xyz, pb.xyz, radius);
+          world = opSmoothUnion(world, vec2(dCap, matId), blendK);
+        } else if (kind == 3) {
+          float dRamp = sdTectonicRamp(p, pa.xyz, pb.xyz, radius);
+          world = opSmoothUnion(world, vec2(dRamp, matId), blendK);
+        } else if (kind == 4 && distSq <= radius * radius) {
+          world.y = matId;
+        }
+      }
+    }
+  }
+  return world;
+}
+
+float sdPortalThroatSingle(vec3 p, vec3 pos, vec3 normal, vec3 up, float radius) {
+  vec3 dp = p - pos;
+  float boundR = radius + 2.2;
+  if (dot(dp, dp) > boundR * boundR) return 100.0;
+  vec3 n = normalize(normal);
+  vec3 u = normalize(up - dot(up, n) * n);
+  vec3 r = normalize(cross(u, n));
+  float lx = dot(dp, r);
+  float ly = dot(dp, u);
+  float lz = dot(dp, n);
+  float rPlanar = length(vec2(lx, ly));
+  float throatR = max(0.25, radius - 0.06);
+  vec2 d = vec2(rPlanar - throatR, abs(lz) - 2.2);
+  return min(max(d.x, d.y), 0.0) + length(max(d, 0.0));
+}
+
+vec2 applyPortalThroats(vec2 world, vec3 p) {
+  if (uPortalPairCount > 0 && uPortalNormalA[0].w > 0.5 && uPortalNormalB[0].w > 0.5) {
+    float dA = sdPortalThroatSingle(p, uPortalPosA[0].xyz, uPortalNormalA[0].xyz, uPortalUpA[0].xyz, uPortalPosA[0].w);
+    float dB = sdPortalThroatSingle(p, uPortalPosB[0].xyz, uPortalNormalB[0].xyz, uPortalUpB[0].xyz, uPortalPosB[0].w);
+    world.x = max(world.x, -min(dA, dB));
+  }
+  return world;
+}
+
+vec2 evalCourseWorldMutated(vec3 p) {
   vec2 world = evalCourseWorldRaw(p);
+  if (world.x < 4.2) {
+    if (uMutationCount > 0) {
+      world = applyFieldMutations(world, p);
+    }
+    if (uPortalPairCount > 0) {
+      world = applyPortalThroats(world, p);
+    }
+  }
+  return world;
+}
+
+vec2 evalWorldSdf(vec3 p) {
+  vec2 world = evalCourseWorldMutated(p);
 
   if (uOcclusionStrength > 0.001) {
     vec3 segEnd = uMarblePos;
@@ -441,6 +542,49 @@ vec2 evalWorldSdf(vec3 p) {
   }
 
   return world;
+}
+
+float sdPortalRing(vec3 p, vec3 pos, vec3 normal, vec3 up, float radius) {
+  vec3 dp = p - pos;
+  float dist = length(dp);
+  if (dist > radius + 1.2) return dist - (radius + 0.16);
+  vec3 n = normalize(normal);
+  vec3 u = normalize(up - dot(up, n) * n);
+  vec3 r = normalize(cross(u, n));
+  float lx = dot(dp, r);
+  float ly = dot(dp, u);
+  float lz = dot(dp, n);
+  float rPlanar = length(vec2(lx, ly));
+  return length(vec2(rPlanar - radius, lz)) - 0.14;
+}
+
+float sdPortalApertureDisc(vec3 p, vec3 pos, vec3 normal, vec3 up, float radius) {
+  vec3 dp = p - pos;
+  float dist = length(dp);
+  if (dist > radius + 1.0) return dist - radius;
+  vec3 n = normalize(normal);
+  vec3 u = normalize(up - dot(up, n) * n);
+  vec3 r = normalize(cross(u, n));
+  float lx = dot(dp, r);
+  float ly = dot(dp, u);
+  float lz = dot(dp, n);
+  float rPlanar = length(vec2(lx, ly));
+  return max(abs(lz) - 0.022, rPlanar - max(0.1, radius - 0.05));
+}
+
+vec2 evalPortalApertures(vec3 p, int ignoreSide) {
+  vec2 best = vec2(1000.0, -1.0);
+  if (uPortalPairCount > 0) {
+    if (uPortalNormalA[0].w > 0.5 && ignoreSide != 0) {
+      float dA = sdPortalApertureDisc(p, uPortalPosA[0].xyz, uPortalNormalA[0].xyz, uPortalUpA[0].xyz, uPortalPosA[0].w);
+      if (dA < best.x) best = vec2(dA, 0.0);
+    }
+    if (uPortalNormalB[0].w > 0.5 && ignoreSide != 1) {
+      float dB = sdPortalApertureDisc(p, uPortalPosB[0].xyz, uPortalNormalB[0].xyz, uPortalUpB[0].xyz, uPortalPosB[0].w);
+      if (dB < best.x) best = vec2(dB, 1.0);
+    }
+  }
+  return best;
 }
 
 vec2 evalSceneSdf(vec3 p) {
@@ -493,6 +637,23 @@ vec2 evalSceneSdf(vec3 p) {
     res = vec2(dGoalHalo, 101.0);
   }
 
+  // Glowing Blue (104.0) & Orange (105.0) SDF Portal Torus Frames
+  // (102 = shatter shards, 103 = holographic ghost marble)
+  if (uPortalPairCount > 0) {
+    if (uPortalNormalA[0].w > 0.5) {
+      float dRingA = sdPortalRing(p, uPortalPosA[0].xyz, uPortalNormalA[0].xyz, uPortalUpA[0].xyz, uPortalPosA[0].w);
+      if (dRingA < res.x) {
+        res = vec2(dRingA, 104.0);
+      }
+    }
+    if (uPortalNormalB[0].w > 0.5) {
+      float dRingB = sdPortalRing(p, uPortalPosB[0].xyz, uPortalNormalB[0].xyz, uPortalUpB[0].xyz, uPortalPosB[0].w);
+      if (dRingB < res.x) {
+        res = vec2(dRingB, 105.0);
+      }
+    }
+  }
+
   return res;
 }
 
@@ -510,13 +671,13 @@ vec3 calcWorldNormal(vec3 p) {
 float calcSoftShadow(vec3 ro, vec3 rd) {
   float res = 1.0;
   float t = 0.06;
-  for (int i = 0; i < 32; i++) {
+  for (int i = 0; i < 28; i++) {
     vec3 p = ro + rd * t;
     float h = min(evalCourseWorldRaw(p).x, length(p - uMarblePos) - uMarbleRadius);
     if (h < 0.001) return 0.08;
     res = min(res, 11.0 * h / t);
-    t += clamp(h, 0.04, 0.9);
-    if (t > 28.0) break;
+    t += clamp(h, 0.05, 0.95);
+    if (t > 26.0) break;
   }
   return clamp(res, 0.08, 1.0);
 }
@@ -635,6 +796,30 @@ vec3 shadeCourseSurface(vec3 p, vec3 n, vec3 V, float matId) {
   }
 
   vec3 surfaceCol = mix(baseCol, gridCol, gridMask);
+
+  // Highlight realtime CSG FieldMutations (blasted crater rims & ferrofluid bridges)
+  for (int i = 0; i < 8; i++) {
+    if (i < uMutationCount) {
+      vec4 meta = uMutationsMeta[i];
+      int kind = int(round(meta.x));
+      vec4 pa = uMutationsPosA[i];
+      if (kind == 1) {
+        float dCrater = abs(length(p - pa.xyz) - pa.w);
+        if (dCrater < 0.42) {
+          float scorch = 1.0 - smoothstep(0.0, 0.42, dCrater);
+          surfaceCol = mix(surfaceCol, vec3(1.0, 0.58, 0.16), scorch * 0.55);
+        }
+      } else if (kind == 2) {
+        vec4 pb = uMutationsPosB[i];
+        float dBridge = sdCapsule(p, pa.xyz, pb.xyz, pa.w);
+        if (dBridge < 0.25) {
+          float ferroGlow = 1.0 - smoothstep(-0.15, 0.25, dBridge);
+          float pulse = 0.5 + 0.5 * sin(p.x * 4.0 + p.z * 4.0 - uTime * 5.0);
+          surfaceCol = mix(surfaceCol, mix(vec3(0.18, 0.85, 1.0), vec3(0.68, 0.35, 1.0), pulse), ferroGlow * 0.48);
+        }
+      }
+    }
+  }
 
   // Highlight the occlusion reveal cutout rim if close to the camera-to-marble ray
   if (uOcclusionStrength > 0.01) {
@@ -805,10 +990,14 @@ void main() {
   float maxT = 165.0;
   vec2 hit = vec2(maxT, -1.0);
   float volumetricGlow = 0.0;
+  int portalHops = 0;
+  int ignorePortalSide = -1;
+  vec3 portalEdgeGlow = vec3(0.0);
 
-  for (int i = 0; i < 112; i++) {
+  for (int i = 0; i < 96; i++) {
     vec3 p = ro + rd * t;
     vec2 s = evalSceneSdf(p);
+    vec2 ap = evalPortalApertures(p, ignorePortalSide);
 
     // Accumulate subtle goal beacon glow
     float dGoalBeacon = length(p.xz - uGoalPos.xz) - uGoalRadius * 0.65;
@@ -816,12 +1005,58 @@ void main() {
       volumetricGlow += exp(-max(dGoalBeacon, 0.0) * 3.5) * (1.0 - (p.y - uGoalPos.y) / 4.5) * 0.012;
     }
 
-    if (s.x < 0.0018) {
+    if (ap.x < 0.004 && ap.x <= s.x) {
+      bool enteredA = ap.y < 0.5;
+      vec4 pA = uPortalPosA[0];
+      vec4 nA = uPortalNormalA[0];
+      vec4 uA = uPortalUpA[0];
+      vec4 pB = uPortalPosB[0];
+      vec4 nB = uPortalNormalB[0];
+      vec4 uB = uPortalUpB[0];
+
+      if (nA.w > 0.5 && nB.w > 0.5 && portalHops < 2) {
+        vec3 inPos = enteredA ? pA.xyz : pB.xyz;
+        vec3 inN = normalize(enteredA ? nA.xyz : nB.xyz);
+        vec3 inU = enteredA ? uA.xyz : uB.xyz;
+        inU = normalize(inU - dot(inU, inN) * inN);
+        vec3 inR = normalize(cross(inU, inN));
+
+        vec3 outPos = enteredA ? pB.xyz : pA.xyz;
+        vec3 outN = normalize(enteredA ? nB.xyz : nA.xyz);
+        vec3 outU = enteredA ? uB.xyz : uA.xyz;
+        outU = normalize(outU - dot(outU, outN) * outN);
+        vec3 outR = normalize(cross(outU, outN));
+
+        vec3 dp = p - inPos;
+        float lx = dot(dp, inR);
+        float ly = dot(dp, inU);
+        float lz = dot(dp, inN);
+
+        float radialNorm = clamp(length(vec2(lx, ly)) / max(pA.w, 0.05), 0.0, 1.0);
+        vec3 rimCol = enteredA ? vec3(0.12, 0.78, 1.0) : vec3(1.0, 0.52, 0.08);
+        float swirl = 0.5 + 0.5 * sin(atan(ly, lx) * 5.0 - uTime * 6.5 + radialNorm * 8.0);
+        portalEdgeGlow += rimCol * (pow(radialNorm, 2.6) * (0.55 + 0.45 * swirl) + 0.08);
+
+        ro = outPos - lx * outR + ly * outU - lz * outN + outN * 0.05;
+        float dx = dot(rd, inR);
+        float dy = dot(rd, inU);
+        float dz = dot(rd, inN);
+        rd = normalize(-dx * outR + dy * outU - dz * outN);
+        t = 0.02;
+        portalHops++;
+        ignorePortalSide = enteredA ? 1 : 0;
+      } else {
+        hit = vec2(t, enteredA ? 104.0 : 105.0);
+        break;
+      }
+    } else if (s.x < 0.0018) {
       hit = vec2(t, s.y);
       break;
+    } else {
+      float stepDist = min(s.x, ap.x);
+      t += max(stepDist * 0.88, 0.004);
+      if (t >= maxT) break;
     }
-    t += max(s.x * 0.9, 0.004);
-    if (t >= maxT) break;
   }
 
   vec3 skyCol = renderSkyAndAbyss(ro, rd);
@@ -832,14 +1067,24 @@ void main() {
     vec3 normal = calcWorldNormal(hitPos);
     vec3 V = -rd;
 
-    if (hit.y > 102.5) {
-      // 120 Hz Holographic Ghost Marble
+    if (hit.y > 104.5) {
+      // Glowing Orange SDF Portal Torus Frame (105.0)
+      float swirl = 0.5 + 0.5 * sin((hitPos.x + hitPos.y + hitPos.z) * 7.5 - uTime * 8.0);
+      float rim = pow(1.0 - clamp(dot(normal, V), 0.0, 1.0), 1.8);
+      color = mix(vec3(1.0, 0.36, 0.04), vec3(1.0, 0.88, 0.28), swirl * 0.65 + rim * 0.5) * 1.65;
+    } else if (hit.y > 103.5) {
+      // Glowing Blue SDF Portal Torus Frame (104.0)
+      float swirl = 0.5 + 0.5 * sin((hitPos.x - hitPos.y + hitPos.z) * 7.5 + uTime * 8.0);
+      float rim = pow(1.0 - clamp(dot(normal, V), 0.0, 1.0), 1.8);
+      color = mix(vec3(0.04, 0.56, 1.0), vec3(0.45, 0.98, 1.0), swirl * 0.65 + rim * 0.5) * 1.65;
+    } else if (hit.y > 102.5) {
+      // 120 Hz Holographic Ghost Marble (103.0)
       color = shadeGhostMarble(hitPos, normal, V, ro);
     } else if (hit.y > 101.5) {
-      // Raymarched Faceted Glass Shatter Shards
+      // Raymarched Faceted Glass Shatter Shards (102.0)
       color = shadeShatterGlassShard(hitPos, normal, V, uMarbleBaseColor, uMarbleVeinColor, uSunDir);
     } else if (hit.y > 100.5) {
-      // Hovering Goal Halo Torus
+      // Hovering Goal Halo Torus (101.0)
       float pulse = 0.5 + 0.5 * sin(uTime * 6.0);
       color = mix(vec3(0.2, 1.0, 0.72), vec3(1.0, 0.92, 0.28), pulse) * 1.45;
     } else if (hit.y > 99.5) {
@@ -855,6 +1100,7 @@ void main() {
     color = mix(color, mix(uAbyssFogColor, skyCol, 0.5), fogFactor);
   }
 
+  color += portalEdgeGlow;
   color += vec3(0.25, 1.0, 0.72) * volumetricGlow;
 
   // ACES Filmic Tone Mapping + sRGB gamma
@@ -968,7 +1214,17 @@ struct Uniforms {
   wallColor: vec3<f32>,
   pad3: f32,
   sunDir: vec3<f32>,
-  pad4: f32,
+  mutationCount: f32,
+  uMutationsPosA: array<vec4<f32>, 16>,
+  uMutationsPosB: array<vec4<f32>, 16>,
+  uMutationsMeta: array<vec4<f32>, 16>,
+  portalPairCount: f32,
+  uPortalPosA: array<vec4<f32>, 2>,
+  uPortalNormalA: array<vec4<f32>, 2>,
+  uPortalUpA: array<vec4<f32>, 2>,
+  uPortalPosB: array<vec4<f32>, 2>,
+  uPortalNormalB: array<vec4<f32>, 2>,
+  uPortalUpB: array<vec4<f32>, 2>,
 };
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -1117,6 +1373,64 @@ fn opIntersect(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
 fn evalCourseWorldRaw(p: vec3<f32>) -> vec2<f32> {
 ${bodyLines.join('\n')}
   return ${finalVar};
+}
+
+fn sdTectonicRamp(p: vec3<f32>, posA: vec3<f32>, posB: vec3<f32>, radius: f32) -> f32 {
+  let dp = p - posA;
+  let dirLen = max(length(posB.xz), 1e-5);
+  let fwd = posB.xz / dirLen;
+  let right = vec2<f32>(-fwd.y, fwd.x);
+  let runCoord = dot(dp.xz, fwd);
+  let latCoord = dot(dp.xz, right);
+  let safeLen = max(radius, 0.05);
+  return sdRampZ(vec3<f32>(latCoord, dp.y, runCoord), safeLen, posB.y, safeLen * 0.85, 0.9, 0.32, 0.24);
+}
+
+fn applyFieldMutations(worldIn: vec2<f32>, p: vec3<f32>) -> vec2<f32> {
+  var world = worldIn;
+  let count = i32(round(u.mutationCount));
+  for (var i: i32 = 0; i < 16; i = i + 1) {
+    if (i >= count) { break; }
+    let meta = u.uMutationsMeta[i];
+    if (u.time > meta.z + meta.w) { continue; }
+    let pa = u.uMutationsPosA[i];
+    let pb = u.uMutationsPosB[i];
+    let kind = i32(round(meta.x));
+    let matId = meta.y;
+    let radius = pa.w;
+    let blendK = max(pb.w, 1e-4);
+    if (kind == 1) {
+      let dSphere = length(p - pa.xyz) - radius;
+      world = opSmoothSubtract(world, vec2<f32>(dSphere, matId), blendK);
+    } else if (kind == 2) {
+      let dCap = sdCapsule(p, pa.xyz, pb.xyz, radius);
+      world = opSmoothUnion(world, vec2<f32>(dCap, matId), blendK);
+    } else if (kind == 3) {
+      let dRamp = sdTectonicRamp(p, pa.xyz, pb.xyz, radius);
+      world = opSmoothUnion(world, vec2<f32>(dRamp, matId), blendK);
+    } else if (kind == 4) {
+      let dOverride = length(p - pa.xyz) - radius;
+      if (dOverride <= 0.0) {
+        world.y = matId;
+      }
+    }
+  }
+  return world;
+}
+
+fn transformPortalRay(p: vec3<f32>, rd: vec3<f32>, inPos: vec3<f32>, inN: vec3<f32>, inU: vec3<f32>, outPos: vec3<f32>, outN: vec3<f32>, outU: vec3<f32>) -> array<vec3<f32>, 2> {
+  let inR = normalize(cross(inU, inN));
+  let outR = normalize(cross(outU, outN));
+  let dp = p - inPos;
+  let lx = dot(dp, inR);
+  let ly = dot(dp, inU);
+  let lz = dot(dp, inN);
+  let nextP = outPos - lx * outR + ly * outU - lz * outN + outN * 0.05;
+  let dx = dot(rd, inR);
+  let dy = dot(rd, inU);
+  let dz = dot(rd, inN);
+  let nextD = normalize(-dx * outR + dy * outU - dz * outN);
+  return array<vec3<f32>, 2>(nextP, nextD);
 }
 `;
 }

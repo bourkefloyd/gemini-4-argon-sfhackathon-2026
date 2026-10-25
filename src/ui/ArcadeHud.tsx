@@ -13,8 +13,12 @@ import React from 'react';
 import {
   type CameraState,
   type CourseSpec,
+  type FieldMutation,
   MARBLE_VISUAL_PRESETS,
+  MAX_FIELD_MUTATIONS,
   type MarbleState,
+  type PortalPair,
+  type WeaponAbilityId,
 } from '../contracts';
 import type { TrackballUiTelemetry } from '../camera';
 import type { TactileFeelState } from '../feel';
@@ -39,6 +43,10 @@ export interface ArcadeHudProps {
   readonly botEnabled?: boolean;
   readonly botStyle?: BotPlayStyle;
   readonly architectOpen: boolean;
+  readonly portals?: readonly PortalPair[];
+  readonly fieldMutations?: readonly FieldMutation[];
+  readonly bridgeExtruderRemainingSec?: number;
+  readonly lastActivatedAbility?: WeaponAbilityId | null;
   readonly onSelectCourse: (index: number) => void;
   readonly onCycleCameraZoom: () => void;
   readonly onCycleMarblePreset: () => void;
@@ -47,6 +55,8 @@ export interface ArcadeHudProps {
   readonly onToggleArchitect: () => void;
   readonly onToggleAudioMute?: () => void;
   readonly onToggleBotPlaytest?: () => void;
+  readonly onFirePortal?: (end: 'blue' | 'orange') => void;
+  readonly onTriggerWeapon?: (ability: WeaponAbilityId) => void;
 }
 
 export const ArcadeHud: React.FC<ArcadeHudProps> = ({
@@ -66,6 +76,10 @@ export const ArcadeHud: React.FC<ArcadeHudProps> = ({
   botEnabled,
   botStyle,
   architectOpen,
+  portals = [],
+  fieldMutations = [],
+  bridgeExtruderRemainingSec = 0,
+  lastActivatedAbility = null,
   onSelectCourse,
   onCycleCameraZoom,
   onCycleMarblePreset,
@@ -74,6 +88,8 @@ export const ArcadeHud: React.FC<ArcadeHudProps> = ({
   onToggleArchitect,
   onToggleAudioMute,
   onToggleBotPlaytest,
+  onFirePortal,
+  onTriggerWeapon,
 }) => {
   const horizSpeed = Math.hypot(marble.velocity[0], marble.velocity[2]);
   const totalSpeed = Math.hypot(marble.velocity[0], marble.velocity[1], marble.velocity[2]);
@@ -322,22 +338,85 @@ export const ArcadeHud: React.FC<ArcadeHudProps> = ({
           )}
         </div>
 
-        <div className="hud-panel hud-hazards-panel">
-          <div className="hud-eyebrow">{currentCourse.subtitle}</div>
-          <div className="hud-hazard-chips">
-            {currentCourse.hazardManifest.map((h) => (
-              <div key={h.id} className="hud-hazard-chip" title={h.description}>
-                <span className="hud-hazard-dot" />
-                <span>{h.label}</span>
-              </div>
-            ))}
+        <div className="hud-panel hud-hazards-panel" data-hud-interactive="true">
+          <div className="hud-weapons-header">
+            <span className="hud-eyebrow">
+              RAYMARCHED SDF PORTALS [Q / E] &amp; REALTIME CSG WEAPONS [F / V / B / N]
+            </span>
+            <div className="hud-portal-status-badges">
+              <span className="hud-badge hud-badge-portal-blue">
+                PORTALS: {portals.length > 0 ? 'LINKED A↔B' : 'READY'}
+                {(marble.portalCrossings ?? 0) > 0
+                  ? ` (${marble.portalCrossings} FLINGS · ${(marble.lastPortalExitSpeed ?? 0).toFixed(1)} u/s)`
+                  : ''}
+              </span>
+              <span className="hud-badge hud-badge-cyan">
+                CSG BUFFER: {fieldMutations.length}/{MAX_FIELD_MUTATIONS}
+              </span>
+            </div>
           </div>
+
+          <div className="hud-weapons-bar">
+            <button
+              type="button"
+              className="hud-btn hud-btn-sm hud-btn-portal-blue"
+              onClick={() => onFirePortal?.('blue')}
+              title="Fire Blue SDF Portal along aim direction [Q]"
+            >
+              [Q] BLUE PORTAL
+            </button>
+            <button
+              type="button"
+              className="hud-btn hud-btn-sm hud-btn-portal-orange"
+              onClick={() => onFirePortal?.('orange')}
+              title="Fire Orange SDF Portal along aim direction [E / Right-Click]"
+            >
+              [E / RMB] ORANGE PORTAL
+            </button>
+            <button
+              type="button"
+              className={`hud-btn hud-btn-sm ${lastActivatedAbility === 'matterBomb' ? 'hud-btn-active' : ''}`}
+              onClick={() => onTriggerWeapon?.('matterBomb')}
+              title="CSG Matter Bomb / Crater Cannon (smoothSubtract sphere) [F]"
+            >
+              [F] CRATER BOMB
+            </button>
+            <button
+              type="button"
+              className={`hud-btn hud-btn-sm ${bridgeExtruderRemainingSec > 0 ? 'hud-btn-active' : ''}`}
+              onClick={() => onTriggerWeapon?.('bridgeExtruder')}
+              title="Ferrofluid Bridge Extruder (3.5s smoothUnion capsule trail) [V]"
+            >
+              [V] BRIDGE EXTRUDER
+              {bridgeExtruderRemainingSec > 0 ? ` (${bridgeExtruderRemainingSec.toFixed(1)}s)` : ''}
+            </button>
+            <button
+              type="button"
+              className={`hud-btn hud-btn-sm ${lastActivatedAbility === 'popRamp' ? 'hud-btn-active' : ''}`}
+              onClick={() => onTriggerWeapon?.('popRamp')}
+              title="Tectonic Pop-Ramp (smoothUnion wedge + upward vault impulse) [B]"
+            >
+              [B] POP-RAMP
+            </button>
+            <button
+              type="button"
+              className={`hud-btn hud-btn-sm ${lastActivatedAbility === 'cryoFreeze' ? 'hud-btn-active' : ''}`}
+              onClick={() => onTriggerWeapon?.('cryoFreeze')}
+              title="Cryo Freeze Pulse (materialOverride acid/sticky -> fast ice) [X]"
+            >
+              [X] CRYO FREEZE
+            </button>
+          </div>
+
           <div className="hud-keybind-hint">
-            <span>WASD / ARROWS / MOUSE DRAG: Roll Trackball</span>
+            <span>WASD / DRAG: Roll Trackball</span>
             <span>SPACE: Hop</span>
             <span>P: AI Bot</span>
             <span>N: Synth</span>
             <span>G: Argon 1M</span>
+            <span>Q / E: Blue &amp; Orange Portals</span>
+            <span>F / V / B / X: CSG Crater / Bridge / Ramp / Cryo</span>
+            <span>[ / ]: Orbit Cam</span>
           </div>
         </div>
 
