@@ -17,6 +17,7 @@ import {
   CROWD_MUTATOR_CATALOG,
   type CrowdMutatorKind,
   DEFAULT_MAX_MARBLES_PER_ROOM,
+  IDLE_PLAYER_TIMEOUT_MS,
   type JoinPartyRequest,
   type JoinPartyResponse,
   MAX_ACTIVE_WORLD_MUTATIONS,
@@ -45,8 +46,11 @@ export interface PartyRoomEngineOptions {
   readonly autoOverflow?: boolean;
   readonly lanIp?: string;
   readonly port?: number;
+  readonly basePath?: string;
   readonly customTunnelUrl?: string | null;
   readonly cooldownMs?: number;
+  readonly idleTimeoutMs?: number;
+  readonly mintSecret?: () => string;
   readonly now?: () => number;
 }
 
@@ -64,6 +68,8 @@ export interface PartyRoomEngine {
   joinPlayer(req: JoinPartyRequest, nowMs?: number): JoinPartyResponse;
   removePlayer(playerId: string, nowMs?: number): PartyRoomSnapshot;
   updateInput(payload: PartyInputPayload, nowMs?: number): PartyPlayerRecord | null;
+  verifyPlayerSecret(playerId: string, secret?: string | null): boolean;
+  getPlayerSecret(playerId: string): string | undefined;
   syncPlayerPose(
     playerId: string,
     pose: NonNullable<PartyPlayerRecord['pose']>,
@@ -79,7 +85,7 @@ export interface PartyRoomEngine {
   setActiveRoom(roomIdOrIndex: string | number, nowMs?: number): PartyRoomSnapshot;
   setMaxMarblesPerRoom(maxMarbles: number, nowMs?: number): PartyRoomSnapshot;
   setCustomTunnelUrl(url: string | null, nowMs?: number): PartyRoomSnapshot;
-  setLanAddress(lanIp: string, port?: number, nowMs?: number): PartyRoomSnapshot;
+  setLanAddress(lanIp: string, port?: number, nowMs?: number, basePath?: string): PartyRoomSnapshot;
   spawnSimulatedCrowdPhones(count?: number, nowMs?: number): PartyRoomSnapshot;
   stepSimulatedCrowdPhones(nowMs?: number): PartyRoomSnapshot;
   subscribe(listener: (snapshot: PartyRoomSnapshot) => void): () => void;
@@ -132,19 +138,61 @@ function parseRequestedRoomIndex(rawCode: string | undefined, basePrefix: string
   return null;
 }
 
+function defaultMintHexSecret(): string {
+  if (typeof globalThis.crypto !== 'undefined' && typeof globalThis.crypto.getRandomValues === 'function') {
+    const bytes = new Uint8Array(16);
+    globalThis.crypto.getRandomValues(bytes);
+    return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+  }
+  let hex = '';
+  for (let i = 0; i < 32; i++) {
+    hex += Math.floor(Math.random() * 16).toString(16);
+  }
+  return hex;
+}
+
+function normalizeBasePath(rawPath: string | undefined): string {
+  if (!rawPath) return '/';
+  const cleaned = rawPath.split('?')[0].split('#')[0].trim();
+  if (!cleaned || cleaned === '/') return '/';
+  const withLeading = cleaned.startsWith('/') ? cleaned : `/${cleaned}`;
+  if (/\.[a-zA-Z0-9]+$/.test(withLeading)) {
+    return withLeading;
+  }
+  return withLeading.endsWith('/') ? withLeading : `${withLeading}/`;
+}
+
 export function buildPartyJoinUrl(
   lanIp: string,
   port: number,
   roomCode: string,
   customTunnelUrl: string | null,
+  basePath = '/',
 ): string {
   const encodedRoom = encodeURIComponent(roomCode);
+  const normalizedPath = normalizeBasePath(basePath);
+
   if (customTunnelUrl && customTunnelUrl.trim().length > 0) {
-    const base = customTunnelUrl.trim().replace(/\/+$/, '');
-    const sep = base.includes('?') ? '&' : '/?';
-    return `${base}${sep}party=1&room=${encodedRoom}`;
+    const raw = customTunnelUrl.trim();
+    try {
+      const parsed = new URL(raw);
+      // If the tunnel URL has only root '/' pathname, inherit a non-root basePath if configured
+      if ((parsed.pathname === '' || parsed.pathname === '/') && normalizedPath !== '/') {
+        parsed.pathname = normalizedPath;
+      } else {
+        parsed.pathname = normalizeBasePath(parsed.pathname);
+      }
+      parsed.searchParams.set('party', '1');
+      parsed.searchParams.set('room', roomCode);
+      return parsed.toString();
+    } catch {
+      const base = raw.replace(/\/+$/, '');
+      const sep = base.includes('?') ? '&' : '/?';
+      return `${base}${sep}party=1&room=${encodedRoom}`;
+    }
   }
-  return `http://${lanIp}:${port}/?party=1&room=${encodedRoom}`;
+
+  return `http://${lanIp}:${port}${normalizedPath}?party=1&room=${encodedRoom}`;
 }
 
 export function createPartyRoomEngine(options: PartyRoomEngineOptions = {}): PartyRoomEngine {
@@ -154,11 +202,15 @@ export function createPartyRoomEngine(options: PartyRoomEngineOptions = {}): Par
   let activeRoomIndex = 1;
   let lanIp = options.lanIp ?? '127.0.0.1';
   let port = options.port ?? 5173;
+  let basePath = normalizeBasePath(options.basePath);
   let customTunnelUrl: string | null = options.customTunnelUrl ?? null;
   const cooldownMs = options.cooldownMs ?? CROWD_ACTION_COOLDOWN_MS;
+  const idleTimeoutMs = options.idleTimeoutMs ?? IDLE_PLAYER_TIMEOUT_MS;
+  const mintSecretFn = options.mintSecret ?? defaultMintHexSecret;
   const nowFn = options.now ?? (() => Date.now());
 
   const players = new Map<string, PartyPlayerRecord>();
+  const playerSecrets = new Map<string, string>();
   let mutations: PartyWorldMutationEvent[] = [];
   let toasts: PartyArcadeToast[] = [];
   let prompts: PartyCrowdPrompt[] = [];
@@ -173,8 +225,36 @@ export function createPartyRoomEngine(options: PartyRoomEngineOptions = {}): Par
     return `${prefix}_${idCounter++}`;
   }
 
+  function promoteWaitingArchitectInRoom(freedRoomIdx: number, freedSlot: number) {
+    const waitingArchitect = Array.from(players.values())
+      .filter((p) => p.roomIndex === freedRoomIdx && p.role === 'architect')
+      .sort((a, b) => b.score - a.score || a.joinedAtMs - b.joinedAtMs)[0];
+
+    if (waitingArchitect) {
+      const palette = PARTY_MARBLE_PALETTES[freedSlot % PARTY_MARBLE_PALETTES.length];
+      players.set(waitingArchitect.playerId, {
+        ...waitingArchitect,
+        role: 'racer',
+        racerSlot: freedSlot,
+        roomPlayerNumber: freedSlot + 1,
+        colorHex: palette.hex,
+      });
+    }
+  }
+
   function pruneExpired(nowMs: number) {
     mutations = mutations.filter((m) => m.expiresAtMs > nowMs);
+    if (idleTimeoutMs > 0) {
+      for (const [id, p] of players.entries()) {
+        if (!p.isSimulated && nowMs - p.lastSeenAtMs > idleTimeoutMs) {
+          players.delete(id);
+          playerSecrets.delete(id);
+          if (p.role === 'racer' && p.racerSlot !== null) {
+            promoteWaitingArchitectInRoom(p.roomIndex, p.racerSlot);
+          }
+        }
+      }
+    }
   }
 
   function pushToast(toast: PartyArcadeToast) {
@@ -348,7 +428,7 @@ export function createPartyRoomEngine(options: PartyRoomEngineOptions = {}): Par
       allRoomsSummary,
       lanIp,
       port,
-      joinUrl: buildPartyJoinUrl(lanIp, port, roomCode, customTunnelUrl),
+      joinUrl: buildPartyJoinUrl(lanIp, port, roomCode, customTunnelUrl, basePath),
       customTunnelUrl,
       updatedAtMs: nowMs,
       players: allPlayerList,
@@ -369,12 +449,27 @@ export function createPartyRoomEngine(options: PartyRoomEngineOptions = {}): Par
     return snap;
   }
 
+  function verifyPlayerSecret(playerId: string, secret?: string | null): boolean {
+    if (!playerId || !secret) return false;
+    const expected = playerSecrets.get(playerId);
+    if (!expected) return false;
+    return expected === secret;
+  }
+
+  function getPlayerSecret(playerId: string): string | undefined {
+    return playerSecrets.get(playerId);
+  }
+
   function joinPlayer(req: JoinPartyRequest, nowMs = nowFn()): JoinPartyResponse {
+    pruneExpired(nowMs);
     const handle = sanitizeHandle(req.handle);
     const existingId = req.playerId && players.has(req.playerId) ? req.playerId : null;
 
     if (existingId) {
       const existing = players.get(existingId)!;
+      const existingSecret =
+        playerSecrets.get(existingId) ?? req.playerSecret?.trim() ?? mintSecretFn();
+      playerSecrets.set(existingId, existingSecret);
       const updated: PartyPlayerRecord = {
         ...existing,
         handle,
@@ -385,6 +480,8 @@ export function createPartyRoomEngine(options: PartyRoomEngineOptions = {}): Par
       const roomCount = getRoomRacers(updated.roomIndex).length;
       return {
         player: updated,
+        playerId: existingId,
+        playerSecret: existingSecret,
         roomId: updated.roomId,
         roomIndex: updated.roomIndex,
         roomPlayerCount: roomCount,
@@ -396,6 +493,8 @@ export function createPartyRoomEngine(options: PartyRoomEngineOptions = {}): Par
     }
 
     const playerId = req.playerId?.trim() || nextId('plr');
+    const playerSecret = req.playerSecret?.trim() || mintSecretFn();
+    playerSecrets.set(playerId, playerSecret);
     const requestedRoomIdx = parseRequestedRoomIndex(req.roomCode, roomCode);
 
     let assignedRoomIdx = requestedRoomIdx ?? 1;
@@ -468,6 +567,8 @@ export function createPartyRoomEngine(options: PartyRoomEngineOptions = {}): Par
     const snap = notify(nowMs);
     return {
       player: record,
+      playerId,
+      playerSecret,
       roomId: assignedRoomId,
       roomIndex: assignedRoomIdx,
       roomPlayerCount: updatedRoomPlayerCount,
@@ -481,25 +582,11 @@ export function createPartyRoomEngine(options: PartyRoomEngineOptions = {}): Par
   function removePlayer(playerId: string, nowMs = nowFn()): PartyRoomSnapshot {
     const removed = players.get(playerId);
     players.delete(playerId);
+    playerSecrets.delete(playerId);
 
     // If an Arena Racer slot opened up in that room, promote a waiting Crowd Architect in the same room
     if (removed && removed.role === 'racer' && removed.racerSlot !== null) {
-      const freedSlot = removed.racerSlot;
-      const freedRoomIdx = removed.roomIndex;
-      const waitingArchitect = Array.from(players.values())
-        .filter((p) => p.roomIndex === freedRoomIdx && p.role === 'architect')
-        .sort((a, b) => b.score - a.score || a.joinedAtMs - b.joinedAtMs)[0];
-
-      if (waitingArchitect) {
-        const palette = PARTY_MARBLE_PALETTES[freedSlot % PARTY_MARBLE_PALETTES.length];
-        players.set(waitingArchitect.playerId, {
-          ...waitingArchitect,
-          role: 'racer',
-          racerSlot: freedSlot,
-          roomPlayerNumber: freedSlot + 1,
-          colorHex: palette.hex,
-        });
-      }
+      promoteWaitingArchitectInRoom(removed.roomIndex, removed.racerSlot);
     }
 
     return notify(nowMs);
@@ -744,9 +831,17 @@ export function createPartyRoomEngine(options: PartyRoomEngineOptions = {}): Par
     return notify(nowMs);
   }
 
-  function setLanAddress(nextLanIp: string, nextPort = port, nowMs = nowFn()): PartyRoomSnapshot {
+  function setLanAddress(
+    nextLanIp: string,
+    nextPort = port,
+    nowMs = nowFn(),
+    nextBasePath?: string,
+  ): PartyRoomSnapshot {
     lanIp = nextLanIp.trim() || '127.0.0.1';
     port = nextPort;
+    if (nextBasePath !== undefined) {
+      basePath = normalizeBasePath(nextBasePath);
+    }
     return notify(nowMs);
   }
 
@@ -881,6 +976,7 @@ export function createPartyRoomEngine(options: PartyRoomEngineOptions = {}): Par
 
   function reset(nowMs = nowFn()): PartyRoomSnapshot {
     players.clear();
+    playerSecrets.clear();
     mutations = [];
     toasts = [];
     prompts = [];
@@ -893,6 +989,8 @@ export function createPartyRoomEngine(options: PartyRoomEngineOptions = {}): Par
     joinPlayer,
     removePlayer,
     updateInput,
+    verifyPlayerSecret,
+    getPlayerSecret,
     syncPlayerPose,
     triggerCrowdAction,
     submitCrowdPrompt,

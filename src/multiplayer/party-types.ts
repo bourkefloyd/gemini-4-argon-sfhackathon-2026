@@ -16,6 +16,10 @@ export const MIN_MARBLES_PER_ROOM = 4;
 export const MAX_MARBLES_PER_ROOM = 8;
 export const MAX_ARENA_RACERS = 8;
 export const CROWD_ACTION_COOLDOWN_MS = 4000;
+export const IDLE_PLAYER_TIMEOUT_MS = 60_000;
+export const PHONE_INPUT_THROTTLE_MS = 66; // ~15 Hz
+export const MAX_PARTY_BODY_BYTES = 16 * 1024; // 16 KB
+export const MAX_INPUT_REQUESTS_PER_SEC = 25;
 export const MAX_ACTIVE_WORLD_MUTATIONS = 16;
 export const MAX_RECENT_TOASTS = 12;
 export const MAX_CROWD_PROMPTS = 24;
@@ -258,12 +262,15 @@ export interface PartyRoomSnapshot {
 export interface JoinPartyRequest {
   readonly roomCode?: string;
   readonly playerId?: string;
+  readonly playerSecret?: string;
   readonly handle: string;
   readonly preferredRole?: PartyPlayerRole;
 }
 
 export interface JoinPartyResponse {
   readonly player: PartyPlayerRecord;
+  readonly playerId: string;
+  readonly playerSecret: string;
   readonly roomId: string;
   readonly roomIndex: number;
   readonly roomPlayerCount: number;
@@ -276,6 +283,7 @@ export interface JoinPartyResponse {
 export interface PartyInputPayload {
   readonly roomCode?: string;
   readonly playerId: string;
+  readonly playerSecret?: string;
   readonly moveXZ: readonly [number, number];
   readonly jumpPressed?: boolean;
   readonly backspinActive?: boolean;
@@ -284,6 +292,7 @@ export interface PartyInputPayload {
 export interface PartyActionPayload {
   readonly roomCode?: string;
   readonly playerId: string;
+  readonly playerSecret?: string;
   readonly kind: CrowdMutatorKind;
   /** Optional world target coordinate (defaults to lead racer trajectory ahead) */
   readonly targetPosition?: Vec3;
@@ -292,5 +301,6 @@ export interface PartyActionPayload {
 export interface PartyPromptPayload {
   readonly roomCode?: string;
   readonly playerId: string;
+  readonly playerSecret?: string;
   readonly twist: string;
 }

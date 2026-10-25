@@ -407,6 +407,67 @@ export async function executeServerArgonSwarm(
   }
 }
 
+const LOOPBACK_ADDRESSES = new Set([
+  '127.0.0.1',
+  '::1',
+  '::ffff:127.0.0.1',
+  'localhost',
+]);
+
+/**
+ * Verifies that an HTTP request originated from the local demo machine (`127.0.0.1`, `::1`, `::ffff:127.0.0.1`)
+ * and was not forwarded through a public tunnel (`cf-connecting-ip` / `x-forwarded-for`).
+ */
+export function isLocalhostRequest(req: IncomingMessage): boolean {
+  const cfIpHeader = req.headers?.['cf-connecting-ip'];
+  const cfIp = (Array.isArray(cfIpHeader) ? cfIpHeader[0] : cfIpHeader)?.trim();
+  if (cfIp && !LOOPBACK_ADDRESSES.has(cfIp)) {
+    return false;
+  }
+
+  const xffHeader = req.headers?.['x-forwarded-for'];
+  const xffRaw = Array.isArray(xffHeader) ? xffHeader[0] : xffHeader;
+  if (xffRaw) {
+    const clientIp = xffRaw.split(',')[0]?.trim();
+    if (clientIp && !LOOPBACK_ADDRESSES.has(clientIp)) {
+      return false;
+    }
+  }
+
+  const remoteAddress = req.socket?.remoteAddress?.trim();
+  if (!remoteAddress) {
+    return true;
+  }
+  return LOOPBACK_ADDRESSES.has(remoteAddress);
+}
+
+/**
+ * Protects `/api/argon/*` live Gemini endpoints from public tunnel abuse:
+ * requires either a localhost request OR a matching `x-argon-admin-token` / `DEMO_ADMIN_TOKEN`.
+ */
+export function isAuthorizedArgonRequest(
+  req: IncomingMessage,
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  const configuredToken = (
+    env.DEMO_ADMIN_TOKEN ??
+    env.ARGON_ADMIN_TOKEN ??
+    ''
+  ).trim();
+
+  const headerTokenRaw =
+    req.headers?.['x-argon-admin-token'] ?? req.headers?.['x-demo-admin-token'];
+  const providedToken = (
+    Array.isArray(headerTokenRaw) ? headerTokenRaw[0] : headerTokenRaw
+  )?.trim();
+
+  if (configuredToken.length > 0 && providedToken === configuredToken) {
+    return true;
+  }
+
+  return isLocalhostRequest(req);
+}
+
 function readRequestBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
@@ -416,7 +477,7 @@ function readRequestBody(req: IncomingMessage): Promise<string> {
   });
 }
 
-function attachArgonMiddleware(
+export function attachArgonMiddleware(
   middlewares: {
     use: (
       route: string,
@@ -433,6 +494,7 @@ function attachArgonMiddleware(
         JSON.stringify({
           ok: true,
           hasEnvKey: Boolean(process.env.GEMINI_API_KEY),
+          isLocalhost: isLocalhostRequest(req),
           leadModel: 'gemini-4-argon',
           companionModel: 'gemini-3.8-flash',
           verifierAgent: 'antigravity-preview-09-2026',
@@ -442,6 +504,26 @@ function attachArgonMiddleware(
         }),
       );
       return;
+    }
+
+    if (
+      req.method === 'POST' &&
+      (url.startsWith('/antigravity') ||
+        url.startsWith('/tts') ||
+        url.startsWith('/synthesize'))
+    ) {
+      if (!isAuthorizedArgonRequest(req)) {
+        res.statusCode = 403;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(
+          JSON.stringify({
+            ok: false,
+            error:
+              'Forbidden: live Gemini API endpoints require localhost or valid x-argon-admin-token.',
+          }),
+        );
+        return;
+      }
     }
 
     if (req.method === 'POST' && url.startsWith('/antigravity')) {

@@ -7,19 +7,24 @@ import { compileCourseToGlsl, compileCourseToWgsl } from '../src/rendering';
 import { createCpuWorldEvaluator, evaluateSdfTree } from '../src/sdf/eval-cpu';
 import {
   applyCrowdMutationsToCourse,
+  buildPartyJoinUrl,
   createMultiMarbleArenaSimulation,
   createPartyRoomClient,
   createPartyRoomEngine,
+  detectBrowserTunnelOrigin,
   encodeQrMatrix,
   parsePartyUrlQuery,
   renderQrSvg,
   resolveMarbleCollisions,
+  type JoinPartyResponse,
 } from '../src/multiplayer';
 import {
   createPartyRoomMiddleware,
   detectLanIpv4Address,
   detectPublicTunnelUrl,
+  isLocalhostRequest,
 } from '../server/party-room';
+import { isAuthorizedArgonRequest } from '../server/argon-proxy';
 
 describe('QR Party Multiplayer Module — QR SVG, In-Memory Room, Tunnel & Bumper Physics', () => {
   it('generates valid ISO/IEC 18004 QR matrices and crisp zero-dependency SVG markup', () => {
@@ -296,20 +301,24 @@ describe('QR Party Multiplayer Module — QR SVG, In-Memory Room, Tunnel & Bumpe
     expect(steppedSnap.players.every((p) => p.isSimulated)).toBe(true);
   });
 
-  it('serves /api/party/* HTTP endpoints via createPartyRoomMiddleware and PartyRoomClient', async () => {
+  it('serves /api/party/* HTTP endpoints with server-issued playerSecret, localhost lockdown, rate limits, 16KB body cap, and 60s expiry', async () => {
     const { engine, middleware } = createPartyRoomMiddleware();
 
     const invokeJson = async (
       method: 'GET' | 'POST',
       url: string,
       body?: unknown,
+      extraHeaders: Record<string, string> = {},
+      remoteAddress = '127.0.0.1',
     ): Promise<{ statusCode: number; data: unknown }> => {
-      const payloadStr = body ? JSON.stringify(body) : '';
+      const payloadStr =
+        typeof body === 'string' ? body : body ? JSON.stringify(body) : '';
       const stream = Readable.from(payloadStr ? [Buffer.from(payloadStr)] : []);
       const req = Object.assign(stream, {
         method,
         url,
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', ...extraHeaders },
+        socket: { remoteAddress },
       }) as unknown as IncomingMessage;
 
       let statusCode = 200;
@@ -333,24 +342,176 @@ describe('QR Party Multiplayer Module — QR SVG, In-Memory Room, Tunnel & Bumpe
       };
     };
 
-    const joinRes = await invokeJson('POST', '/api/party/join', {
-      playerId: 'judge_1',
-      handle: 'ivan_leo',
-    });
+    // 1. Join mints a server-issued playerId and 32-char hex playerSecret
+    // Also test Codex F4: Host header port 5176 updates engine joinUrl port dynamically
+    const joinRes = await invokeJson(
+      'POST',
+      '/api/party/join',
+      {
+        playerId: 'client_spoof_attempt',
+        handle: 'ivan_leo',
+      },
+      { host: '192.168.1.42:5176' },
+    );
     expect(joinRes.statusCode).toBe(200);
+    const joined = joinRes.data as JoinPartyResponse;
+    expect(joined.playerId).toMatch(/^plr_[0-9a-f]{16}$/);
+    expect(joined.playerSecret).toMatch(/^[0-9a-f]{32}$/);
+    expect(engine.getSnapshot().port).toBe(5176);
 
+    // 2. Calling /api/party/input or /api/party/action without valid playerSecret returns 401
+    const unauthInput = await invokeJson('POST', '/api/party/input', {
+      playerId: joined.playerId,
+      moveXZ: [0.5, -0.5],
+    });
+    expect(unauthInput.statusCode).toBe(401);
+
+    const unauthAction = await invokeJson('POST', '/api/party/action', {
+      playerId: joined.playerId,
+      playerSecret: 'wrong_secret',
+      kind: 'tectonicRamp',
+    });
+    expect(unauthAction.statusCode).toBe(401);
+
+    // 3. With valid server-issued playerSecret, /api/party/input and /api/party/action succeed
+    const validInput = await invokeJson('POST', '/api/party/input', {
+      playerId: joined.playerId,
+      playerSecret: joined.playerSecret,
+      moveXZ: [0.5, -0.5],
+    });
+    expect(validInput.statusCode).toBe(200);
+
+    const validAction = await invokeJson('POST', '/api/party/action', {
+      playerId: joined.playerId,
+      playerSecret: joined.playerSecret,
+      kind: 'tectonicRamp',
+    });
+    expect(validAction.statusCode).toBe(200);
+
+    // 4. Rate limit on /api/party/input (>25 requests/sec returns 429)
+    let hitRateLimit = false;
+    for (let i = 0; i < 30; i++) {
+      const r = await invokeJson('POST', '/api/party/input', {
+        playerId: joined.playerId,
+        playerSecret: joined.playerSecret,
+        moveXZ: [0.1, -0.2],
+      });
+      if (r.statusCode === 429) {
+        hitRateLimit = true;
+        break;
+      }
+    }
+    expect(hitRateLimit).toBe(true);
+
+    // 5. Reject request bodies > 16 KB with 413 Payload Too Large
+    const oversizedBody = JSON.stringify({ handle: 'x'.repeat(18 * 1024) });
+    const tooLargeRes = await invokeJson('POST', '/api/party/join', oversizedBody);
+    expect(tooLargeRes.statusCode).toBe(413);
+
+    // 6. Lock down /api/party/tunnel and /api/party/simulate to localhost only (403 on public tunnel)
+    const externalTunnelAttempt = await invokeJson(
+      'POST',
+      '/api/party/tunnel',
+      { customTunnelUrl: 'https://evil.example.com' },
+      { 'cf-connecting-ip': '203.0.113.42' },
+    );
+    expect(externalTunnelAttempt.statusCode).toBe(403);
+
+    const externalSimulateAttempt = await invokeJson(
+      'POST',
+      '/api/party/simulate',
+      { count: 6 },
+      {},
+      '203.0.113.99',
+    );
+    expect(externalSimulateAttempt.statusCode).toBe(403);
+
+    // Localhost (127.0.0.1 / ::1) succeeds
     const simRes = await invokeJson('POST', '/api/party/simulate', { count: 6 });
     expect(simRes.statusCode).toBe(200);
     expect(engine.getSnapshot().players.length).toBeGreaterThanOrEqual(6);
 
-    // Verify browser PartyRoomClient against localEngine
+    // 7. Verify /api/argon/* authorization helper (localhost OR DEMO_ADMIN_TOKEN)
+    expect(
+      isLocalhostRequest({
+        headers: {},
+        socket: { remoteAddress: '::1' },
+      } as unknown as IncomingMessage),
+    ).toBe(true);
+    expect(
+      isAuthorizedArgonRequest(
+        {
+          headers: { 'cf-connecting-ip': '198.51.100.7' },
+          socket: { remoteAddress: '127.0.0.1' },
+        } as unknown as IncomingMessage,
+        { DEMO_ADMIN_TOKEN: 'secret-stage-token' },
+      ),
+    ).toBe(false);
+    expect(
+      isAuthorizedArgonRequest(
+        {
+          headers: {
+            'cf-connecting-ip': '198.51.100.7',
+            'x-argon-admin-token': 'secret-stage-token',
+          },
+          socket: { remoteAddress: '127.0.0.1' },
+        } as unknown as IncomingMessage,
+        { DEMO_ADMIN_TOKEN: 'secret-stage-token' },
+      ),
+    ).toBe(true);
+
+    // 8. Verify 60s idle player expiry in PartyRoomEngine
+    let simClock = 1_000;
+    const expiryEngine = createPartyRoomEngine({
+      roomCode: 'ARGON',
+      now: () => simClock,
+    });
+    expiryEngine.joinPlayer({ playerId: 'idle_1', handle: 'sleepy_marble' });
+    expect(expiryEngine.getSnapshot().players.length).toBe(1);
+    simClock += 61_000; // > 60s idle timeout
+    expect(expiryEngine.getSnapshot().players.length).toBe(0);
+  });
+
+  it('fixes Codex F4 (GitHub Pages base path preservation) and Codex F5 (React StrictMode BroadcastChannel remount)', async () => {
+    // Codex F4: Preserve /gemini-4-argon-sfhackathon-2026/ base path when hosted on GitHub Pages
+    const ghPagesOrigin = detectBrowserTunnelOrigin({
+      hostname: 'bourkefloyd.github.io',
+      origin: 'https://bourkefloyd.github.io',
+      pathname: '/gemini-4-argon-sfhackathon-2026/',
+      search: '',
+    });
+    expect(ghPagesOrigin).toBe(
+      'https://bourkefloyd.github.io/gemini-4-argon-sfhackathon-2026/',
+    );
+
+    const ghJoinUrl = buildPartyJoinUrl(
+      '192.168.1.42',
+      5173,
+      'ARGON',
+      ghPagesOrigin,
+      '/gemini-4-argon-sfhackathon-2026/',
+    );
+    expect(ghJoinUrl).toBe(
+      'https://bourkefloyd.github.io/gemini-4-argon-sfhackathon-2026/?party=1&room=ARGON',
+    );
+
+    // Codex F5: client.connect() -> client.dispose() -> client.connect() -> client.sendAction()
+    // must re-open BroadcastChannel and never throw InvalidStateError: BroadcastChannel is closed
+    const engine = createPartyRoomEngine({ roomCode: 'ARGON' });
     const client = createPartyRoomClient({
       roomCode: 'ARGON',
       enableNetwork: false,
       localEngine: engine,
     });
-    const actionRes = await client.triggerAction('judge_1', 'tectonicRamp');
+
+    const joinRes = await client.join({ handle: 'strict_mode_tester' });
+    client.connect();
+    client.dispose(); // Simulates React 19 StrictMode unmount closing BroadcastChannel
+    client.connect(); // Simulates React 19 StrictMode remount
+
+    const actionRes = await client.sendAction(joinRes.playerId, 'rescueBridge');
     expect(actionRes.ok).toBe(true);
+    expect(actionRes.mutation?.kind).toBe('rescueBridge');
     client.dispose();
   });
 

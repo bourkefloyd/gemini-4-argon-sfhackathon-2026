@@ -14,6 +14,7 @@ import { createPartyRoomClient, type PartyRoomClient } from './party-client';
 import {
   CROWD_ACTION_COOLDOWN_MS,
   CROWD_MUTATOR_CATALOG,
+  PHONE_INPUT_THROTTLE_MS,
   type CrowdMutatorKind,
   type PartyPlayerRecord,
   type PartyRoomSnapshot,
@@ -44,7 +45,7 @@ export const MobilePartyController: React.FC<MobilePartyControllerProps> = ({
     clientRef.current = createPartyRoomClient({ roomCode });
   }
 
-  const [playerId] = useState<string>(() => {
+  const [playerId, setPlayerId] = useState<string>(() => {
     if (typeof window !== 'undefined' && window.sessionStorage) {
       const saved = window.sessionStorage.getItem('marble_party_player_id');
       if (saved) return saved;
@@ -54,6 +55,18 @@ export const MobilePartyController: React.FC<MobilePartyControllerProps> = ({
     }
     return `plr_${Math.random().toString(36).slice(2, 9)}`;
   });
+
+  const [playerSecret, setPlayerSecret] = useState<string | undefined>(() => {
+    if (typeof window !== 'undefined' && window.sessionStorage) {
+      return window.sessionStorage.getItem('marble_party_player_secret') ?? undefined;
+    }
+    return undefined;
+  });
+
+  const playerIdRef = useRef<string>(playerId);
+  playerIdRef.current = playerId;
+  const playerSecretRef = useRef<string | undefined>(playerSecret);
+  playerSecretRef.current = playerSecret;
 
   const [handleInput, setHandleInput] = useState<string>(() => {
     if (initialHandle) return initialHandle;
@@ -80,24 +93,51 @@ export const MobilePartyController: React.FC<MobilePartyControllerProps> = ({
 
   const padRef = useRef<HTMLDivElement | null>(null);
   const prevVecRef = useRef<readonly [number, number]>([0, 0]);
+  const lastMoveSentAtRef = useRef<number>(0);
 
   useEffect(() => {
-    const client = clientRef.current!;
+    // Codex F5: Create or reconnect client inside useEffect so React 19 StrictMode
+    // mount -> unmount -> remount never leaves a closed BroadcastChannel
+    const client = externalClient ?? createPartyRoomClient({ roomCode });
+    client.connect();
+    clientRef.current = client;
+
     const unsub = client.subscribe((snap) => {
       setSnapshot(snap);
-      const found = snap.players.find((p) => p.playerId === playerId) ?? null;
+      const found =
+        snap.players.find((p) => p.playerId === playerIdRef.current) ?? null;
       if (found) {
         setMe(found);
       }
     });
 
-    void client.join({
-      roomCode,
-      playerId,
-      handle: handleInput,
-    }).then((res) => {
-      setMe(res.player);
-    });
+    void client
+      .join({
+        roomCode,
+        playerId: playerIdRef.current,
+        playerSecret: playerSecretRef.current,
+        handle: handleInput,
+      })
+      .then((res) => {
+        setMe(res.player);
+        if (res.playerId && res.playerId !== playerIdRef.current) {
+          playerIdRef.current = res.playerId;
+          setPlayerId(res.playerId);
+          if (typeof window !== 'undefined' && window.sessionStorage) {
+            window.sessionStorage.setItem('marble_party_player_id', res.playerId);
+          }
+        }
+        if (res.playerSecret) {
+          playerSecretRef.current = res.playerSecret;
+          setPlayerSecret(res.playerSecret);
+          if (typeof window !== 'undefined' && window.sessionStorage) {
+            window.sessionStorage.setItem(
+              'marble_party_player_secret',
+              res.playerSecret,
+            );
+          }
+        }
+      });
 
     return () => {
       unsub();
@@ -106,7 +146,7 @@ export const MobilePartyController: React.FC<MobilePartyControllerProps> = ({
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [roomCode, playerId]);
+  }, [roomCode, externalClient]);
 
   // Update 4-second personal cooldown timer
   useEffect(() => {
@@ -136,12 +176,13 @@ export const MobilePartyController: React.FC<MobilePartyControllerProps> = ({
       }
       void clientRef.current?.join({
         roomCode,
-        playerId,
+        playerId: playerIdRef.current,
+        playerSecret: playerSecretRef.current,
         handle: trimmed,
       });
       setLastFeedback(`Handle updated to @${trimmed}`);
     },
-    [handleInput, playerId, roomCode],
+    [handleInput, roomCode],
   );
 
   const sendTrackballVector = useCallback(
@@ -161,15 +202,23 @@ export const MobilePartyController: React.FC<MobilePartyControllerProps> = ({
         vibrate(14);
       }
 
+      const now = Date.now();
+      const isZeroRelease = clampedX === 0 && clampedZ === 0;
+      if (!jump && !isZeroRelease && now - lastMoveSentAtRef.current < PHONE_INPUT_THROTTLE_MS) {
+        return;
+      }
+      lastMoveSentAtRef.current = now;
+
       void clientRef.current?.sendInput({
         roomCode,
-        playerId,
+        playerId: playerIdRef.current,
+        playerSecret: playerSecretRef.current,
         moveXZ: [clampedX, clampedZ],
         jumpPressed: jump,
         backspinActive: isBackspin,
       });
     },
-    [playerId, roomCode, vibrate],
+    [roomCode, vibrate],
   );
 
   const updateFromPointerEvent = useCallback(
@@ -200,7 +249,11 @@ export const MobilePartyController: React.FC<MobilePartyControllerProps> = ({
     async (kind: CrowdMutatorKind) => {
       if (Date.now() < cooldownUntilMs) return;
       vibrate(30);
-      const res = await clientRef.current!.triggerAction(playerId, kind);
+      const res = await clientRef.current!.triggerAction(
+        playerIdRef.current,
+        kind,
+        playerSecretRef.current,
+      );
       if (res.ok) {
         setCooldownUntilMs(Date.now() + CROWD_ACTION_COOLDOWN_MS);
         setLastFeedback(res.toast?.text ?? `Triggered ${kind}!`);
@@ -211,7 +264,7 @@ export const MobilePartyController: React.FC<MobilePartyControllerProps> = ({
         );
       }
     },
-    [cooldownUntilMs, playerId, vibrate],
+    [cooldownUntilMs, vibrate],
   );
 
   const handleSubmitTwist = useCallback(
@@ -219,7 +272,10 @@ export const MobilePartyController: React.FC<MobilePartyControllerProps> = ({
       const cleaned = rawTwist.trim();
       if (!cleaned) return;
       vibrate(20);
-      const res = await clientRef.current!.submitPrompt(playerId, cleaned);
+      const res = await clientRef.current!.submitPrompt(
+        playerIdRef.current,
+        cleaned,
+      );
       if (res.prompt) {
         setTwistInput('');
         setLastFeedback(
@@ -227,7 +283,7 @@ export const MobilePartyController: React.FC<MobilePartyControllerProps> = ({
         );
       }
     },
-    [playerId, vibrate],
+    [vibrate],
   );
 
   const twistWordCount = useMemo(() => {
