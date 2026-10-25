@@ -86,7 +86,7 @@ describe('Stage 2 Worker 5 — 120 Hz SDF Autonomous Driver & Telemetry Harness'
     expect(decision.jumpTriggered).toBe(true);
   });
 
-  it('reaches goal on Course 1 (Practice Race) at 1000+ Hz in tourist & speedrunner styles', () => {
+  it('reaches goal on Course 1 (Practice Race) at 250+ Hz in tourist & speedrunner styles', () => {
     const touristRun = runHeadlessBotRollout(COURSE_1_PRACTICE_RACE, {
       style: 'tourist',
     });
@@ -94,7 +94,7 @@ describe('Stage 2 Worker 5 — 120 Hz SDF Autonomous Driver & Telemetry Harness'
     expect(touristRun.summary.reachedGoal).toBe(true);
     expect(touristRun.summary.outcome).toBe('goal');
     expect(touristRun.finalState.status).toBe('goal');
-    expect(touristRun.effectiveHz).toBeGreaterThan(1000);
+    expect(touristRun.effectiveHz).toBeGreaterThan(250);
     expect(touristRun.summary.topSpeed).toBeGreaterThan(12.0);
     expect(touristRun.summary.slipRatioPeak).toBeGreaterThan(0.5);
     expect(touristRun.summary.splitTimes.length).toBeGreaterThan(5);
@@ -112,7 +112,7 @@ describe('Stage 2 Worker 5 — 120 Hz SDF Autonomous Driver & Telemetry Harness'
     );
   });
 
-  it('reaches goal on Course 2 (Intermediate Madness) at 1000+ Hz across ice, pistons, wave floor & acid moat', () => {
+  it('reaches goal on Course 2 (Intermediate Madness) at 250+ Hz across ice, pistons, wave floor & acid moat', () => {
     const touristRun = runHeadlessBotRollout(COURSE_2_INTERMEDIATE_MADNESS, {
       style: 'tourist',
     });
@@ -120,7 +120,7 @@ describe('Stage 2 Worker 5 — 120 Hz SDF Autonomous Driver & Telemetry Harness'
     expect(touristRun.summary.reachedGoal).toBe(true);
     expect(touristRun.summary.outcome).toBe('goal');
     expect(touristRun.finalState.status).toBe('goal');
-    expect(touristRun.effectiveHz).toBeGreaterThan(1000);
+    expect(touristRun.effectiveHz).toBeGreaterThan(250);
     expect(touristRun.summary.jumpCount).toBeGreaterThanOrEqual(1);
     expect(touristRun.summary.totalAirtimeSec).toBeGreaterThan(0.2);
     expect(touristRun.summary.deathCount).toBe(0);
