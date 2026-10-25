@@ -13,15 +13,16 @@ import {
   type PartyActionResult,
   type PartyRoomEngine,
 } from './party-room-engine';
-import type {
-  CrowdMutatorKind,
-  JoinPartyRequest,
-  JoinPartyResponse,
-  PartyActionPayload,
-  PartyCrowdPrompt,
-  PartyInputPayload,
-  PartyPromptPayload,
-  PartyRoomSnapshot,
+import {
+  PHONE_INPUT_THROTTLE_MS,
+  type CrowdMutatorKind,
+  type JoinPartyRequest,
+  type JoinPartyResponse,
+  type PartyActionPayload,
+  type PartyCrowdPrompt,
+  type PartyInputPayload,
+  type PartyPromptPayload,
+  type PartyRoomSnapshot,
 } from './party-types';
 
 const BROADCAST_CHANNEL_NAME = 'marble-madness-qr-party-v1';
@@ -47,11 +48,18 @@ export interface PartyRoomClientOptions {
 export interface PartyRoomClient {
   getSnapshot(): PartyRoomSnapshot;
   getLocalEngine(): PartyRoomEngine;
+  connect(): void;
   join(req: JoinPartyRequest): Promise<JoinPartyResponse>;
   sendInput(payload: PartyInputPayload): Promise<void>;
   triggerAction(
     playerId: string,
     kind: CrowdMutatorKind,
+    playerSecret?: string,
+  ): Promise<PartyActionResult>;
+  sendAction(
+    playerIdOrKind: string,
+    kind?: CrowdMutatorKind,
+    playerSecret?: string,
   ): Promise<PartyActionResult>;
   submitPrompt(
     playerId: string,
@@ -90,14 +98,18 @@ export function parsePartyUrlQuery(search: string = typeof window !== 'undefined
 
 /**
  * Detects the best default public tunnel URL in the browser if accessed via
- * Cloudflare Quick Tunnel (`trycloudflare.com`), `ngrok`, or `?public-url=`.
+ * Cloudflare Quick Tunnel (`trycloudflare.com`), `ngrok`, GitHub Pages (`github.io`), or `?public-url=`.
+ * Preserves `window.location.pathname` (e.g. `/gemini-4-argon-sfhackathon-2026/`) so sub-path deployments never 404.
  */
-export function detectBrowserTunnelOrigin(): string | null {
-  if (typeof window === 'undefined') return null;
-  const { publicTunnelOverride } = parsePartyUrlQuery(window.location.search);
+export function detectBrowserTunnelOrigin(
+  loc: Pick<Location, 'hostname' | 'origin' | 'pathname' | 'search'> | undefined =
+    typeof window !== 'undefined' ? window.location : undefined,
+): string | null {
+  if (!loc) return null;
+  const { publicTunnelOverride } = parsePartyUrlQuery(loc.search);
   if (publicTunnelOverride) return publicTunnelOverride;
 
-  const host = window.location.hostname;
+  const host = loc.hostname;
   if (
     host &&
     host !== 'localhost' &&
@@ -105,7 +117,8 @@ export function detectBrowserTunnelOrigin(): string | null {
     !host.startsWith('192.168.') &&
     !host.startsWith('10.')
   ) {
-    return window.location.origin;
+    const pathname = loc.pathname || '/';
+    return new URL(pathname, loc.origin).toString();
   }
   return null;
 }
@@ -132,14 +145,29 @@ export function createPartyRoomClient(
         typeof window !== 'undefined' && window.location.port
           ? Number(window.location.port) || 5173
           : 5173,
+      basePath:
+        typeof window !== 'undefined' && window.location.pathname
+          ? window.location.pathname
+          : '/',
       customTunnelUrl: detectBrowserTunnelOrigin(),
     });
 
   let latestSnapshot: PartyRoomSnapshot = localEngine.getSnapshot();
   const listeners = new Set<(snapshot: PartyRoomSnapshot) => void>();
+  const playerSecrets = new Map<string, string>();
+  let activePlayerId: string | null = null;
+  let activePlayerSecret: string | null = null;
 
   let channel: BroadcastChannel | null = null;
   let eventSource: EventSource | null = null;
+  let unsubLocal: (() => void) | null = null;
+  let isDisposed = false;
+  let sseReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // 15 Hz (~66 ms) phone input network throttle state
+  let lastInputSentAtMs = 0;
+  let pendingInputPayload: PartyInputPayload | null = null;
+  let inputThrottleTimer: ReturnType<typeof setTimeout> | null = null;
 
   const emit = (snap: PartyRoomSnapshot) => {
     latestSnapshot = snap;
@@ -148,11 +176,9 @@ export function createPartyRoomClient(
     }
   };
 
-  const unsubLocal = localEngine.subscribe((snap) => {
-    emit(snap);
-  });
-
-  if (typeof BroadcastChannel !== 'undefined') {
+  function openBroadcastChannel(): BroadcastChannel | null {
+    if (channel) return channel;
+    if (typeof BroadcastChannel === 'undefined') return null;
     try {
       channel = new BroadcastChannel(BROADCAST_CHANNEL_NAME);
       channel.onmessage = (ev: MessageEvent<BroadcastEnvelope>) => {
@@ -192,25 +218,38 @@ export function createPartyRoomClient(
             break;
         }
       };
+      return channel;
     } catch {
       channel = null;
+      return null;
     }
   }
 
-  if (enableNetwork && typeof fetch === 'function') {
-    void fetch(`${apiBase}/api/party/state`)
-      .then((res) => (res.ok ? res.json() : null))
-      .then((remoteSnap: PartyRoomSnapshot | null) => {
-        if (remoteSnap && remoteSnap.roomCode) {
-          emit(remoteSnap);
-        }
-      })
-      .catch(() => {
-        // Local engine stays authoritative until the party middleware is reachable.
-      });
+  function postBroadcast(msg: BroadcastEnvelope) {
+    ensureConnected();
+    const activeChannel = channel ?? openBroadcastChannel();
+    if (!activeChannel) return;
+    try {
+      activeChannel.postMessage(msg);
+    } catch {
+      // Codex F5: If BroadcastChannel was closed by React StrictMode cleanup, re-open and retry
+      try {
+        activeChannel.close();
+      } catch {
+        // Ignore close error
+      }
+      channel = null;
+      const reopened = openBroadcastChannel();
+      try {
+        reopened?.postMessage(msg);
+      } catch {
+        // Ignore if BroadcastChannel is unavailable in environment
+      }
+    }
   }
 
-  if (enableNetwork && typeof EventSource !== 'undefined') {
+  function openEventSource() {
+    if (!enableNetwork || typeof EventSource === 'undefined' || eventSource) return;
     try {
       eventSource = new EventSource(`${apiBase}/api/party/stream`);
       eventSource.onmessage = (ev) => {
@@ -224,14 +263,57 @@ export function createPartyRoomClient(
         }
       };
       eventSource.onerror = () => {
-        // Fallback to local engine + BroadcastChannel silently when server middleware isn't running
         eventSource?.close();
         eventSource = null;
+        if (!isDisposed && !sseReconnectTimer) {
+          sseReconnectTimer = setTimeout(() => {
+            sseReconnectTimer = null;
+            if (!isDisposed) {
+              openEventSource();
+            }
+          }, 1500);
+          sseReconnectTimer.unref?.();
+        }
       };
     } catch {
       eventSource = null;
     }
   }
+
+  function ensureConnected() {
+    if (isDisposed) {
+      isDisposed = false;
+    }
+    if (!unsubLocal) {
+      unsubLocal = localEngine.subscribe((snap) => {
+        emit(snap);
+      });
+    }
+    if (!channel) {
+      openBroadcastChannel();
+    }
+    if (!eventSource && enableNetwork) {
+      openEventSource();
+    }
+  }
+
+  function connect(): void {
+    ensureConnected();
+    if (enableNetwork && typeof fetch === 'function') {
+      void fetch(`${apiBase}/api/party/state`)
+        .then((res) => (res.ok ? res.json() : null))
+        .then((remoteSnap: PartyRoomSnapshot | null) => {
+          if (remoteSnap && remoteSnap.roomCode) {
+            emit(remoteSnap);
+          }
+        })
+        .catch(() => {
+          // Local engine stays authoritative until the party middleware is reachable.
+        });
+    }
+  }
+
+  connect();
 
   async function postJson<T>(path: string, body: unknown): Promise<T | null> {
     if (!enableNetwork || typeof fetch !== 'function') return null;
@@ -248,11 +330,38 @@ export function createPartyRoomClient(
     }
   }
 
+  function resolveSecretForPlayer(playerId: string, explicitSecret?: string): string | undefined {
+    return (
+      explicitSecret ??
+      playerSecrets.get(playerId) ??
+      localEngine.getPlayerSecret(playerId) ??
+      activePlayerSecret ??
+      undefined
+    );
+  }
+
   async function join(req: JoinPartyRequest): Promise<JoinPartyResponse> {
-    const localRes = localEngine.joinPlayer(req);
-    channel?.postMessage({ type: 'join', payload: req } satisfies BroadcastEnvelope);
-    const remote = await postJson<JoinPartyResponse>('/api/party/join', req);
+    ensureConnected();
+    const enrichedReq: JoinPartyRequest = {
+      ...req,
+      playerSecret: req.playerSecret ?? (req.playerId ? resolveSecretForPlayer(req.playerId) : undefined),
+    };
+    const localRes = localEngine.joinPlayer(enrichedReq);
+    playerSecrets.set(localRes.playerId, localRes.playerSecret);
+    activePlayerId = localRes.playerId;
+    activePlayerSecret = localRes.playerSecret;
+
+    postBroadcast({ type: 'join', payload: enrichedReq });
+    const remote = await postJson<JoinPartyResponse>('/api/party/join', enrichedReq);
     if (remote?.snapshot) {
+      if (remote.playerId && remote.playerSecret) {
+        playerSecrets.set(remote.playerId, remote.playerSecret);
+        if (req.playerId) {
+          playerSecrets.set(req.playerId, remote.playerSecret);
+        }
+        activePlayerId = remote.playerId;
+        activePlayerSecret = remote.playerSecret;
+      }
       emit(remote.snapshot);
       return remote;
     }
@@ -260,18 +369,69 @@ export function createPartyRoomClient(
   }
 
   async function sendInput(payload: PartyInputPayload): Promise<void> {
-    localEngine.updateInput(payload);
-    channel?.postMessage({ type: 'input', payload } satisfies BroadcastEnvelope);
-    await postJson('/api/party/input', payload);
+    ensureConnected();
+    const effectivePlayerId = activePlayerId ?? payload.playerId;
+    const enrichedPayload: PartyInputPayload = {
+      ...payload,
+      playerId: effectivePlayerId,
+      playerSecret: resolveSecretForPlayer(effectivePlayerId, payload.playerSecret),
+    };
+
+    localEngine.updateInput(enrichedPayload);
+    postBroadcast({ type: 'input', payload: enrichedPayload });
+
+    if (!enableNetwork || typeof fetch !== 'function') return;
+
+    const now = Date.now();
+    const isUrgent =
+      Boolean(enrichedPayload.jumpPressed) ||
+      (enrichedPayload.moveXZ[0] === 0 && enrichedPayload.moveXZ[1] === 0);
+    const elapsed = now - lastInputSentAtMs;
+
+    if (isUrgent || elapsed >= PHONE_INPUT_THROTTLE_MS) {
+      if (inputThrottleTimer) {
+        clearTimeout(inputThrottleTimer);
+        inputThrottleTimer = null;
+      }
+      pendingInputPayload = null;
+      lastInputSentAtMs = now;
+      await postJson('/api/party/input', enrichedPayload);
+    } else {
+      pendingInputPayload = enrichedPayload;
+      if (!inputThrottleTimer) {
+        const delay = Math.max(10, PHONE_INPUT_THROTTLE_MS - elapsed);
+        inputThrottleTimer = setTimeout(() => {
+          inputThrottleTimer = null;
+          if (pendingInputPayload && !isDisposed) {
+            const toSend = pendingInputPayload;
+            pendingInputPayload = null;
+            lastInputSentAtMs = Date.now();
+            void postJson('/api/party/input', toSend);
+          }
+        }, delay);
+        inputThrottleTimer.unref?.();
+      }
+    }
   }
 
   async function triggerAction(
     playerId: string,
     kind: CrowdMutatorKind,
+    playerSecret?: string,
   ): Promise<PartyActionResult> {
-    const payload: PartyActionPayload = { roomCode, playerId, kind };
+    ensureConnected();
+    const effectivePlayerId =
+      localEngine.getSnapshot().players.some((p) => p.playerId === playerId)
+        ? playerId
+        : activePlayerId ?? playerId;
+    const payload: PartyActionPayload = {
+      roomCode,
+      playerId: effectivePlayerId,
+      playerSecret: resolveSecretForPlayer(effectivePlayerId, playerSecret),
+      kind,
+    };
     const localRes = localEngine.triggerCrowdAction(payload);
-    channel?.postMessage({ type: 'action', payload } satisfies BroadcastEnvelope);
+    postBroadcast({ type: 'action', payload });
     const remote = await postJson<PartyActionResult>('/api/party/action', payload);
     if (remote?.snapshot) {
       emit(remote.snapshot);
@@ -280,10 +440,43 @@ export function createPartyRoomClient(
     return localRes;
   }
 
+  async function sendAction(
+    playerIdOrKind: string,
+    kind?: CrowdMutatorKind,
+    playerSecret?: string,
+  ): Promise<PartyActionResult> {
+    const validKinds = new Set<CrowdMutatorKind>([
+      'rescueBridge',
+      'craterMortar',
+      'tectonicRamp',
+      'cryoFreeze',
+      'waveSurge',
+    ]);
+    if (!kind && validKinds.has(playerIdOrKind as CrowdMutatorKind)) {
+      const targetPlayerId =
+        activePlayerId ??
+        localEngine.getSnapshot().players[0]?.playerId ??
+        'plr_default';
+      return triggerAction(targetPlayerId, playerIdOrKind as CrowdMutatorKind, playerSecret);
+    }
+    return triggerAction(
+      playerIdOrKind,
+      kind ?? 'rescueBridge',
+      playerSecret,
+    );
+  }
+
   async function submitPrompt(playerId: string, twist: string) {
-    const payload: PartyPromptPayload = { roomCode, playerId, twist };
+    ensureConnected();
+    const effectivePlayerId = activePlayerId ?? playerId;
+    const payload: PartyPromptPayload = {
+      roomCode,
+      playerId: effectivePlayerId,
+      playerSecret: resolveSecretForPlayer(effectivePlayerId),
+      twist,
+    };
     const localRes = localEngine.submitCrowdPrompt(payload);
-    channel?.postMessage({ type: 'prompt', payload } satisfies BroadcastEnvelope);
+    postBroadcast({ type: 'prompt', payload });
     const remote = await postJson<{
       prompt: PartyCrowdPrompt | null;
       snapshot: PartyRoomSnapshot;
@@ -296,11 +489,12 @@ export function createPartyRoomClient(
   }
 
   async function setCustomTunnelUrl(url: string | null): Promise<PartyRoomSnapshot> {
+    ensureConnected();
     const localSnap = localEngine.setCustomTunnelUrl(url);
-    channel?.postMessage({
+    postBroadcast({
       type: 'tunnel',
       customTunnelUrl: url,
-    } satisfies BroadcastEnvelope);
+    });
     const remote = await postJson<{ ok: boolean; snapshot: PartyRoomSnapshot }>(
       '/api/party/tunnel',
       { customTunnelUrl: url },
@@ -316,14 +510,15 @@ export function createPartyRoomClient(
     count = 6,
     stepOnly = false,
   ): Promise<PartyRoomSnapshot> {
+    ensureConnected();
     const localSnap = stepOnly
       ? localEngine.stepSimulatedCrowdPhones()
       : localEngine.spawnSimulatedCrowdPhones(count);
-    channel?.postMessage({
+    postBroadcast({
       type: 'simulate',
       count,
       stepOnly,
-    } satisfies BroadcastEnvelope);
+    });
     const remote = await postJson<{ ok: boolean; snapshot: PartyRoomSnapshot }>(
       '/api/party/simulate',
       { count, stepOnly },
@@ -336,11 +531,12 @@ export function createPartyRoomClient(
   }
 
   async function selectRoom(roomIdOrIndex: string | number): Promise<PartyRoomSnapshot> {
+    ensureConnected();
     const localSnap = localEngine.setActiveRoom(roomIdOrIndex);
-    channel?.postMessage({
+    postBroadcast({
       type: 'selectRoom',
       roomId: roomIdOrIndex,
-    } satisfies BroadcastEnvelope);
+    });
     const remote = await postJson<{ ok: boolean; snapshot: PartyRoomSnapshot }>(
       '/api/party/room',
       { roomId: roomIdOrIndex },
@@ -353,11 +549,12 @@ export function createPartyRoomClient(
   }
 
   async function setMaxMarblesPerRoom(maxMarbles: number): Promise<PartyRoomSnapshot> {
+    ensureConnected();
     const localSnap = localEngine.setMaxMarblesPerRoom(maxMarbles);
-    channel?.postMessage({
+    postBroadcast({
       type: 'setMaxMarbles',
       maxMarblesPerRoom: maxMarbles,
-    } satisfies BroadcastEnvelope);
+    });
     const remote = await postJson<{ ok: boolean; snapshot: PartyRoomSnapshot }>(
       '/api/party/room',
       { maxMarblesPerRoom: maxMarbles },
@@ -370,6 +567,7 @@ export function createPartyRoomClient(
   }
 
   function subscribe(listener: (snapshot: PartyRoomSnapshot) => void): () => void {
+    ensureConnected();
     listeners.add(listener);
     listener(latestSnapshot);
     return () => {
@@ -378,18 +576,46 @@ export function createPartyRoomClient(
   }
 
   function dispose(): void {
-    unsubLocal();
-    channel?.close();
-    eventSource?.close();
-    listeners.clear();
+    isDisposed = true;
+    if (unsubLocal) {
+      unsubLocal();
+      unsubLocal = null;
+    }
+    if (sseReconnectTimer) {
+      clearTimeout(sseReconnectTimer);
+      sseReconnectTimer = null;
+    }
+    if (inputThrottleTimer) {
+      clearTimeout(inputThrottleTimer);
+      inputThrottleTimer = null;
+    }
+    pendingInputPayload = null;
+    if (channel) {
+      try {
+        channel.close();
+      } catch {
+        // Ignore already-closed channel
+      }
+      channel = null;
+    }
+    if (eventSource) {
+      try {
+        eventSource.close();
+      } catch {
+        // Ignore already-closed EventSource
+      }
+      eventSource = null;
+    }
   }
 
   return {
     getSnapshot: () => latestSnapshot,
     getLocalEngine: () => localEngine,
+    connect,
     join,
     sendInput,
     triggerAction,
+    sendAction,
     submitPrompt,
     setCustomTunnelUrl,
     simulateCrowdPhones,

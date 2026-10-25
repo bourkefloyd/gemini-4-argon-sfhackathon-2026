@@ -8,6 +8,7 @@
  * - Connect / Vite dev & preview server middleware (`/api/party/*` + `/api/party/stream` SSE)
  */
 
+import crypto from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import os from 'node:os';
 import {
@@ -15,15 +16,23 @@ import {
   type PartyRoomEngine,
   type PartyRoomEngineOptions,
 } from '../src/multiplayer/party-room-engine';
-import type {
-  JoinPartyRequest,
-  PartyActionPayload,
-  PartyInputPayload,
-  PartyPromptPayload,
-  PartyRoomSnapshot,
+import {
+  MAX_INPUT_REQUESTS_PER_SEC,
+  MAX_PARTY_BODY_BYTES,
+  type JoinPartyRequest,
+  type PartyActionPayload,
+  type PartyInputPayload,
+  type PartyPromptPayload,
+  type PartyRoomSnapshot,
 } from '../src/multiplayer/party-types';
+import { isLocalhostRequest } from './argon-proxy';
 
-export { createPartyRoomEngine, type PartyRoomEngine, type PartyRoomEngineOptions };
+export {
+  createPartyRoomEngine,
+  isLocalhostRequest,
+  type PartyRoomEngine,
+  type PartyRoomEngineOptions,
+};
 
 /**
  * Discovers the primary non-internal IPv4 LAN address (e.g. `192.168.x.x` or `10.x.x.x`)
@@ -72,13 +81,36 @@ export function detectPublicTunnelUrl(
   return raw && raw.trim().length > 0 ? raw.trim() : null;
 }
 
-function readJsonBody<T>(req: IncomingMessage): Promise<T> {
+export class PayloadTooLargeError extends Error {
+  readonly statusCode = 413;
+  constructor(maxBytes = MAX_PARTY_BODY_BYTES) {
+    super(`Payload Too Large (exceeded ${maxBytes} bytes)`);
+    this.name = 'PayloadTooLargeError';
+  }
+}
+
+function readJsonBody<T>(
+  req: IncomingMessage,
+  maxBytes = MAX_PARTY_BODY_BYTES,
+): Promise<T> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
+    let totalBytes = 0;
+    let rejected = false;
+
     req.on('data', (chunk: Buffer | string) => {
-      chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
+      if (rejected) return;
+      const buf = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
+      totalBytes += buf.byteLength;
+      if (totalBytes > maxBytes) {
+        rejected = true;
+        reject(new PayloadTooLargeError(maxBytes));
+        return;
+      }
+      chunks.push(buf);
     });
     req.on('end', () => {
+      if (rejected) return;
       try {
         const raw = Buffer.concat(chunks).toString('utf8').trim();
         resolve((raw ? JSON.parse(raw) : {}) as T);
@@ -86,8 +118,20 @@ function readJsonBody<T>(req: IncomingMessage): Promise<T> {
         reject(err);
       }
     });
-    req.on('error', reject);
+    req.on('error', (err) => {
+      if (!rejected) reject(err);
+    });
   });
+}
+
+function extractPortFromHostHeader(req: IncomingMessage): number | null {
+  const hostHeader = req.headers?.host;
+  const rawHost = Array.isArray(hostHeader) ? hostHeader[0] : hostHeader;
+  if (!rawHost) return null;
+  const match = rawHost.trim().match(/:(\d+)$/);
+  if (!match) return null;
+  const port = Number.parseInt(match[1], 10);
+  return Number.isFinite(port) && port > 0 && port <= 65535 ? port : null;
 }
 
 function sendJson(res: ServerResponse, statusCode: number, payload: unknown): void {
@@ -102,24 +146,45 @@ function sendJson(res: ServerResponse, statusCode: number, payload: unknown): vo
   res.end(body);
 }
 
+const SSE_TICK_INTERVAL_MS = 50; // Fixed 20 Hz SSE broadcast when dirty
+const SSE_HEARTBEAT_INTERVAL_MS = 15_000; // 15s keep-alive heartbeat
+
 /**
  * Creates a Node HTTP / Connect / Vite middleware handling `/api/party/*` endpoints.
  */
 export function createPartyRoomMiddleware(engine?: PartyRoomEngine) {
+  const detectedLanIp = detectLanIpv4Address();
   const room =
     engine ??
     createPartyRoomEngine({
       roomCode: 'ARGON',
-      lanIp: detectLanIpv4Address(),
-      port: 5173,
+      lanIp: detectedLanIp,
+      port: Number(process.env.PORT) || 5173,
       customTunnelUrl: detectPublicTunnelUrl(),
+      mintSecret: () => crypto.randomBytes(16).toString('hex'),
     });
 
   const sseClients = new Set<ServerResponse>();
+  let sseDirty = false;
+  let latestSnapshot: PartyRoomSnapshot = room.getSnapshot();
 
-  const broadcastSse = (snapshot: PartyRoomSnapshot) => {
-    if (sseClients.size === 0) return;
-    const frame = `data: ${JSON.stringify(snapshot)}\n\n`;
+  // Per-player sliding 1-second rate limiter for `/api/party/input` (max 25 req/sec)
+  const inputRateWindows = new Map<string, { windowStartMs: number; count: number }>();
+
+  function checkInputRateLimit(playerId: string, nowMs = Date.now()): boolean {
+    const entry = inputRateWindows.get(playerId);
+    if (!entry || nowMs - entry.windowStartMs >= 1000) {
+      inputRateWindows.set(playerId, { windowStartMs: nowMs, count: 1 });
+      return true;
+    }
+    entry.count += 1;
+    return entry.count <= MAX_INPUT_REQUESTS_PER_SEC;
+  }
+
+  const flushDirtySse = () => {
+    if (!sseDirty || sseClients.size === 0) return;
+    sseDirty = false;
+    const frame = `data: ${JSON.stringify(latestSnapshot)}\n\n`;
     for (const client of sseClients) {
       try {
         client.write(frame);
@@ -129,7 +194,27 @@ export function createPartyRoomMiddleware(engine?: PartyRoomEngine) {
     }
   };
 
-  room.subscribe(broadcastSse);
+  const sendSseHeartbeat = () => {
+    if (sseClients.size === 0) return;
+    for (const client of sseClients) {
+      try {
+        client.write(': heartbeat\n\n');
+      } catch {
+        sseClients.delete(client);
+      }
+    }
+  };
+
+  const sseTickTimer = setInterval(flushDirtySse, SSE_TICK_INTERVAL_MS);
+  sseTickTimer.unref?.();
+
+  const sseHeartbeatTimer = setInterval(sendSseHeartbeat, SSE_HEARTBEAT_INTERVAL_MS);
+  sseHeartbeatTimer.unref?.();
+
+  room.subscribe((snapshot: PartyRoomSnapshot) => {
+    latestSnapshot = snapshot;
+    sseDirty = true;
+  });
 
   const middleware = async (
     req: IncomingMessage,
@@ -152,6 +237,13 @@ export function createPartyRoomMiddleware(engine?: PartyRoomEngine) {
       return;
     }
 
+    // Codex F4: Dynamically sync actual listening port from `req.headers.host` (e.g. 5176 vs 5173)
+    const hostPort = extractPortFromHostHeader(req);
+    const currentSnap = room.getSnapshot();
+    if (hostPort && hostPort !== currentSnap.port) {
+      room.setLanAddress(currentSnap.lanIp, hostPort);
+    }
+
     const [pathname, rawQuery = ''] = urlStr.split('?');
 
     try {
@@ -169,6 +261,7 @@ export function createPartyRoomMiddleware(engine?: PartyRoomEngine) {
           Connection: 'keep-alive',
           'Access-Control-Allow-Origin': '*',
         });
+        res.write(': heartbeat\n\n');
         res.write(`data: ${JSON.stringify(room.getSnapshot())}\n\n`);
         sseClients.add(res);
         req.on('close', () => {
@@ -179,13 +272,42 @@ export function createPartyRoomMiddleware(engine?: PartyRoomEngine) {
 
       if (req.method === 'POST' && pathname === '/api/party/join') {
         const body = await readJsonBody<JoinPartyRequest>(req);
-        const result = room.joinPlayer(body);
+        const isExistingValidSession =
+          Boolean(body.playerId && body.playerSecret) &&
+          room.verifyPlayerSecret(body.playerId!, body.playerSecret);
+
+        const assignedPlayerId = isExistingValidSession
+          ? body.playerId!
+          : `plr_${crypto.randomBytes(8).toString('hex')}`;
+        const assignedSecret = isExistingValidSession
+          ? body.playerSecret!
+          : crypto.randomBytes(16).toString('hex');
+
+        const result = room.joinPlayer({
+          ...body,
+          playerId: assignedPlayerId,
+          playerSecret: assignedSecret,
+        });
         sendJson(res, 200, result);
         return;
       }
 
       if (req.method === 'POST' && pathname === '/api/party/input') {
         const body = await readJsonBody<PartyInputPayload>(req);
+        if (!room.verifyPlayerSecret(body.playerId, body.playerSecret)) {
+          sendJson(res, 401, {
+            ok: false,
+            error: 'Unauthorized: valid playerSecret required for /api/party/input',
+          });
+          return;
+        }
+        if (!checkInputRateLimit(body.playerId)) {
+          sendJson(res, 429, {
+            ok: false,
+            error: `Rate limit exceeded (max ${MAX_INPUT_REQUESTS_PER_SEC} inputs/sec)`,
+          });
+          return;
+        }
         const player = room.updateInput(body);
         sendJson(res, 200, { ok: Boolean(player), player });
         return;
@@ -193,6 +315,13 @@ export function createPartyRoomMiddleware(engine?: PartyRoomEngine) {
 
       if (req.method === 'POST' && pathname === '/api/party/action') {
         const body = await readJsonBody<PartyActionPayload>(req);
+        if (!room.verifyPlayerSecret(body.playerId, body.playerSecret)) {
+          sendJson(res, 401, {
+            ok: false,
+            error: 'Unauthorized: valid playerSecret required for /api/party/action',
+          });
+          return;
+        }
         const result = room.triggerCrowdAction(body);
         sendJson(res, result.ok ? 200 : 429, result);
         return;
@@ -206,6 +335,13 @@ export function createPartyRoomMiddleware(engine?: PartyRoomEngine) {
       }
 
       if (req.method === 'POST' && pathname === '/api/party/tunnel') {
+        if (!isLocalhostRequest(req)) {
+          sendJson(res, 403, {
+            ok: false,
+            error: 'Forbidden: /api/party/tunnel is restricted to localhost stage admin',
+          });
+          return;
+        }
         const body = await readJsonBody<{ customTunnelUrl?: string | null }>(req);
         const snapshot = room.setCustomTunnelUrl(body.customTunnelUrl ?? null);
         sendJson(res, 200, { ok: true, snapshot });
@@ -213,6 +349,13 @@ export function createPartyRoomMiddleware(engine?: PartyRoomEngine) {
       }
 
       if (req.method === 'POST' && pathname === '/api/party/simulate') {
+        if (!isLocalhostRequest(req)) {
+          sendJson(res, 403, {
+            ok: false,
+            error: 'Forbidden: /api/party/simulate is restricted to localhost stage admin',
+          });
+          return;
+        }
         const body = await readJsonBody<{ count?: number; stepOnly?: boolean }>(req);
         const snapshot = body.stepOnly
           ? room.stepSimulatedCrowdPhones()
@@ -239,6 +382,13 @@ export function createPartyRoomMiddleware(engine?: PartyRoomEngine) {
 
       sendJson(res, 404, { error: 'Unknown party endpoint' });
     } catch (err) {
+      if (err instanceof PayloadTooLargeError) {
+        sendJson(res, 413, {
+          ok: false,
+          error: err.message,
+        });
+        return;
+      }
       sendJson(res, 400, {
         error: err instanceof Error ? err.message : 'Invalid request payload',
       });
@@ -248,6 +398,7 @@ export function createPartyRoomMiddleware(engine?: PartyRoomEngine) {
   return {
     engine: room,
     middleware,
+    flushDirtySse,
   };
 }
 
