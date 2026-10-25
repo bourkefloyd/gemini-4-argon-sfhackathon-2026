@@ -8,6 +8,7 @@ import {
 import { COURSE_4_AERIAL_CATWALKS } from './course-4-aerial';
 import { COURSE_5_SILLY_RACE } from './course-5-silly';
 import { COURSE_6_ULTIMATE_ARGON_CORE } from './course-6-ultimate';
+import { COURSE_7_SDF_SINGULARITY_LAB } from './course-7-singularity';
 
 export {
   COURSE_1_PRACTICE_RACE,
@@ -17,6 +18,7 @@ export {
   COURSE_4_AERIAL_CATWALKS,
   COURSE_5_SILLY_RACE,
   COURSE_6_ULTIMATE_ARGON_CORE,
+  COURSE_7_SDF_SINGULARITY_LAB,
 };
 
 export const BUILT_IN_COURSES: readonly CourseSpec[] = [
@@ -29,6 +31,11 @@ export const BUILT_IN_COURSES: readonly CourseSpec[] = [
 ];
 
 export const CLASSIC_COURSES: readonly CourseSpec[] = BUILT_IN_COURSES;
+
+export const ALL_PLAYABLE_COURSES: readonly CourseSpec[] = [
+  ...BUILT_IN_COURSES,
+  COURSE_7_SDF_SINGULARITY_LAB,
+];
 
 /**
  * Procedurally synthesize a custom `CourseSpec` for the Gemini 4 Argon 1M-Token

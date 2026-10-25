@@ -33,6 +33,10 @@ import type { TactileFeelState } from '../feel';
 import type { SplitDeltaSnapshot } from '../replay';
 import type { Ym2151SynthState } from '../audio';
 import type { BotPlayStyle } from '../bot';
+import {
+  type EngineComparisonMode,
+  getEngineModeSpec,
+} from '../physics/basic-polygon-mode';
 
 export type ViewportDisplayMode = 'fullscreen' | 'grid';
 
@@ -68,6 +72,7 @@ export interface ArcadeHudProps {
   readonly viewMode?: ViewportDisplayMode;
   readonly focusedPlayerIndex?: number;
   readonly debugDrawerOpen?: boolean;
+  readonly engineMode?: EngineComparisonMode;
   readonly gridCells?: readonly PlayerGridCellHudInfo[];
   readonly portals?: readonly PortalPair[];
   readonly fieldMutations?: readonly FieldMutation[];
@@ -86,6 +91,7 @@ export interface ArcadeHudProps {
   readonly onToggleParty?: () => void;
   readonly onToggleViewMode?: () => void;
   readonly onToggleDebugDrawer?: () => void;
+  readonly onCycleEngineMode?: () => void;
   readonly onSelectGridPlayer?: (slotIndex: number) => void;
 }
 
@@ -111,6 +117,7 @@ export const ArcadeHud: React.FC<ArcadeHudProps> = ({
   viewMode = 'fullscreen',
   focusedPlayerIndex = 0,
   debugDrawerOpen = false,
+  engineMode = 0,
   gridCells = [],
   portals = [],
   fieldMutations = [],
@@ -129,6 +136,7 @@ export const ArcadeHud: React.FC<ArcadeHudProps> = ({
   onToggleParty,
   onToggleViewMode,
   onToggleDebugDrawer,
+  onCycleEngineMode,
   onSelectGridPlayer,
 }) => {
   const horizSpeed = Math.hypot(marble.velocity[0], marble.velocity[2]);
@@ -151,6 +159,7 @@ export const ArcadeHud: React.FC<ArcadeHudProps> = ({
 
   const isLowTime = timeRemainingSec <= 12 && marble.status === 'racing';
   const focusedCell = gridCells[focusedPlayerIndex];
+  const engineSpec = getEngineModeSpec(engineMode);
 
   return (
     <div className="arcade-hud-overlay">
@@ -234,6 +243,16 @@ export const ArcadeHud: React.FC<ArcadeHudProps> = ({
         >
           <button
             type="button"
+            className={`hud-action-pill ${engineMode !== 0 ? 'hud-action-pill-active' : 'hud-action-pill-accent'}`}
+            onClick={() => onCycleEngineMode?.()}
+            data-testid="hud-engine-mode-toggle"
+            title={`${engineSpec.label}: ${engineSpec.description} [K]`}
+          >
+            [K] Engine: {engineSpec.shortLabel}
+          </button>
+
+          <button
+            type="button"
             className={`hud-action-pill ${viewMode === 'grid' ? 'hud-action-pill-active' : ''}`}
             onClick={() => onToggleViewMode?.()}
             data-testid="hud-view-mode-toggle"
@@ -277,6 +296,65 @@ export const ArcadeHud: React.FC<ArcadeHudProps> = ({
       {bonusBannerSec !== null && (
         <div className="hud-bonus-carryover-banner hud-bonus-floating">
           +{bonusBannerSec} BONUS SECONDS CARRIED OVER!
+        </div>
+      )}
+
+      {/* LIVE A/B ENGINE COMPARISON SPLIT-SCREEN / POLYGON OVERLAY LABELS */}
+      {engineMode === 2 && viewMode === 'fullscreen' && (
+        <div
+          className="hud-ab-split-comparison-bar"
+          data-testid="hud-ab-split-overlay"
+          style={{
+            position: 'fixed',
+            bottom: '16px',
+            left: '16px',
+            right: '16px',
+            display: 'flex',
+            justifyContent: 'space-between',
+            pointerEvents: 'none',
+            zIndex: 18,
+            gap: '24px',
+          }}
+        >
+          <div
+            style={{
+              background: 'rgba(8, 18, 28, 0.86)',
+              border: '1px solid rgba(110, 235, 165, 0.65)',
+              borderRadius: '8px',
+              padding: '8px 14px',
+              color: '#98f5c4',
+              fontFamily: 'monospace',
+              fontSize: '12px',
+              boxShadow: '0 4px 18px rgba(0, 0, 0, 0.65)',
+            }}
+          >
+            <strong style={{ color: '#6effb0', display: 'block', fontSize: '13px' }}>
+              ◀ LEFT: BASIC POLYGON MESH + 16-SEG FACETED PHYSICS
+            </strong>
+            <span>
+              dFdx×dFdy Flat Triangles · Quad Diagonal Wireframe · Hard Seams (k=0) · 3°–6° Normal Chatter
+            </span>
+          </div>
+          <div
+            style={{
+              background: 'rgba(10, 14, 32, 0.88)',
+              border: '1px solid rgba(255, 210, 80, 0.78)',
+              borderRadius: '8px',
+              padding: '8px 14px',
+              color: '#ffe89e',
+              fontFamily: 'monospace',
+              fontSize: '12px',
+              textAlign: 'right',
+              boxShadow: '0 4px 18px rgba(0, 0, 0, 0.65)',
+            }}
+          >
+            <strong style={{ color: '#ffd447', display: 'block', fontSize: '13px' }}>
+              RIGHT: ULTRA LOCKSTEP SDF + OPTICAL GLASS REFRACTION ▶
+            </strong>
+            <span>
+              C∞ Smooth CSG · Chromatic Dispersion (IOR 1.50–1.55) · Floor Caustics · O(1) Cathedral · 120Hz jSDF
+            </span>
+          </div>
         </div>
       )}
 
@@ -496,9 +574,9 @@ export const ArcadeHud: React.FC<ArcadeHudProps> = ({
             )}
           </div>
 
-          {/* Course Switcher 1-6 */}
+          {/* Course Switcher 1-7 */}
           <div className="hud-debug-section">
-            <div className="hud-eyebrow">SELECT COURSE [1–6]</div>
+            <div className="hud-eyebrow">SELECT COURSE [1–7]</div>
             <div className="hud-course-tabs">
               {courses.map((c, idx) => (
                 <button
@@ -516,8 +594,15 @@ export const ArcadeHud: React.FC<ArcadeHudProps> = ({
 
           {/* Camera, Marble, Audio, Bot, Respawn */}
           <div className="hud-debug-section">
-            <div className="hud-eyebrow">RIG, AUDIO &amp; AUTONOMOUS BOT</div>
+            <div className="hud-eyebrow">RIG, ENGINE A/B, AUDIO &amp; AUTONOMOUS BOT</div>
             <div className="hud-action-row">
+              <button
+                type="button"
+                className="hud-btn hud-btn-sm hud-btn-active"
+                onClick={() => onCycleEngineMode?.()}
+              >
+                ENGINE: {engineSpec.shortLabel} [K]
+              </button>
               <button type="button" className="hud-btn hud-btn-sm" onClick={onCycleCameraZoom}>
                 CAM: {camera.zoomStopLabel} [C]
               </button>

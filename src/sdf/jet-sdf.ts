@@ -684,6 +684,70 @@ export function evaluateJetSdfTree(
   return acc;
 }
 
+export interface DynamicSphereSpec {
+  readonly center: Vec3;
+  readonly velocity: Vec3;
+  readonly radius: number;
+  readonly material?: SurfaceMaterial;
+}
+
+/**
+ * Evaluates a dynamic cluster of moving smoothUnion spheres (e.g., Course 7's
+ * Morphing Ferrofluid Metaball Cluster) as a 4-jet `(d, gx, gy, gz, dDot, surfaceVelocity)`.
+ */
+export function evalDynamicSphereClusterJet(
+  p: Vec3,
+  spheres: readonly DynamicSphereSpec[],
+  smoothRadius = 0.88,
+  kernel: SmoothKernelKind = 'quadratic',
+): JetSdfSample & {
+  readonly d: number;
+  readonly gx: number;
+  readonly gy: number;
+  readonly gz: number;
+} {
+  if (spheres.length === 0) {
+    const empty = makePrimitiveJetSample(1000, [0, 1, 0], ZERO_VEC3);
+    return {
+      ...empty,
+      d: empty.distance,
+      gx: empty.normal[0],
+      gy: empty.normal[1],
+      gz: empty.normal[2],
+    };
+  }
+  const first = spheres[0];
+  const s0 = jetSphereLocal(vec3Sub(p, first.center), first.radius);
+  let acc = makePrimitiveJetSample(
+    s0.d,
+    s0.grad,
+    first.velocity,
+    0,
+    ZERO_VEC3,
+    first.material ?? 'bumper',
+  );
+  for (let i = 1; i < spheres.length; i++) {
+    const sp = spheres[i];
+    const si = jetSphereLocal(vec3Sub(p, sp.center), sp.radius);
+    const next = makePrimitiveJetSample(
+      si.d,
+      si.grad,
+      sp.velocity,
+      0,
+      ZERO_VEC3,
+      sp.material ?? 'bumper',
+    );
+    acc = opSmoothUnionJet(acc, next, smoothRadius, kernel);
+  }
+  return {
+    ...acc,
+    d: acc.distance,
+    gx: acc.normal[0],
+    gy: acc.normal[1],
+    gz: acc.normal[2],
+  };
+}
+
 // ============================================================================
 // Invention 2: Lipschitz-Preserving Non-Euclidean Portal SDF (`pSDF`)
 // ============================================================================

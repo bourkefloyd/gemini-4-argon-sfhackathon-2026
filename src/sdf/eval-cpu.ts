@@ -34,6 +34,7 @@ const SEAM_BIAS_EPS = 0.03;
 const SEAM_SUPPORT_MIN_Y = 0.68;
 const NORMAL_EPS = 0.0025;
 
+export type { CpuWorldEvaluator };
 export function vec3Add(a: Vec3, b: Vec3): Vec3 {
   return [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
 }

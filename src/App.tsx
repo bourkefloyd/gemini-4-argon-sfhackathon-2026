@@ -27,11 +27,15 @@ import type {
   Vec3,
   WeaponAbilityId,
 } from './contracts';
-import { BUILT_IN_COURSES } from './courses';
-import { createMarbleSimulation } from './physics';
+import { ALL_PLAYABLE_COURSES } from './courses';
+import {
+  createMarbleSimulation,
+  createModeAwareWorldEvaluator,
+  cycleEngineComparisonMode,
+  type EngineComparisonMode,
+} from './physics';
 import { type PortalEnd, raycastAndPlacePortal } from './portals';
 import { createRaymarchRenderer } from './rendering';
-import { createCpuWorldEvaluator } from './sdf/eval-cpu';
 import { ArcadeHud, ArchitectHookPanel } from './ui';
 import {
   createArcadeSensorySession,
@@ -96,6 +100,7 @@ export interface MarblePlaytestTelemetry {
   readonly viewMode?: ViewportDisplayMode;
   readonly focusedPlayerIndex?: number;
   readonly debugDrawerOpen?: boolean;
+  readonly engineMode?: EngineComparisonMode;
   readonly gridCells?: readonly PlayerGridCellHudInfo[];
 }
 
@@ -134,6 +139,9 @@ export interface MarblePlaytestApi {
   toggleViewMode?: () => MarblePlaytestTelemetry;
   setDebugDrawerOpen?: (open: boolean) => MarblePlaytestTelemetry;
   selectGridPlayer?: (slotIndex: number) => MarblePlaytestTelemetry;
+  setEngineMode?: (mode: EngineComparisonMode) => MarblePlaytestTelemetry;
+  cycleEngineMode?: () => MarblePlaytestTelemetry;
+  getEngineMode?: () => EngineComparisonMode;
 }
 
 declare global {
@@ -146,11 +154,11 @@ declare global {
 export const App: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
-  const [courses, setCourses] = useState<readonly CourseSpec[]>(BUILT_IN_COURSES);
+  const [courses, setCourses] = useState<readonly CourseSpec[]>(ALL_PLAYABLE_COURSES);
   const [activeCourseIndex, setActiveCourseIndex] = useState<number>(0);
   const currentCourse = courses[activeCourseIndex] ?? courses[0];
 
-  const evaluatorRef = useRef(createCpuWorldEvaluator(currentCourse));
+  const evaluatorRef = useRef(createModeAwareWorldEvaluator(currentCourse, 0));
   const simRef = useRef(createMarbleSimulation(currentCourse, evaluatorRef.current));
   const cameraRigRef = useRef(
     createIsometricCameraRig(currentCourse, currentCourse.startPos),
@@ -199,6 +207,7 @@ export const App: React.FC = () => {
   const [viewMode, setViewMode] = useState<ViewportDisplayMode>('fullscreen');
   const [focusedPlayerIndex, setFocusedPlayerIndex] = useState<number>(0);
   const [debugDrawerOpen, setDebugDrawerOpen] = useState<boolean>(false);
+  const [engineMode, setEngineMode] = useState<EngineComparisonMode>(0);
   const [uiGridCells, setUiGridCells] = useState<readonly PlayerGridCellHudInfo[]>([]);
   const [partyRoomCode, setPartyRoomCode] = useState<string>('ARGON-1');
   const [crowdSeedPrompt, setCrowdSeedPrompt] = useState<string | null>(null);
@@ -234,6 +243,7 @@ export const App: React.FC = () => {
   const viewModeRef = useRef<ViewportDisplayMode>('fullscreen');
   const focusedPlayerIdxRef = useRef<number>(0);
   const debugDrawerOpenRef = useRef<boolean>(false);
+  const engineModeRef = useRef<EngineComparisonMode>(0);
   const gridCellsRef = useRef<readonly PlayerGridCellHudInfo[]>([]);
 
   // Programmatic bot override state for `window.__MARBLE_PLAYTEST__`
@@ -253,7 +263,7 @@ export const App: React.FC = () => {
 
   const activateCourse = useCallback(
     (nextCourse: CourseSpec, nextIndex: number, carryOverBonusSec: number | null) => {
-      const nextEval = createCpuWorldEvaluator(nextCourse);
+      const nextEval = createModeAwareWorldEvaluator(nextCourse, engineModeRef.current);
       const initialPortals = nextCourse.portals ? [...nextCourse.portals] : [];
       const initialWeapons = createInitialWeaponState();
       portalsRef.current = initialPortals;
@@ -482,6 +492,19 @@ export const App: React.FC = () => {
       setDebugDrawerOpen(next);
     };
 
+    const setEngineModeInternal = (nextMode: EngineComparisonMode) => {
+      const valid: EngineComparisonMode =
+        nextMode === 1 ? 1 : nextMode === 2 ? 2 : 0;
+      engineModeRef.current = valid;
+      evaluatorRef.current.setEngineMode(valid);
+      setEngineMode(valid);
+    };
+
+    const cycleEngineModeInternal = () => {
+      const next = cycleEngineComparisonMode(engineModeRef.current);
+      setEngineModeInternal(next);
+    };
+
     const selectGridPlayerInternal = (slotIndex: number) => {
       const clamped = Math.max(0, Math.min(3, Math.floor(slotIndex)));
       focusedPlayerIdxRef.current = clamped;
@@ -541,6 +564,9 @@ export const App: React.FC = () => {
       onToggleDebugDrawer: () => {
         toggleDebugDrawerInternal();
       },
+      onCycleEngineMode: () => {
+        cycleEngineModeInternal();
+      },
     });
 
     const buildTelemetrySnapshot = (): MarblePlaytestTelemetry => {
@@ -596,6 +622,7 @@ export const App: React.FC = () => {
         viewMode: viewModeRef.current,
         focusedPlayerIndex: focusedPlayerIdxRef.current,
         debugDrawerOpen: debugDrawerOpenRef.current,
+        engineMode: engineModeRef.current,
         gridCells: gridCellsRef.current,
       };
     };
@@ -746,6 +773,7 @@ export const App: React.FC = () => {
           rimDanger: shockUniforms.uRimDanger,
           fieldMutations: weaponStateRef.current.mutations,
           portals: portalsRef.current,
+          engineMode: engineModeRef.current,
         });
         setUiMarble(mState);
         setUiCamera(camState);
@@ -828,6 +856,15 @@ export const App: React.FC = () => {
         selectGridPlayerInternal(slotIndex);
         return buildTelemetrySnapshot();
       },
+      setEngineMode: (mode) => {
+        setEngineModeInternal(mode);
+        return buildTelemetrySnapshot();
+      },
+      cycleEngineMode: () => {
+        cycleEngineModeInternal();
+        return buildTelemetrySnapshot();
+      },
+      getEngineMode: () => engineModeRef.current,
     };
 
     window.__MARBLE_PLAYTEST__ = playtestApi;
@@ -1199,6 +1236,7 @@ export const App: React.FC = () => {
         rimDanger: shockUniforms.uRimDanger,
         fieldMutations: weaponStateRef.current.mutations,
         portals: portalsRef.current,
+        engineMode: engineModeRef.current,
         gridTiles: viewModeRef.current === 'grid' ? tileDefs : undefined,
       });
 
@@ -1266,6 +1304,7 @@ export const App: React.FC = () => {
         viewMode={viewMode}
         focusedPlayerIndex={focusedPlayerIndex}
         debugDrawerOpen={debugDrawerOpen}
+        engineMode={engineMode}
         gridCells={uiGridCells}
         portals={uiPortals}
         fieldMutations={uiWeaponState.mutations}
@@ -1311,6 +1350,9 @@ export const App: React.FC = () => {
           const next = !debugDrawerOpenRef.current;
           debugDrawerOpenRef.current = next;
           setDebugDrawerOpen(next);
+        }}
+        onCycleEngineMode={() => {
+          window.__MARBLE_PLAYTEST__?.cycleEngineMode?.();
         }}
         onSelectGridPlayer={(slotIndex) => {
           window.__MARBLE_PLAYTEST__?.selectGridPlayer?.(slotIndex);

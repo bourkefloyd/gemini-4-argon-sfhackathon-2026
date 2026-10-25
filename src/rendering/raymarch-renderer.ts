@@ -83,6 +83,8 @@ export interface RenderFrameInput {
   readonly rimDanger?: Float32Array;
   readonly fieldMutations?: readonly FieldMutation[];
   readonly portals?: readonly PortalPair[];
+  /** Live Engine Comparison Mode: 0 = ULTRA SDF, 1 = BASIC POLYGON, 2 = SPLIT-SCREEN A/B */
+  readonly engineMode?: number;
   /** Optional multi-POV grid tiles; when provided with length > 0, renders each tile with WebGL2 scissor + viewport */
   readonly gridTiles?: readonly GridTileViewInput[];
 }
@@ -146,6 +148,7 @@ interface UniformLocations {
   uPortalPosB: WebGLUniformLocation | null;
   uPortalNormalB: WebGLUniformLocation | null;
   uPortalUpB: WebGLUniformLocation | null;
+  uEngineMode: WebGLUniformLocation | null;
 }
 
 function compileShader(gl: WebGL2RenderingContext, type: number, source: string): WebGLShader {
@@ -263,6 +266,7 @@ export function createRaymarchRenderer(
       uPortalPosB: u('uPortalPosB[0]'),
       uPortalNormalB: u('uPortalNormalB[0]'),
       uPortalUpB: u('uPortalUpB[0]'),
+      uEngineMode: u('uEngineMode'),
     };
   }
 
@@ -364,6 +368,7 @@ export function createRaymarchRenderer(
     gl.uniform1f(locations.uGlassStress, frame.glassStress ?? 0);
     gl.uniform1f(locations.uCrackVisibility, frame.crackVisibility ?? 0);
     gl.uniform1f(locations.uStressGlow, frame.stressGlow ?? 0);
+    gl.uniform1i(locations.uEngineMode, frame.engineMode ?? 0);
 
     gl.uniform1i(locations.uGhostActive, frame.ghostActive ? 1 : 0);
     const gPos = frame.ghostPos ?? [0, -100, 0];
