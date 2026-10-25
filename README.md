@@ -1,12 +1,13 @@
 # Gemini 4 Argon SF Hackathon — team guide
 
-Practical notes for a team hacking at this event. Event facts come from the [official details page](https://cerebralvalley.ai/e/gemini-4-argon-sf/details) as fetched on 2026-10-25. Anything that page does not state is listed under [What the page does not say](#what-the-page-does-not-say). Do not treat those gaps as rules.
+Practical notes for a team hacking at this event. Event facts come from the [official details page](https://cerebralvalley.ai/e/gemini-4-argon-sf/details) as fetched on 2026-10-25. Builder facts come from Bourke’s shared Google Doc, [Build with Gemini 4 Argon: 1-day hackathon builder guide](https://docs.google.com/document/d/1kN0n6hPNNTIHMVqf5-hDACrZuIg4KFrWiYpla4WQW8w/edit?usp=sharing), read the same day. Anything neither source states is listed under [What these sources do not say](#what-these-sources-do-not-say). Do not treat those gaps as rules.
 
-The [project section](#the-hack-project-intent) is Bourke’s concept for this repo. It is not an event rule. Sentences there that are not on the event page, and not taken from the inspiration repo, are marked as project intent.
+The [project section](#the-hack-project-intent) is Bourke’s concept for this repo. It is not an event rule. Sentences there that are not on the event page, not in the builder guide, and not taken from the inspiration repo, are marked as project intent.
 
-**Source:** https://cerebralvalley.ai/e/gemini-4-argon-sf/details  
+**Event source:** https://cerebralvalley.ai/e/gemini-4-argon-sf/details  
 **Canonical event page:** https://cerebralvalley.ai/e/gemini-4-argon-sf  
-**Markdown alternate linked from the details page:** https://cerebralvalley.ai/e/gemini-4-argon-sf.md
+**Markdown alternate linked from the details page:** https://cerebralvalley.ai/e/gemini-4-argon-sf.md  
+**Builder guide:** https://docs.google.com/document/d/1kN0n6hPNNTIHMVqf5-hDACrZuIg4KFrWiYpla4WQW8w/edit?usp=sharing
 
 ## The hack (project intent)
 
@@ -16,12 +17,14 @@ A marble-on-a-course game is a ball moving through one continuous solid: banks, 
 
 ### Hard-problem bet
 
-**Project intent:** spend the hack on two hard Gemini 4 Argon problems: a context on the order of a **million tokens**, and **parallel agents**. The event page names Gemini 4 Argon and a “Best use of Managed Agents” prize. It does not define million-token context, parallel agents, or Managed Agents, and it does not say this split counts for that prize.
+**Project intent:** spend the hack on two hard Gemini 4 Argon problems: a context on the order of a **million tokens**, and **parallel agents**.
+
+The builder guide states the mechanism. `gemini-4-argon` puts input, thinking, and output in one **1M-token** window, and it keeps context across large codebases. Most teams use Argon as the lead and `gemini-3.8-flash` for parallel leaf tasks. **Managed Agents** in that guide means the Antigravity managed agent, `antigravity-preview-09-2026`: one call starts a Google-hosted Linux sandbox where Argon writes code, runs tests, manages files, calls MCP tools, and searches the web. The event page names a “Best use of Managed Agents” prize and does not say this sandbox, or the split below, is what that prize scores.
 
 Working agreement for the team, not a design spec:
 
-- Hold the **course, the shaders, and the level spec in one context**, so a change to the course is visible to the code that draws it and the code that moves the marble.
-- Split ownership across agents: **level, physics, camera, and rules**. One agent per surface. They meet in that shared context.
+- Hold the **course, the shaders, and the level spec in one context**, so a change to the course is visible to the code that draws it and the code that moves the marble. **Project intent:** that shared window is filled with those three, not with a general codebase dump.
+- Split ownership across agents: **level, physics, camera, and rules**. One agent per surface. They meet in that shared context. The guide’s matching pattern is Argon as architect (`thinking_level` `medium` or `high`) reviewing diffs, with `gemini-3.8-flash` on parallel leaf modules and high-frequency checks.
 - Keep each agent’s job to that surface. Do not grow this into an engine outline during the hack.
 
 ### Inspiration repo
@@ -60,7 +63,7 @@ The page frames it as an in-person hackathon to push **Gemini 4 Argon**: advance
 
 The details page prints those two start/end forms and does not say which clock wins. The event-record times carry `America/Los_Angeles`. The schema.org times use a `Z` (UTC) suffix with the same clock numbers. Confirm the live event page before you book travel or a submission cutoff.
 
-There is **no hour-by-hour agenda** on this page (no check-in time, kickoff, workshops, or demo slots).
+There is **no hour-by-hour agenda** on the event page (no check-in time, opening, meals, workshops, or demo slots). The builder guide does not add clock times, a street address, or wifi. It says the Google team is onsite all day, mentors are onsite, and API credits are claimed from that team at kickoff. It does not say when kickoff is.
 
 ## What to build
 
@@ -71,7 +74,7 @@ Build something that was not possible last week, using Gemini 4 Argon at the fro
 - Robotics
 - World models
 
-A separate prize calls out **best use of Managed Agents**. The page does not define that phrase or link a product doc for it.
+A separate prize calls out **best use of Managed Agents**. The event page does not define that phrase. The builder guide does: the Antigravity managed agent in [Gemini stack](#gemini-stack-and-official-resources).
 
 Constraints the page does state:
 
@@ -83,11 +86,80 @@ This repo’s answer to that brief is the [Marble Madness SDF remake](#the-hack-
 
 ## Gemini stack and official resources
 
-The named stack on the page is **Gemini 4 Argon**, plus the prize category **Managed Agents**.
+The event page names **Gemini 4 Argon** and the prize category **Managed Agents**. It does not link model docs, an API reference, AI Studio, or a starter repo. Those links are in the builder guide, below.
 
-The details page does **not** link model docs, an API reference, AI Studio, a model card, a starter repo, sample code, or a key-request flow. Use only credentials and docs your team is allowed to use, and do not put keys in this repo.
+The builder guide’s lead model is **`gemini-4-argon`**: frontier work in software engineering, complex knowledge work, cybersecurity defense, and multimodal creation. Input, thinking, and output share one **1M-token** window. It works longer on its own and retains context across large codebases and dense document sets. For 3D it calls out Three.js and WebGPU scenes. Pair Argon as the lead with one or two fast companions.
 
-Links that do appear on the page:
+Several model IDs in the Doc’s table were split across lines. The IDs below join those breaks (a space in the middle of a token, or a space before a hyphen). `antigravity-preview-09-2026` also appears unbroken later in the Doc. The others are that join only.
+
+| Job | Model or agent | ID |
+| --- | --- | --- |
+| Frontier reasoning, long-horizon coding, 3D, orchestration | Gemini 4 Argon | `gemini-4-argon` |
+| Autonomous sandbox | Antigravity managed agent | `antigravity-preview-09-2026` |
+| Fast parallel subagents and tool calls | Gemini 3.8 Flash | `gemini-3.8-flash` |
+| High-frequency routing and checks | Gemini 3.5 Flash-Lite | `gemini-3.5-flash-lite` |
+| Deep web research with citations | Deep Research agent | `deep-research-preview-04-2026` |
+| Real-time voice and camera | Gemini 3.8 Live | `gemini-3.8-live`; deeper while talking: `gemini-3.8-live-extended-thinking` |
+| Live speech-to-text and translation | Gemini 3.5 Transcribe and Live Translate | Streaming captions: `gemini-3.5-transcribe-live`. Recorded audio with speaker labels: `gemini-3.5-transcribe`. Speech-to-speech across more than 70 languages: `gemini-3.5-live-translate-preview` |
+| Expressive speech | Gemini 3.8 Flash TTS | `gemini-3.8-flash-tts` (130 languages). Faster: `gemini-3.8-flash-lite-tts` |
+| UI assets, textures, sprites, 4K images | Nano Banana 2.1 | `gemini-nano-banana-2.1`. Sub-second: `gemini-3.1-flash-lite-image` (Nano Banana 2 Lite) |
+| Video with native audio | Gemini Omni Flash | `gemini-omni-1.1-flash` (run in the background) |
+| Songs, vocals, loops | Lyria 3.5 | `lyria-3.5` (44.1 kHz stereo). 30-second loops: `lyria-3-clip-preview` |
+| Private or on-device open weights | Gemma 4 | `gemma-4-31b-it` on the Interactions API, Kaggle, and Hugging Face. The guide says the E2B and E4B sizes run locally on phones and laptops with native audio input. It does not give those size IDs. |
+
+### Calling Argon
+
+Use the **Interactions API** (`google-genai` or `@google/genai` **2.3.0 or later**). One API covers models and managed agents, server-side state via `previous_interaction_id`, and background execution.
+
+- `thinking_level`: `low`, `medium` (default), or `high`. Medium for interactive coding and tool use. High for multi-file debugging, security patching, formal maths, and upfront design. Low for classification, routing, and extraction.
+- Default output limit is **65,536** tokens. To go past that, up to 1M minus the input, set `background=True` and `max_output_tokens` above 65536. Poll `client.interactions.get` while status is `in_progress` or `queued`. The guide’s long-decode sample uses `max_output_tokens` 262144 and `thinking_level` `high`.
+- On `gemini-4-argon`, drop legacy Gemini 2.5 / 3 settings: replace `thinking_budget` with `thinking_level`; remove `temperature`, `top_p`, and `top_k` (ignored, deprecation warning); remove explicit `cached_content` (implicit caching is automatic, **95% off** cached input tokens).
+- Introductory pricing in the guide, through **30 November 2026**: **$2 per 1M input tokens** and **$10 per 1M output tokens**.
+- For `high` thinking, set HTTP timeouts to **15–20 minutes**, or use `background=True`.
+- Managed agent call: `agent="antigravity-preview-09-2026"`, `agent_config` type `antigravity` with `model` `gemini-4-argon`, `environment="remote"`.
+
+### Credits and keys
+
+The builder guide contains **no API key or token**. Claim a pre-provisioned account or Gemini API credits **from the Google team at kickoff**.
+
+Do not commit keys, tokens, or `.env` files. The guide’s samples construct `genai.Client()` with no key in source, so the key stays in the environment or a secret manager.
+
+If a managed agent needs a third-party token (the guide names GitHub or Stripe as examples), register it with `client.credentials.create` and restrict the sandbox with `environment={"type": "remote", "network": {"allowlist": [...]}}`. The guide says the secret is then injected at the proxy and does not enter the model context.
+
+### First 15 minutes, from the builder guide
+
+1. Claim the account or credits at kickoff.
+2. Install the official skills, or prototype in [AI Studio Build](https://aistudio.google.com/build) or [Google Antigravity](https://antigravity.google).
+3. Make one `gemini-4-argon` Interactions API call on `google-genai` / `@google/genai` 2.3.0+.
+4. Ask the Google mentors onsite when blocked. The guide says the Google team is onsite all day. Feedback: what worked, what broke, what you wish existed, or email gemini-developer-feedback@google.com.
+
+The Doc prints the skill installs as one wrapped line. These are the three commands in that line:
+
+```sh
+npx skills add google-gemini/gemini-skills --skill gemini-api-dev
+npx skills add google-gemini/gemini-skills --skill gemini-live-api-dev
+agy plugin install https://github.com/google-gemini/gemini-skills
+```
+
+### Patterns the builder guide says save hours
+
+1. Agree on the plan, edge cases, and tool access before a long run, then let Argon finish the multi-file build.
+2. Give it a pass/fail signal: tests, compiler output, runtime logs, or a headless Chrome script with a baseline score. Loop until the checks pass with no regressions.
+3. For a 3D or UI scene, pass one or two reference images, or have Argon write typography, palette, and layout into `DESIGN.md` first. For a UI or timing bug, a short screen recording plus console logs is the input it describes.
+4. Argon leads. `gemini-3.8-flash` does parallel leaves. Textures and sprites: `gemini-nano-banana-2.1`. Voice: `gemini-3.8-live` and `gemini-3.8-flash-tts`. Music: `lyria-3.5`.
+5. When a setup quirk is solved, write it into `AGENTS.md` or a skill. Before the demo, ask Argon for an interactive HTML diagram of what you built.
+
+### Builder-guide links
+
+- Gemini 4 Argon developer guide: https://aistudio.google.com/learn/gemini-4-argon-developer-guide
+- AI Studio: https://aistudio.google.com and https://aistudio.google.com/build
+- Google Antigravity: https://antigravity.google
+- Gemini API skills: https://github.com/google-gemini/gemini-skills
+- Gemini API docs: https://ai.google.dev/gemini-api/docs
+- Cookbook: https://github.com/google-gemini/cookbook
+- Live API examples: https://github.com/google-gemini/gemini-live-api-examples
+
+### Links on the event page
 
 - Event: https://cerebralvalley.ai/e/gemini-4-argon-sf
 - Details (this guide’s source): https://cerebralvalley.ai/e/gemini-4-argon-sf/details
@@ -108,7 +180,7 @@ Use this only as a reading of the timestamps above. The page has no schedule blo
 1. **Apply** and wait for approval. Waiver is required (`waiverRequired: true`).
 2. **Attend in person** in San Francisco for the published window (see the timezone note).
 3. **Submit before** `2026-10-26 00:00:00`, plus the published **1-hour grace**.
-4. **Judging** is described as in-house with a final round. `hackathonJudgingOpen` is null, so the page does not say that judging is open or when it starts.
+4. **Judging** on the event page is in-house, with a final round. `hackathonJudgingOpen` is null, so the page does not say that judging is open or when it starts. The builder guide’s bar is in [Judging](#judging): a live working demo, real inputs, under 3 minutes.
 
 Capacity at fetch time: `capacity.isFull` is **true**, and the schema.org offer availability is **SoldOut**, while `registrationClosed` is **false**. The page does not explain how those three fields interact. Treat a full or sold-out listing as “do not assume you can still walk in,” and recheck the event page.
 
@@ -131,6 +203,8 @@ The page does not list the artifact format (repo, demo URL, video, slides, or fo
 - [ ] Submit by `hackathonSubmissionDueDate` (`2026-10-26 00:00:00`) or within the **1-hour grace**.
 - [ ] Know the IP terms before you submit: the entrant keeps ownership of the submission, and as a condition of submission grants the organizer, its subsidiaries, agents, and partner companies a perpetual, irrevocable, worldwide, royalty-free, non-exclusive license to use, reproduce, adapt, modify, publish, distribute, publicly perform, create derivative works from, and publicly display it.
 - [ ] The waiver also says materials you share at the event are not confidential, and that you consent to photo, film, and audio recording. Read those sections on the source page before you demo.
+- [ ] From the builder guide, not the event page: demo a **working build, not slides**, **live**, with **real inputs**, in **under 3 minutes**. Name a specific person the project is for. Keep a person in control of any action that touches external systems, money, or private data.
+- [ ] Claim API credits from the Google team at kickoff. Keep keys out of git. See [Credits and keys](#credits-and-keys).
 
 Public voting is off (`hackathonPublicVotingEnabled: false`). The hackathon gallery is not shown (`showHackathonGallery: false`).
 
@@ -141,7 +215,16 @@ The page says the Google DeepMind team will be in-house for **judging and speaki
 - **Speaker:** [Ivan Leo](https://x.com/ivanleomk)
 - **Final-round judges (Google):** Joana Carrasqueira, Shudhatma Jain, Subhasmita Sahoo, and Oskar Yao
 
-No rubric, score weights, demo length, or round structure appears on the page, other than the words “final-round judges.” `hackathonJudgingOpen` is null.
+The event page has no score weights, demo length, or round structure beyond “final-round judges.” `hackathonJudgingOpen` is null.
+
+The builder guide states a separate bar. It says judges score **working demos, not slide decks**, and that a strong 1-day project passes four tests:
+
+1. It solves a specific problem for a real person you can name, not a generic audience.
+2. It does work that needed Gemini 4 Argon: long-horizon coding, autonomous verification loops, multi-file synthesis, 3D and WebGPU generation, or multi-agent orchestration.
+3. It keeps people in control when taking actions that affect external systems, money, or private data.
+4. It runs live during judging with real inputs in **under 3 minutes**.
+
+The guide does not give numeric weights, and the event page does not say these four tests are the Cerebral Valley final-round rubric.
 
 ## Prizes
 
@@ -167,16 +250,18 @@ Summaries only. The binding text is the waiver on the [details page](https://cer
 - Personal information submitted for the event (including name and email) may be shared with event partners. The waiver says organizers will not take confidentiality or non-disclosure duties for materials you share.
 - Check-in is enabled on the platform (`checkInEnabled: true`). The page does not say how check-in works.
 
-## What the page does not say
+## What these sources do not say
 
-Confirmed absent from the details page at fetch time. Do not fill these in from memory.
+Still absent after the event page and the builder guide. Do not fill these in from memory.
 
-- Street address or venue name beyond **San Francisco, CA** (location is hidden before approval).
-- An agenda: check-in, opening, meals, workshops, quiet hours, or demo order.
+- Street address or venue name beyond **San Francisco, CA**. The event page hides location before approval. The builder guide does not name a building.
+- Wifi, power guarantees beyond the waiver’s “may be limited,” or hardware.
+- An agenda with clock times: check-in, opening, meals, workshops, demo order, or when kickoff is. The builder guide only says the Google team is onsite all day and that credits are claimed at kickoff.
 - Whether event-record timestamps are Pacific local times, or whether the schema.org `Z` timestamps are the instants that count.
 - How to form a team, or whether solo entries are allowed, beyond the maximum of four.
-- What a submission must contain, where the submit button lives, or whether code must be public.
-- Judging criteria, demo length, and whether judging was open (`hackathonJudgingOpen` is null).
-- Official Gemini 4 Argon or Managed Agents documentation, API, SDK, or starter links.
-- Wifi, power guarantees, hardware, or provided credits.
+- The Cerebral Valley upload itself: what a submission must contain, where the submit button lives, or whether code must be public. The builder guide adds a live-demo bar, not that form.
+- Numeric judging weights, and whether the builder guide’s four tests are the final-round rubric. `hackathonJudgingOpen` is still null on the event page.
 - A code-of-conduct document separate from the waiver section titled “Code of Conduct and Right to Refuse Participation.”
+- The `gamex` license and layout. That repo was not readable. See [Inspiration repo](#inspiration-repo).
+
+The builder guide does answer the earlier holes for Argon and Managed Agents docs, the 1M-token window, companion model IDs, the Interactions API, introductory pricing, and how credits are claimed (in person, no key printed in the Doc).
