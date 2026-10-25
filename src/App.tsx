@@ -637,6 +637,10 @@ export const App: React.FC = () => {
         firePortalInternal(end, pointerNdc);
       },
       onPointerHoverNdc: (pointerNdc) => {
+        if (!pointerNdc) {
+          portalAimPreviewRef.current = undefined;
+          return;
+        }
         const ray = computeCameraCursorRay(pointerNdc);
         portalAimPreviewRef.current = raycastPortalAimPreview(
           'orange',

@@ -224,6 +224,7 @@ export function createRaymarchRenderer(
   let rollingFrameTimeMs = 16.6;
   let lastRenderTimeMs = typeof performance !== 'undefined' ? performance.now() : 0;
   let adaptiveDprScale = 1.0;
+  let slowFrameStreak = 0;
 
   function queryUniforms(glCtx: WebGL2RenderingContext, prog: WebGLProgram): UniformLocations {
     const u = (name: string) => glCtx.getUniformLocation(prog, name);
@@ -356,14 +357,22 @@ export function createRaymarchRenderer(
     const dtMs = Math.max(1, Math.min(100, nowMs - lastRenderTimeMs));
     lastRenderTimeMs = nowMs;
     rollingFrameTimeMs = rollingFrameTimeMs * 0.9 + dtMs * 0.1;
-    if (rollingFrameTimeMs > 20.0) {
-      adaptiveDprScale = 0.75;
-    } else if (rollingFrameTimeMs < 14.5) {
-      adaptiveDprScale = 1.0;
+    if (rollingFrameTimeMs > 28.5) {
+      slowFrameStreak++;
+      if (slowFrameStreak >= 45) {
+        adaptiveDprScale = 0.85;
+      }
+    } else {
+      slowFrameStreak = 0;
+      if (rollingFrameTimeMs < 22.0) {
+        adaptiveDprScale = 1.0;
+      }
     }
 
-    const baseDpr = Math.min(window.devicePixelRatio || 1, 1.5);
-    const dpr = Math.max(0.65, baseDpr * adaptiveDprScale);
+    const rawDpr = window.devicePixelRatio || 1;
+    const baseDpr = Math.min(rawDpr, 2.0);
+    const minDpr = rawDpr > 1.25 ? 1.25 : 1.0;
+    const dpr = Math.max(minDpr, baseDpr * adaptiveDprScale);
     const displayWidth = Math.max(1, Math.floor((canvas.clientWidth || window.innerWidth) * dpr));
     const displayHeight = Math.max(1, Math.floor((canvas.clientHeight || window.innerHeight) * dpr));
 

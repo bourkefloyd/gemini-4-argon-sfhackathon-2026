@@ -176,16 +176,20 @@ vec3 computeMarbleFloorCaustics(vec3 p, vec3 n, vec3 L) {
  * Uses partial derivatives of the world normal (clamp(length(fwidth(n)) * 6.5, 0.0, 1.0))
  * to add crisp, gleaming specular bevel highlights along every smoothUnion fillet and rounded ramp lip.
  */
-vec3 computeBevelCurvatureHighlight(vec3 n, vec3 L, vec3 V, vec3 accentCol) {
-  float curvature = clamp(length(fwidth(n)) * 6.5, 0.0, 1.0);
-  float smoothBevel = smoothstep(0.06, 0.68, curvature);
+vec3 computeBevelCurvatureHighlight(vec3 p, vec3 n, vec3 L, vec3 V, vec3 accentCol, float matId) {
+  float depthGrad = length(fwidth(p));
+  float matGrad = fwidth(matId);
+  // Suppress 2x2 pixel quad derivative jump across silhouette boundaries and material seams
+  float continuityMask = (1.0 - smoothstep(0.035, 0.14, depthGrad)) * (1.0 - smoothstep(0.005, 0.05, matGrad));
+  float curvature = clamp(length(fwidth(n)) * 6.5, 0.0, 1.0) * continuityMask;
+  float smoothBevel = smoothstep(0.08, 0.68, curvature);
   vec3 H = normalize(L + V);
   vec3 R = reflect(-V, n);
   float bevelSpec = pow(max(dot(n, H), 0.0), 28.0) * 0.85 +
                     pow(max(R.y * 0.5 + 0.5, 0.0), 4.0) * 0.55;
   float rim = pow(1.0 - clamp(dot(n, V), 0.0, 1.0), 2.2);
   vec3 anodizedTint = mix(accentCol, vec3(1.0, 0.94, 0.78), 0.58);
-  return anodizedTint * smoothBevel * (bevelSpec + rim * 0.55) * 0.85;
+  return anodizedTint * smoothBevel * (bevelSpec + rim * 0.55) * 0.75;
 }
 
 /**

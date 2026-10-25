@@ -580,9 +580,7 @@ float sdPortalAimRing(vec3 p) {
   float ly = dot(dp, u);
   float lz = dot(dp, n);
   float rPlanar = length(vec2(lx, ly));
-  float dOuter = length(vec2(rPlanar - uPortalAimPos.w, lz)) - 0.095;
-  float dBeacon = sdCapsule(p, uPortalAimPos.xyz, uPortalAimPos.xyz + n * 2.1, 0.055);
-  return min(dOuter, dBeacon);
+  return length(vec2(rPlanar - uPortalAimPos.w, lz)) - 0.075;
 }
 
 float sdPortalApertureDisc(vec3 p, vec3 pos, vec3 normal, vec3 up, float radius) {
@@ -618,24 +616,18 @@ vec2 evalSceneSdf(vec3 p) {
   vec2 res = evalWorldSdf(p);
 
   // Player marble SDF (material ID = 100.0) vs Shattered Glass Shards (material ID = 102.0)
+  // Note: Intact player marble (status != 2) is rendered via exact analytical ray-sphere subpixel AA
+  // in main() so the background course surface is always available for 1-px cone coverage blending!
   if (uMarbleStatus == 2 && uShatterShardCount > 0) {
     vec2 dShards = evalShatterShardsSdf(p);
     if (dShards.x < res.x) {
       res = dShards;
     }
-  } else {
-    float effRadius = uMarbleRadius;
-    if (uMarbleStatus == 3) {
-      // Sinking into acid
-      effRadius *= max(0.15, 1.0 - 0.65 * clamp(uMarbleStatusTimer, 0.0, 1.2));
-    }
+  } else if (uMarbleStatus == 2) {
     vec3 mp = p - uMarblePos;
-    float dMarble = length(mp) - effRadius;
-    if (uMarbleStatus == 2) {
-      // Shattered displacement fractures fallback
-      float shard = sin(mp.x * 18.0 + uTime * 12.0) * cos(mp.y * 18.0) * sin(mp.z * 18.0);
-      dMarble += shard * 0.08 * clamp(uMarbleStatusTimer * 2.0, 0.0, 1.0);
-    }
+    float dMarble = length(mp) - uMarbleRadius;
+    float shard = sin(mp.x * 18.0 + uTime * 12.0) * cos(mp.y * 18.0) * sin(mp.z * 18.0);
+    dMarble += shard * 0.08 * clamp(uMarbleStatusTimer * 2.0, 0.0, 1.0);
     if (dMarble < res.x) {
       res = vec2(dMarble, 100.0);
     }
@@ -765,9 +757,11 @@ vec3 shadeCourseSurface(vec3 p, vec3 n, vec3 V, float matId) {
     1.0
   );
 
-  // Classic Atari checkerboard tile alternation with subtle anodized micro-grain
-  vec2 cell = floor(xz);
-  float checker = mod(cell.x + cell.y, 2.0);
+  // Classic Atari checkerboard tile alternation with analytical fwidth edge anti-aliasing
+  vec2 sinGrid1 = sin(xz * 3.14159265);
+  float prodGrid1 = sinGrid1.x * sinGrid1.y;
+  float fwProd1 = max(fwidth(prodGrid1), 0.015);
+  float checker = smoothstep(-fwProd1, fwProd1, prodGrid1);
   bool isWall = abs(n.y) < 0.48;
 
   vec3 baseCol = mix(uTrackPrimary, uTrackSecondary, checker * 0.42);
@@ -785,6 +779,12 @@ vec3 shadeCourseSurface(vec3 p, vec3 n, vec3 V, float matId) {
   vec3 gridCol = uGridLineColor;
   float roughness = 0.28;
   float emissive = 0.0;
+
+  // Anti-aliased fine checkerboard for Start & Goal Pads
+  vec2 sinFine = sin(p.xz * 6.2831853);
+  float prodFine = sinFine.x * sinFine.y;
+  float fwFine = max(fwidth(prodFine), 0.02);
+  float fineCheckerAA = smoothstep(-fwFine, fwFine, prodFine);
 
   int m = int(round(matId));
   if (m == 1) {
@@ -819,22 +819,30 @@ vec3 shadeCourseSurface(vec3 p, vec3 n, vec3 V, float matId) {
     roughness = 0.14;
     emissive = 0.68 + 0.25 * fissure;
   } else if (m == 5) {
-    // GOAL PAD: Iconic high-contrast gold & emerald finish checkerboard
-    vec2 fineCell = floor(p.xz * 2.0);
-    float goalChecker = mod(fineCell.x + fineCell.y, 2.0);
+    // GOAL PAD: Iconic high-contrast gold & emerald finish checkerboard with AA circular disc edge
+    float rGoal = length(p.xz - uGoalPos.xz);
+    float fwGoal = max(fwidth(rGoal), 0.015);
+    float discMask = 1.0 - smoothstep(uGoalRadius - fwGoal * 1.5, uGoalRadius + fwGoal * 1.5, rGoal);
+    float rimRing = 1.0 - smoothstep(0.0, fwGoal * 2.2, abs(rGoal - (uGoalRadius - 0.08)));
     float pulse = 0.5 + 0.5 * sin(uTime * 5.0);
-    baseCol = mix(vec3(0.06, 0.78, 0.42), vec3(1.0, 0.84, 0.18), goalChecker);
+    vec3 padCol = mix(vec3(0.06, 0.78, 0.42), vec3(1.0, 0.84, 0.18), fineCheckerAA);
+    padCol = mix(padCol, vec3(1.0, 0.96, 0.65), rimRing * 0.75);
+    baseCol = mix(baseCol, padCol, discMask);
     gridCol = mix(vec3(1.0, 0.95, 0.55), vec3(0.35, 1.0, 0.75), pulse);
-    roughness = 0.08;
-    emissive = 0.48 + 0.22 * pulse;
+    roughness = mix(roughness, 0.08, discMask);
+    emissive = (0.48 + 0.22 * pulse) * discMask;
   } else if (m == 6) {
-    // START PAD: Arcade cyan/gold launch platform
-    vec2 fineCell = floor(p.xz * 2.0);
-    float startChecker = mod(fineCell.x + fineCell.y, 2.0);
-    baseCol = mix(vec3(0.12, 0.55, 0.95), vec3(0.95, 0.78, 0.22), startChecker * 0.7);
-    gridCol = vec3(0.55, 0.95, 1.0);
-    roughness = 0.15;
-    emissive = 0.26;
+    // START PAD: Arcade cyan/gold launch platform with smooth AA circular disc boundary
+    float rStart = length(p.xz);
+    float fwStart = max(fwidth(rStart), 0.015);
+    float discMask = 1.0 - smoothstep(2.2 - fwStart * 1.5, 2.2 + fwStart * 1.5, rStart);
+    float rimRing = 1.0 - smoothstep(0.0, fwStart * 2.2, abs(rStart - 2.12));
+    vec3 padCol = mix(vec3(0.12, 0.55, 0.95), vec3(0.95, 0.78, 0.22), fineCheckerAA * 0.7);
+    padCol = mix(padCol, vec3(0.65, 0.96, 1.0), rimRing * 0.7);
+    baseCol = mix(baseCol, padCol, discMask);
+    gridCol = mix(gridCol, vec3(0.55, 0.95, 1.0), discMask);
+    roughness = mix(roughness, 0.15, discMask);
+    emissive = 0.26 * discMask;
   } else if (m == 7) {
     // BUMPER / PISTON: Brushed gold & chrome-red arcade kinetic hazard
     baseCol = mix(vec3(0.88, 0.18, 0.22), vec3(0.92, 0.72, 0.28), checker * 0.55);
@@ -909,7 +917,7 @@ vec3 shadeCourseSurface(vec3 p, vec3 n, vec3 V, float matId) {
   }
 
   // Polished Bevel Curvature Highlights along smoothUnion fillets & rounded ramp lips
-  vec3 bevelHighlight = computeBevelCurvatureHighlight(n, L, V, gridCol);
+  vec3 bevelHighlight = computeBevelCurvatureHighlight(p, n, L, V, gridCol, matId);
 
   // 1-Bounce Glossy Floor Reflection on ice, goal pads, and anodized track decks
   vec3 glossyRefl = traceGlossyFloorReflection(p, n, V, roughness);
@@ -1070,16 +1078,18 @@ vec3 renderSkyAndAbyss(vec3 ro, vec3 rd) {
 
 /**
  * Curvature-Bounded Over-Relaxed Sphere Tracing (kappa-March):
- * Modulates over-relaxation omega_kappa in [1.0, 1.38] using the smooth-CSG
+ * Modulates over-relaxation omega_kappa in [1.0, 1.24] using the smooth-CSG
  * fillet shell exp(-(d / (0.45 * k))^2) and directional secant slope, paired
- * with Keinert sphere-overlap safeguard in the raymarching loop.
+ * with Keinert sphere-overlap safeguard and secant hit refinement in the raymarching loop.
  */
 float computeKappaOverRelaxation(float d, float prevD, float prevStep) {
+  if (d < 0.12) return 0.96;
   float k = 0.14;
   float shellWeight = exp(-pow(abs(d) / (0.45 * k), 2.0));
-  float curvatureDamping = exp(-0.55 * shellWeight);
+  float curvatureDamping = exp(-0.65 * shellWeight);
   float slope = (prevStep > 1e-4) ? clamp((d - prevD) / prevStep, -1.0, 1.0) : -1.0;
-  float omegaMax = (slope < -0.75) ? 1.16 : 1.38;
+  if (slope > -0.25) return 0.96;
+  float omegaMax = (slope < -0.75) ? 1.12 : 1.24;
   return 1.0 + (omegaMax - 1.0) * curvatureDamping;
 }
 
@@ -1093,6 +1103,8 @@ void main() {
     ndc.x * aspect * uCameraTanHalfFov * uCameraRight +
     ndc.y * uCameraTanHalfFov * uCameraUp
   );
+  vec3 primaryRo = ro;
+  vec3 primaryRd = rd;
 
   float t = 0.1;
   float maxT = 165.0;
@@ -1104,7 +1116,7 @@ void main() {
   float prevRadius = 0.0;
   float prevStep = 0.0;
 
-  for (int i = 0; i < 96; i++) {
+  for (int i = 0; i < 104; i++) {
     vec3 p = ro + rd * t;
     vec2 s = evalSceneSdf(p);
     vec2 ap = evalPortalApertures(p, ignorePortalSide);
@@ -1112,12 +1124,12 @@ void main() {
 
     // Keinert sphere-overlap safeguard for kappa-March over-relaxation
     if (i > 0 && prevStep > prevRadius + max(stepDist, 0.0)) {
-      t = t - prevStep + prevRadius;
+      t = t - prevStep + prevRadius * 0.95;
       p = ro + rd * t;
       s = evalSceneSdf(p);
       ap = evalPortalApertures(p, ignorePortalSide);
       stepDist = min(s.x, ap.x);
-      prevStep = prevRadius;
+      prevStep = prevRadius * 0.95;
     }
 
     // Accumulate subtle goal beacon glow
@@ -1175,13 +1187,15 @@ void main() {
         hit = vec2(t, enteredA ? 104.0 : 105.0);
         break;
       }
-    } else if (s.x < 0.0018) {
-      hit = vec2(t, s.y);
+    } else if (s.x < 0.0008) {
+      // 1-step secant/Newton refinement along ray so hitPos sits at d = 0 with zero stair-stepping
+      float refinedT = t + s.x * 0.5;
+      hit = vec2(refinedT, s.y);
       break;
     } else {
       float omegaKappa = computeKappaOverRelaxation(stepDist, prevRadius, prevStep);
-      prevRadius = max(stepDist, 0.004);
-      prevStep = max(stepDist * omegaKappa, 0.004);
+      prevRadius = max(stepDist, 0.001);
+      prevStep = max(stepDist * omegaKappa, 0.001);
       t += prevStep;
       if (t >= maxT) break;
     }
@@ -1189,8 +1203,10 @@ void main() {
 
   vec3 skyCol = renderSkyAndAbyss(ro, rd);
   vec3 color = skyCol;
+  float worldHitT = maxT;
 
   if (hit.y >= 0.0) {
+    worldHitT = hit.x;
     vec3 hitPos = ro + rd * hit.x;
     vec3 normal = calcWorldNormal(hitPos);
     vec3 V = -rd;
@@ -1243,6 +1259,38 @@ void main() {
     float heightFog = clamp((-hitPos.y - 4.0) / 14.0, 0.0, 1.0) * 0.65;
     float fogFactor = clamp(max(distFog, heightFog), 0.0, 0.92);
     color = mix(color, mix(uAbyssFogColor, skyCol, 0.5), fogFactor);
+  }
+
+  // Exact Analytical Ray-Sphere Intersection & Subpixel Cone Anti-Aliasing for Player Marble:
+  // Eliminates grazing-ray normal noise and 2x2 quad silhouette stippling on the glass sphere!
+  if (portalHops == 0 && uMarbleStatus != 2) {
+    float effMarbleR = uMarbleRadius;
+    if (uMarbleStatus == 3) {
+      effMarbleR *= max(0.15, 1.0 - 0.65 * clamp(uMarbleStatusTimer, 0.0, 1.2));
+    }
+    vec3 oc = primaryRo - uMarblePos;
+    float tca = -dot(oc, primaryRd);
+    if (tca > 0.0) {
+      vec3 closestVec = oc + primaryRd * tca;
+      float bDist = length(closestVec);
+      float pxConeRadius = max(0.002, tca * (uCameraTanHalfFov * 2.15 / max(uResolution.y, 1.0)));
+      if (bDist < effMarbleR + pxConeRadius) {
+        float clampedB = min(bDist, effMarbleR * 0.996);
+        float thc = sqrt(max(1e-6, effMarbleR * effMarbleR - clampedB * clampedB));
+        float tSphere = max(0.05, tca - thc);
+        if (tSphere < worldHitT + pxConeRadius * 2.0) {
+          vec3 pSphere = uMarblePos + normalize(
+            (primaryRo + primaryRd * tSphere) - uMarblePos
+          ) * effMarbleR;
+          vec3 nSphere = normalize(pSphere - uMarblePos);
+          vec3 marbleCol = shadePlayerMarble(pSphere, nSphere, -primaryRd);
+          float mFog = clamp(1.0 - exp(-tSphere * 0.0065 * uAbyssFogDensity), 0.0, 0.92);
+          marbleCol = mix(marbleCol, mix(uAbyssFogColor, skyCol, 0.5), mFog);
+          float sphereCoverage = 1.0 - smoothstep(effMarbleR - pxConeRadius, effMarbleR + pxConeRadius, bDist);
+          color = mix(color, marbleCol, sphereCoverage);
+        }
+      }
+    }
   }
 
   // Boost see-through portal interior exposure by 1.35x so the destination room is crystal clear inside the portal disc
