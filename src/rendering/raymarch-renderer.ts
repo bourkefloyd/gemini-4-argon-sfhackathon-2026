@@ -44,6 +44,49 @@ const STATUS_TO_INT: Record<MarbleLifecycleStatus, number> = {
   fell: 4,
 };
 
+/**
+ * Default initial Retina devicePixelRatio cap (1.35× looks razor-sharp with our
+ * analytical subpixel sphere/edge anti-aliasing while shading 2.2× fewer pixels than DPR 2.0).
+ */
+export const INITIAL_DPR_CAP = 1.35;
+export const MIN_ADAPTIVE_SCALE = 0.75;
+export const MAX_ADAPTIVE_SCALE = 1.0;
+export const GOVERNOR_DOWN_THRESHOLD_MS = 17.2; // < 58 FPS
+export const GOVERNOR_UP_THRESHOLD_MS = 11.5;   // > 85 FPS
+
+/**
+ * Smoothly steps `adaptiveScale` in [0.75, 1.0] based on rolling `emaFrameMs`:
+ * - If `emaFrameMs > 17.2 ms` (< 58 FPS), smoothly step `adaptiveScale` down toward `0.75`.
+ * - If `emaFrameMs < 11.5 ms` (> 85 FPS), smoothly step `adaptiveScale` up toward `1.0`.
+ */
+export function stepAutoGovernorScale(
+  currentScale: number,
+  emaFrameMs: number,
+  stepDownDelta = 0.025,
+  stepUpDelta = 0.015,
+): number {
+  const clamped = Math.max(MIN_ADAPTIVE_SCALE, Math.min(MAX_ADAPTIVE_SCALE, currentScale));
+  if (emaFrameMs > GOVERNOR_DOWN_THRESHOLD_MS) {
+    return Number(Math.max(MIN_ADAPTIVE_SCALE, clamped - stepDownDelta).toFixed(4));
+  }
+  if (emaFrameMs < GOVERNOR_UP_THRESHOLD_MS) {
+    return Number(Math.min(MAX_ADAPTIVE_SCALE, clamped + stepUpDelta).toFixed(4));
+  }
+  return clamped;
+}
+
+export interface RendererProfilerMetrics {
+  readonly fps: number;
+  readonly frameTimeMs: number;
+  readonly emaFrameMs: number;
+  readonly gpuPassMs: number;
+  readonly gpuTimerQueryAvailable: boolean;
+  readonly initialDprCap: number;
+  readonly adaptiveScale: number;
+  readonly effectiveDpr: number;
+  readonly renderResolution: readonly [number, number];
+}
+
 export interface GridTileViewInput {
   readonly tileIndex: number;
   readonly viewport: {
@@ -100,6 +143,8 @@ export interface RaymarchRenderer {
   setCourse(course: CourseSpec): void;
   render(frame: RenderFrameInput): void;
   getCompiledShaders(): { glsl: string; wgsl: string; backend: string };
+  getProfilerMetrics(): RendererProfilerMetrics;
+  setAdaptiveScale(scale: number): void;
   dispose(): void;
 }
 
@@ -221,9 +266,32 @@ export function createRaymarchRenderer(
   let locations: UniformLocations | null = null;
   let fallbackEvaluator = createCpuWorldEvaluator(initialCourse);
   let contextLost = false;
-  let rollingFrameTimeMs = 16.6;
+  let lastFrameTimeMs = 16.6;
+  let emaFrameMs = 16.6;
   let lastRenderTimeMs = typeof performance !== 'undefined' ? performance.now() : 0;
-  let adaptiveDprScale = 1.0;
+  let adaptiveScale = 1.0;
+  let effectiveDpr = INITIAL_DPR_CAP;
+  let gpuPassMs = 2.4;
+
+  // WebGL2 EXT_disjoint_timer_query_webgl2 support for hardware GPU pass timing
+  const timerExt = gl
+    ? (gl.getExtension('EXT_disjoint_timer_query_webgl2') as {
+        readonly TIME_ELAPSED_EXT: number;
+        readonly GPU_DISJOINT_EXT: number;
+      } | null)
+    : null;
+  const pendingQueries: WebGLQuery[] = [];
+
+  // Pre-allocated uniform upload buffers (zero GC allocation per frame)
+  const mutPosAData = new Float32Array(MAX_FIELD_MUTATIONS * 4);
+  const mutPosBData = new Float32Array(MAX_FIELD_MUTATIONS * 4);
+  const mutMetaData = new Float32Array(MAX_FIELD_MUTATIONS * 4);
+  const portalPosAData = new Float32Array(MAX_PORTAL_PAIRS * 4);
+  const portalNormalAData = new Float32Array(MAX_PORTAL_PAIRS * 4);
+  const portalUpAData = new Float32Array(MAX_PORTAL_PAIRS * 4);
+  const portalPosBData = new Float32Array(MAX_PORTAL_PAIRS * 4);
+  const portalNormalBData = new Float32Array(MAX_PORTAL_PAIRS * 4);
+  const portalUpBData = new Float32Array(MAX_PORTAL_PAIRS * 4);
 
   function queryUniforms(glCtx: WebGL2RenderingContext, prog: WebGLProgram): UniformLocations {
     const u = (name: string) => glCtx.getUniformLocation(prog, name);
@@ -355,17 +423,14 @@ export function createRaymarchRenderer(
     const nowMs = typeof performance !== 'undefined' ? performance.now() : lastRenderTimeMs + 16.6;
     const dtMs = Math.max(1, Math.min(100, nowMs - lastRenderTimeMs));
     lastRenderTimeMs = nowMs;
-    rollingFrameTimeMs = rollingFrameTimeMs * 0.9 + dtMs * 0.1;
-    if (rollingFrameTimeMs > 20.0) {
-      adaptiveDprScale = 0.75;
-    } else if (rollingFrameTimeMs < 14.5) {
-      adaptiveDprScale = 1.0;
-    }
+    lastFrameTimeMs = dtMs;
+    emaFrameMs = emaFrameMs * 0.9 + dtMs * 0.1;
+    adaptiveScale = stepAutoGovernorScale(adaptiveScale, emaFrameMs);
 
-    const baseDpr = Math.min(window.devicePixelRatio || 1, 1.5);
-    const dpr = Math.max(0.65, baseDpr * adaptiveDprScale);
-    const displayWidth = Math.max(1, Math.floor((canvas.clientWidth || window.innerWidth) * dpr));
-    const displayHeight = Math.max(1, Math.floor((canvas.clientHeight || window.innerHeight) * dpr));
+    const baseDpr = Math.min(window.devicePixelRatio || 1, INITIAL_DPR_CAP);
+    effectiveDpr = Math.max(0.65, Number((baseDpr * adaptiveScale).toFixed(3)));
+    const displayWidth = Math.max(1, Math.floor((canvas.clientWidth || window.innerWidth) * effectiveDpr));
+    const displayHeight = Math.max(1, Math.floor((canvas.clientHeight || window.innerHeight) * effectiveDpr));
 
     if (canvas.width !== displayWidth || canvas.height !== displayHeight) {
       canvas.width = displayWidth;
@@ -375,6 +440,32 @@ export function createRaymarchRenderer(
     if (!gl || contextLost || !program || !locations) {
       renderCpuFallback(canvas, frame);
       return;
+    }
+
+    // Poll completed non-blocking GPU timer queries from previous frames
+    if (timerExt && pendingQueries.length > 0) {
+      const oldest = pendingQueries[0];
+      const available = gl.getQueryParameter(oldest, gl.QUERY_RESULT_AVAILABLE);
+      const disjoint = gl.getParameter(timerExt.GPU_DISJOINT_EXT);
+      if (available) {
+        pendingQueries.shift();
+        if (!disjoint) {
+          const elapsedNs = Number(gl.getQueryParameter(oldest, gl.QUERY_RESULT));
+          if (Number.isFinite(elapsedNs) && elapsedNs > 0) {
+            gpuPassMs = gpuPassMs * 0.85 + (elapsedNs / 1e6) * 0.15;
+          }
+        }
+        gl.deleteQuery(oldest);
+      }
+    }
+
+    const cpuPassStartMs = typeof performance !== 'undefined' ? performance.now() : 0;
+    let activeQuery: WebGLQuery | null = null;
+    if (timerExt && pendingQueries.length < 3) {
+      activeQuery = gl.createQuery();
+      if (activeQuery) {
+        gl.beginQuery(timerExt.TIME_ELAPSED_EXT, activeQuery);
+      }
     }
 
     gl.viewport(0, 0, canvas.width, canvas.height);
@@ -461,9 +552,9 @@ export function createRaymarchRenderer(
     // Upload Realtime CSG FieldMutation Ring Buffer (MAX_FIELD_MUTATIONS = 16)
     const mutations = frame.fieldMutations ?? [];
     const mutCount = Math.min(mutations.length, MAX_FIELD_MUTATIONS);
-    const mutPosAData = new Float32Array(MAX_FIELD_MUTATIONS * 4);
-    const mutPosBData = new Float32Array(MAX_FIELD_MUTATIONS * 4);
-    const mutMetaData = new Float32Array(MAX_FIELD_MUTATIONS * 4);
+    mutPosAData.fill(0);
+    mutPosBData.fill(0);
+    mutMetaData.fill(0);
     for (let i = 0; i < mutCount; i++) {
       const m = mutations[i];
       const base = i * 4;
@@ -490,12 +581,12 @@ export function createRaymarchRenderer(
     // Upload Non-Euclidean SDF Portal Pairs (MAX_PORTAL_PAIRS = 2)
     const portals = frame.portals ?? course.portals ?? [];
     const portalCount = Math.min(portals.length, MAX_PORTAL_PAIRS);
-    const portalPosAData = new Float32Array(MAX_PORTAL_PAIRS * 4);
-    const portalNormalAData = new Float32Array(MAX_PORTAL_PAIRS * 4);
-    const portalUpAData = new Float32Array(MAX_PORTAL_PAIRS * 4);
-    const portalPosBData = new Float32Array(MAX_PORTAL_PAIRS * 4);
-    const portalNormalBData = new Float32Array(MAX_PORTAL_PAIRS * 4);
-    const portalUpBData = new Float32Array(MAX_PORTAL_PAIRS * 4);
+    portalPosAData.fill(0);
+    portalNormalAData.fill(0);
+    portalUpAData.fill(0);
+    portalPosBData.fill(0);
+    portalNormalBData.fill(0);
+    portalUpBData.fill(0);
     for (let i = 0; i < portalCount; i++) {
       const p = portals[i];
       const base = i * 4;
@@ -623,6 +714,14 @@ export function createRaymarchRenderer(
       gl.disable(gl.SCISSOR_TEST);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
     }
+
+    if (timerExt && activeQuery) {
+      gl.endQuery(timerExt.TIME_ELAPSED_EXT);
+      pendingQueries.push(activeQuery);
+    } else if (typeof performance !== 'undefined') {
+      const cpuDrawElapsed = Math.max(0.05, performance.now() - cpuPassStartMs);
+      gpuPassMs = gpuPassMs * 0.85 + cpuDrawElapsed * 0.15;
+    }
   }
 
   function renderCpuFallback(targetCanvas: HTMLCanvasElement, frame: RenderFrameInput) {
@@ -644,10 +743,35 @@ export function createRaymarchRenderer(
     };
   }
 
+  function getProfilerMetrics(): RendererProfilerMetrics {
+    const safeEma = Math.max(1.0, emaFrameMs);
+    return {
+      fps: Number((1000.0 / safeEma).toFixed(1)),
+      frameTimeMs: Number(lastFrameTimeMs.toFixed(2)),
+      emaFrameMs: Number(emaFrameMs.toFixed(2)),
+      gpuPassMs: Number(gpuPassMs.toFixed(2)),
+      gpuTimerQueryAvailable: Boolean(timerExt),
+      initialDprCap: INITIAL_DPR_CAP,
+      adaptiveScale: Number(adaptiveScale.toFixed(3)),
+      effectiveDpr: Number(effectiveDpr.toFixed(3)),
+      renderResolution: [canvas.width || 1, canvas.height || 1],
+    };
+  }
+
+  function setAdaptiveScale(scale: number) {
+    adaptiveScale = Math.max(MIN_ADAPTIVE_SCALE, Math.min(MAX_ADAPTIVE_SCALE, scale));
+    const baseDpr = Math.min(window.devicePixelRatio || 1, INITIAL_DPR_CAP);
+    effectiveDpr = Math.max(0.65, Number((baseDpr * adaptiveScale).toFixed(3)));
+  }
+
   function dispose() {
     canvas.removeEventListener('webglcontextlost', handleContextLost);
     canvas.removeEventListener('webglcontextrestored', handleContextRestored);
     if (!gl) return;
+    while (pendingQueries.length > 0) {
+      const q = pendingQueries.shift();
+      if (q) gl.deleteQuery(q);
+    }
     if (program) gl.deleteProgram(program);
     if (vao) gl.deleteVertexArray(vao);
   }
@@ -656,6 +780,8 @@ export function createRaymarchRenderer(
     setCourse,
     render,
     getCompiledShaders,
+    getProfilerMetrics,
+    setAdaptiveScale,
     dispose,
   };
 }

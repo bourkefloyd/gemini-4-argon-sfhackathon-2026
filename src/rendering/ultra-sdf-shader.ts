@@ -9,8 +9,10 @@
  *     * Focused optical floor caustics projected onto the deck beneath the glass marble.
  *     * Screen-space bevel curvature highlights (`clamp(length(fwidth(n)) * 6.5, 0.0, 1.0)`) along
  *       every smoothUnion fillet and rounded ramp lip.
- *     * 12-step 1-bounce glossy floor reflections on ice, goal pads, and anodized track decks.
- *     * O(1) infinite domain-repeated cathedral megastructure backdrop (`sdInfiniteMegaPillars`).
+ *     * 5-step 1-bounce glossy floor reflections (`MAX_REFL_STEPS = 5` with fast 3-tap forward-diff normal)
+ *       on ice, goal pads, and anodized track decks when `reflStrength > 0.12 && hitT < 45.0`.
+ *     * O(1) infinite domain-repeated cathedral megastructure backdrop (`sdInfiniteMegaPillars`),
+ *       evaluated only on background misses or far abyss rays (`length(p.xz) > 22.0 || p.y < -1.5`).
  *     * Dual-scale 2.0m major + 0.5m minor anti-aliased isometric gridlines & Voronoi acid/ice shaders.
  *   - Mode 1 (`BASIC POLYGON MESH + FACETED PHYSICS`):
  *     * Flat-shaded polygon facets (`dFdx(pos) x dFdy(pos)` & 16-segment facet quantization),
@@ -32,8 +34,10 @@ export function getUltraSdfShaderSnippet(): UltraSdfShaderPack {
 uniform int uEngineMode;
 
 // Forward declarations for scene evaluators used by secondary reflection & refraction rays
+vec2 evalCourseWorldRaw(vec3 p);
 vec2 evalWorldSdf(vec3 p);
 vec2 evalSceneSdf(vec3 p);
+float evalShadowScene(vec3 p);
 
 bool isBasicPolygonPixel() {
   if (uEngineMode == 1) return true;
@@ -46,6 +50,7 @@ bool isBasicPolygonPixel() {
  * Uses bounded/infinite modular domain repetition (opRepLim) to render an infinite
  * field of monolithic pillars, brutalist cross-arches, and vertical neon light-columns
  * at O(1) shader evaluation cost.
+ * Guarded so it is only evaluated in the far abyss (length(p.xz) > 22.0 || p.y < -1.5).
  */
 vec3 opRepLim(vec3 p, float s, vec3 lim) {
   vec3 cell = clamp(round(p / s), -lim, lim);
@@ -53,6 +58,9 @@ vec3 opRepLim(vec3 p, float s, vec3 lim) {
 }
 
 float sdInfiniteMegaPillars(vec3 p) {
+  if (length(p.xz) <= 22.0 && p.y >= -1.5) {
+    return max(22.0 - length(p.xz), p.y + 1.5);
+  }
   float cellSpacing = 16.0;
   vec3 q = opRepLim(p - vec3(8.0, 0.0, 8.0), cellSpacing, vec3(24.0, 0.0, 24.0));
   vec2 dShaft2D = abs(q.xz) - vec2(1.35);
@@ -64,7 +72,8 @@ float sdInfiniteMegaPillars(vec3 p) {
 }
 
 /**
- * Raymarches the distant O(1) Cathedral Megastructure in the sky/abyss pass (16 fast steps)
+ * Raymarches the distant O(1) Cathedral Megastructure in the sky/abyss pass (12 fast steps)
+ * only on background misses or far abyss rays (length(p.xz) > 22.0 || p.y < -1.5)
  * so it never interferes with primary track physics or collision distances.
  */
 vec3 renderCathedralMegastructure(vec3 ro, vec3 rd, vec3 baseSky) {
@@ -74,15 +83,19 @@ vec3 renderCathedralMegastructure(vec3 ro, vec3 rd, vec3 baseSky) {
 
   float hitT = -1.0;
   vec3 hitP = vec3(0.0);
-  for (int i = 0; i < 16; i++) {
+  for (int i = 0; i < 12; i++) {
     vec3 p = ro + rd * t;
+    if (length(p.xz) <= 22.0 && p.y >= -1.5) {
+      t += 4.5;
+      continue;
+    }
     float d = sdInfiniteMegaPillars(p);
     if (d < 0.08) {
       hitT = t;
       hitP = p;
       break;
     }
-    t += max(d * 0.9, 0.6);
+    t += max(d * 0.92, 0.75);
     if (t > 170.0) break;
   }
 
@@ -189,44 +202,59 @@ vec3 computeBevelCurvatureHighlight(vec3 n, vec3 L, vec3 V, vec3 accentCol) {
 }
 
 /**
- * Fast 12-step secondary reflection ray traced from glossy course surfaces
- * (ice, goal pad, chrome bumpers, and anodized track decks).
+ * Fast 3-tap forward-difference normal for reflected hits (instead of 4-tap tetrahedral normal).
  */
-vec3 traceGlossyFloorReflection(vec3 p, vec3 n, vec3 V, float roughness) {
-  if (roughness > 0.58) return vec3(0.0);
+vec3 calcFastReflectedNormal(vec3 p, float centerDist) {
+  const float eps = 0.004;
+  float dx = evalShadowScene(p + vec3(eps, 0.0, 0.0)) - centerDist;
+  float dy = evalShadowScene(p + vec3(0.0, eps, 0.0)) - centerDist;
+  float dz = evalShadowScene(p + vec3(0.0, 0.0, eps)) - centerDist;
+  return normalize(vec3(dx, dy, dz));
+}
+
+/**
+ * Fast 5-step secondary reflection ray traced from glossy course surfaces
+ * (ice, goal pad, chrome bumpers, and anodized track decks) when reflStrength > 0.12 && hitT < 45.0.
+ */
+vec3 traceGlossyFloorReflection(vec3 p, vec3 n, vec3 V, float roughness, float hitT) {
+  float ndotv = clamp(dot(n, V), 0.0, 1.0);
+  float fresnel = mix(0.08, 0.62, pow(1.0 - ndotv, 3.0));
+  float reflStrength = (1.0 - smoothstep(0.04, 0.58, roughness)) * fresnel;
+
+  if (reflStrength <= 0.12 || hitT >= 45.0) return vec3(0.0);
+
   vec3 reflDir = reflect(-V, n);
   vec3 ro = p + n * 0.04;
-  float t = 0.05;
+  float t = 0.06;
   vec2 hit = vec2(-1.0, -1.0);
+  float hitDist = 0.0;
 
-  for (int i = 0; i < 12; i++) {
+  const int MAX_REFL_STEPS = 5;
+  for (int i = 0; i < MAX_REFL_STEPS; i++) {
     vec3 rp = ro + reflDir * t;
-    vec2 s = evalSceneSdf(rp);
-    if (s.x < 0.012) {
+    vec2 courseS = evalCourseWorldRaw(rp);
+    float dMarble = length(rp - uMarblePos) - uMarbleRadius;
+    vec2 s = (dMarble < courseS.x) ? vec2(dMarble, 100.0) : courseS;
+    if (s.x < 0.018) {
       hit = vec2(t, s.y);
+      hitDist = s.x;
       break;
     }
-    t += max(s.x * 0.95, 0.08);
-    if (t > 24.0) break;
+    t += max(s.x * 1.15, 0.12);
+    if (t > 18.0) break;
   }
-
-  float ndotv = clamp(dot(n, V), 0.0, 1.0);
-  float fresnel = mix(0.06, 0.58, pow(1.0 - ndotv, 3.2));
-  float glossWeight = (1.0 - smoothstep(0.04, 0.58, roughness)) * fresnel;
 
   if (hit.x < 0.0) {
     float horizon = clamp(0.5 + 0.5 * reflDir.y, 0.0, 1.0);
     vec3 envSky = mix(uSkyHorizon, uSkyZenith, pow(horizon, 0.75));
-    return envSky * glossWeight * 0.45;
+    return envSky * reflStrength * 0.45;
   }
 
   vec3 rPos = ro + reflDir * hit.x;
+  vec3 rNorm = calcFastReflectedNormal(rPos, hitDist);
+  float rNdotL = max(dot(rNorm, normalize(uSunDir)), 0.0);
   vec3 reflCol = uTrackPrimary;
-  if (hit.y > 103.5) {
-    reflCol = (hit.y > 104.5) ? vec3(1.0, 0.55, 0.12) * 1.5 : vec3(0.15, 0.82, 1.0) * 1.5;
-  } else if (hit.y > 100.5 && hit.y < 101.5) {
-    reflCol = vec3(0.35, 1.0, 0.78) * 1.4;
-  } else if (hit.y > 99.5 && hit.y < 100.5) {
+  if (hit.y > 99.5 && hit.y < 100.5) {
     reflCol = mix(uMarbleBaseColor, uMarbleGlowColor, 0.55) * 1.35;
   } else {
     vec2 cell = floor(rPos.xz);
@@ -238,9 +266,10 @@ vec3 traceGlossyFloorReflection(vec3 p, vec3 n, vec3 V, float roughness) {
     else if (rm == 5) reflCol = vec3(1.0, 0.85, 0.24);
     else if (rm == 7) reflCol = vec3(0.92, 0.22, 0.26);
   }
+  reflCol *= (0.55 + 0.45 * rNdotL);
 
   float distAtten = exp(-hit.x * 0.085);
-  return reflCol * glossWeight * distAtten;
+  return reflCol * reflStrength * distAtten;
 }
 
 /**
@@ -249,7 +278,7 @@ vec3 traceGlossyFloorReflection(vec3 p, vec3 n, vec3 V, float roughness) {
  * and chromatic dispersion of the grid beneath the marble are crisp and unmistakable.
  */
 vec3 sampleRefractedUnderMarble(vec3 p) {
-  vec2 s = evalWorldSdf(p);
+  vec2 s = evalCourseWorldRaw(p);
   float matId = s.y;
   vec2 xz = p.xz;
   // Crisp procedural grid lines for refracted rays
@@ -298,7 +327,7 @@ vec3 sampleRefractedUnderMarble(vec3 p) {
 /**
  * True Optical Glass Marble Refraction with R/G/B Chromatic Dispersion:
  * Traces a refracted ray (refract(rd, n, 1.0 / 1.52)) with IOR_R = 1.50, IOR_G = 1.52, IOR_B = 1.55
- * through the glass sphere and into the course geometry beneath/behind it.
+ * through the glass sphere and into the course geometry beneath/behind it (8 fast steps).
  */
 vec3 traceMarbleOpticalRefraction(vec3 hitPos, vec3 n, vec3 rd) {
   const float IOR_R = 1.50;
@@ -327,19 +356,19 @@ vec3 traceMarbleOpticalRefraction(vec3 hitPos, vec3 n, vec3 rd) {
   if (length(outB) < 0.001) outB = normalize(mix(outG, refrInB, 0.25));
   outB = normalize(outB);
 
-  // Raymarch the refracted green carrier ray into the course behind/beneath the marble
+  // Raymarch the refracted green carrier ray into the course behind/beneath the marble (8 fast steps)
   vec3 ro = exitPos + outG * 0.035;
   float t = 0.02;
   bool hitWorld = false;
-  for (int i = 0; i < 16; i++) {
+  for (int i = 0; i < 8; i++) {
     vec3 p = ro + outG * t;
-    vec2 s = evalWorldSdf(p);
-    if (s.x < 0.008) {
+    vec2 s = evalCourseWorldRaw(p);
+    if (s.x < 0.012) {
       hitWorld = true;
       break;
     }
-    t += max(s.x * 0.92, 0.04);
-    if (t > 18.0) break;
+    t += max(s.x * 0.96, 0.06);
+    if (t > 14.0) break;
   }
 
   if (!hitWorld) {

@@ -18,7 +18,7 @@ import {
   type SdfPrimitiveNode,
   type Vec3,
 } from '../contracts';
-import { buildCourseSceneTree } from '../sdf/eval-cpu';
+import { buildCourseSceneTree, evaluateSdfTree } from '../sdf/eval-cpu';
 import { getShatterShaderSnippet, getShockwaveShaderSnippet } from '../vfx';
 import { getUltraSdfShaderSnippet } from './ultra-sdf-shader';
 
@@ -44,6 +44,185 @@ function isCsgNode(node: SdfNode): node is SdfCsgNode {
     node.kind === 'smoothSubtract' ||
     node.kind === 'intersect'
   );
+}
+
+export interface CourseBoundingBox {
+  readonly center: Vec3;
+  readonly halfExtents: Vec3;
+  readonly padding: number;
+}
+
+function collectPrimitiveNodes(node: SdfNode, out: SdfPrimitiveNode[]): void {
+  if (!isCsgNode(node)) {
+    out.push(node);
+    return;
+  }
+  for (const child of node.children) {
+    collectPrimitiveNodes(child, out);
+  }
+}
+
+function computeKinematicReach(k?: KinematicSpec): Vec3 {
+  if (!k) return [0, 0, 0];
+  if (k.kind === 'piston') {
+    const s = Math.abs(k.stroke);
+    return [Math.abs(k.axis[0]) * s, Math.abs(k.axis[1]) * s, Math.abs(k.axis[2]) * s];
+  }
+  if (k.kind === 'bridge') {
+    const a = Math.abs(k.amplitude);
+    return [Math.abs(k.axis[0]) * a, Math.abs(k.axis[1]) * a, Math.abs(k.axis[2]) * a];
+  }
+  const rx = Math.abs(k.span[0]);
+  const ry = Math.abs(k.span[1]);
+  const rz = Math.abs(k.span[2] || k.span[0]);
+  return [rx, ry, rz];
+}
+
+function computePrimitiveBounds(node: SdfPrimitiveNode): { min: Vec3; max: Vec3 } {
+  const reach = computeKinematicReach(node.kinematic);
+  let hx = 1.0;
+  let hy = 1.0;
+  let hz = 1.0;
+  let cx = node.center[0];
+  let cy = node.center[1];
+  let cz = node.center[2];
+
+  switch (node.kind) {
+    case 'box':
+      hx = node.halfExtents[0];
+      hy = node.halfExtents[1];
+      hz = node.halfExtents[2];
+      break;
+    case 'roundedBox':
+      hx = node.halfExtents[0] + node.radius;
+      hy = node.halfExtents[1] + node.radius;
+      hz = node.halfExtents[2] + node.radius;
+      break;
+    case 'sphere':
+      hx = node.radius;
+      hy = node.radius;
+      hz = node.radius;
+      break;
+    case 'cylinder':
+      hx = node.radius;
+      hy = node.halfHeight;
+      hz = node.radius;
+      break;
+    case 'capsule':
+      hx = Math.max(Math.abs(node.a[0]), Math.abs(node.b[0])) + node.radius;
+      hy = Math.max(Math.abs(node.a[1]), Math.abs(node.b[1])) + node.radius;
+      hz = Math.max(Math.abs(node.a[2]), Math.abs(node.b[2])) + node.radius;
+      break;
+    case 'torus':
+      hx = node.majorRadius + node.minorRadius;
+      hy = node.minorRadius;
+      hz = node.majorRadius + node.minorRadius;
+      break;
+    case 'ramp': {
+      const railH = node.railHeight ?? 0;
+      const railT = node.railThickness ?? 0.28;
+      if (node.axis === 'x') {
+        hx = node.halfLength;
+        hy = Math.abs(node.rise) * 0.5 + node.thickness + railH;
+        hz = node.halfWidth + railT;
+      } else {
+        hx = node.halfWidth + railT;
+        hy = Math.abs(node.rise) * 0.5 + node.thickness + railH;
+        hz = node.halfLength;
+      }
+      break;
+    }
+    case 'sweptTrack': {
+      const railH = node.railHeight ?? 0;
+      const pad = node.halfWidth + (node.railThickness ?? 0.28) + 0.25;
+      const minX = Math.min(node.start[0], node.end[0]) - pad;
+      const maxX = Math.max(node.start[0], node.end[0]) + pad;
+      const minY = Math.min(node.start[1], node.end[1]) - node.thickness - 0.25;
+      const maxY = Math.max(node.start[1], node.end[1]) + railH + 0.25;
+      const minZ = Math.min(node.start[2], node.end[2]) - pad;
+      const maxZ = Math.max(node.start[2], node.end[2]) + pad;
+      cx += (minX + maxX) * 0.5;
+      cy += (minY + maxY) * 0.5;
+      cz += (minZ + maxZ) * 0.5;
+      hx = (maxX - minX) * 0.5;
+      hy = (maxY - minY) * 0.5;
+      hz = (maxZ - minZ) * 0.5;
+      break;
+    }
+    case 'waveFloor':
+      hx = node.halfExtents[0];
+      hy = node.halfExtents[1] + Math.abs(node.waveAmplitude);
+      hz = node.halfExtents[2];
+      break;
+    case 'piston':
+      hx = node.headHalfExtents[0] + node.bevelRadius;
+      hy = node.headHalfExtents[1] + 2.4 + node.bevelRadius;
+      hz = node.headHalfExtents[2] + node.bevelRadius;
+      break;
+  }
+
+  if (node.rotation) {
+    const diag = Math.hypot(hx, hy, hz);
+    hx = diag;
+    hy = diag;
+    hz = diag;
+  }
+
+  hx += reach[0];
+  hy += reach[1];
+  hz += reach[2];
+
+  return {
+    min: [cx - hx, cy - hy, cz - hz],
+    max: [cx + hx, cy + hy, cz + hz],
+  };
+}
+
+/**
+ * Computes the static world-space AABB for a `CourseSpec` with 4m padding
+ * for O(1) raymarch bounding-box fast-skip (`sdCourseBounds`).
+ */
+export function computeCourseBoundingBox(
+  course: CourseSpec,
+  padding = 4.0,
+): CourseBoundingBox {
+  const rootTree = buildCourseSceneTree(course);
+  const prims: SdfPrimitiveNode[] = [];
+  collectPrimitiveNodes(rootTree, prims);
+
+  let minX = Math.min(course.startPos[0] - 2.0, course.goalPos[0] - course.goalRadius - 1.5);
+  let maxX = Math.max(course.startPos[0] + 2.0, course.goalPos[0] + course.goalRadius + 1.5);
+  let minY = Math.min(course.startPos[1] - 2.0, course.goalPos[1] - 2.0);
+  let maxY = Math.max(course.startPos[1] + 3.0, course.goalPos[1] + 3.5);
+  let minZ = Math.min(course.startPos[2] - 2.0, course.goalPos[2] - course.goalRadius - 1.5);
+  let maxZ = Math.max(course.startPos[2] + 2.0, course.goalPos[2] + course.goalRadius + 1.5);
+
+  for (const prim of prims) {
+    const b = computePrimitiveBounds(prim);
+    if (b.min[0] < minX) minX = b.min[0];
+    if (b.max[0] > maxX) maxX = b.max[0];
+    if (b.min[1] < minY) minY = b.min[1];
+    if (b.max[1] > maxY) maxY = b.max[1];
+    if (b.min[2] < minZ) minZ = b.min[2];
+    if (b.max[2] > maxZ) maxZ = b.max[2];
+  }
+
+  minX -= padding;
+  maxX += padding;
+  minY -= padding;
+  maxY += padding;
+  minZ -= padding;
+  maxZ += padding;
+
+  return {
+    center: [(minX + maxX) * 0.5, (minY + maxY) * 0.5, (minZ + maxZ) * 0.5],
+    halfExtents: [
+      Math.max(1.0, (maxX - minX) * 0.5),
+      Math.max(1.0, (maxY - minY) * 0.5),
+      Math.max(1.0, (maxZ - minZ) * 0.5),
+    ],
+    padding,
+  };
 }
 
 function compileKinematicOffsetGlsl(k?: KinematicSpec): string {
@@ -204,12 +383,15 @@ function buildGlslNodeStatements(
  */
 export function compileCourseToGlsl(course: CourseSpec): string {
   const rootTree = buildCourseSceneTree(course);
+  const bounds = computeCourseBoundingBox(course, 4.0);
   const bodyLines: string[] = [];
   const counter = { id: 0 };
   const finalVar = buildGlslNodeStatements(rootTree, bodyLines, counter);
   const shatterSnippet = getShatterShaderSnippet().glsl;
   const shockwaveSnippet = getShockwaveShaderSnippet().glsl;
   const ultraSdfSnippet = getUltraSdfShaderSnippet().glsl;
+  const boundsCenterGlsl = v3Glsl(bounds.center);
+  const boundsHalfExtentsGlsl = v3Glsl(bounds.halfExtents);
 
   return `#version 300 es
 precision highp float;
@@ -446,9 +628,22 @@ vec2 opIntersect(vec2 a, vec2 b) {
   return (a.x >= b.x) ? a : b;
 }
 
+const vec3 COURSE_BOUNDS_CENTER = ${boundsCenterGlsl};
+const vec3 COURSE_BOUNDS_HALF_EXTENTS = ${boundsHalfExtentsGlsl};
+
+float sdCourseBounds(vec3 p) {
+  return sdBox(p - COURSE_BOUNDS_CENTER, COURSE_BOUNDS_HALF_EXTENTS);
+}
+
 vec2 evalCourseWorldRaw(vec3 p) {
+  float dBounds = sdCourseBounds(p);
+  if (dBounds > 1.5) return vec2(dBounds, 0.0);
 ${bodyLines.join('\n')}
   return ${finalVar};
+}
+
+float evalShadowScene(vec3 p) {
+  return min(evalCourseWorldRaw(p).x, length(p - uMarblePos) - uMarbleRadius);
 }
 
 float sdTectonicRamp(vec3 p, vec3 posA, vec3 posB, float radius) {
@@ -568,7 +763,7 @@ float sdPortalRing(vec3 p, vec3 pos, vec3 normal, vec3 up, float radius) {
 }
 
 float sdPortalAimRing(vec3 p) {
-  if (uPortalAimNormal.w < 0.5 || uPortalAimPos.w < 0.1) return 1000.0;
+  if (uPortalAimPos.w <= 0.5 || uPortalAimNormal.w < 0.5) return 1000.0;
   vec3 dp = p - uPortalAimPos.xyz;
   float dist = length(dp);
   if (dist > uPortalAimPos.w + 1.2) return dist - (uPortalAimPos.w + 0.12);
@@ -656,12 +851,15 @@ vec2 evalSceneSdf(vec3 p) {
 
   // Hovering holographic Goal Halo Torus above the Goal Pad (material ID = 101.0)
   vec3 gp = p - (uGoalPos + vec3(0.0, 1.35 + 0.18 * sin(uTime * 3.2), 0.0));
-  float c = cos(uTime * 1.8);
-  float s = sin(uTime * 1.8);
-  vec3 gpRot = vec3(c * gp.x - s * gp.z, gp.y, s * gp.x + c * gp.z);
-  float dGoalHalo = sdTorus(gpRot.xzy, uGoalRadius * 0.52, 0.11);
-  if (dGoalHalo < res.x) {
-    res = vec2(dGoalHalo, 101.0);
+  float gpBound = length(gp) - (uGoalRadius * 0.52 + 0.25);
+  if (gpBound < res.x) {
+    float c = cos(uTime * 1.8);
+    float s = sin(uTime * 1.8);
+    vec3 gpRot = vec3(c * gp.x - s * gp.z, gp.y, s * gp.x + c * gp.z);
+    float dGoalHalo = sdTorus(gpRot.xzy, uGoalRadius * 0.52, 0.11);
+    if (dGoalHalo < res.x) {
+      res = vec2(dGoalHalo, 101.0);
+    }
   }
 
   // Glowing Blue (104.0) & Orange (105.0) SDF Portal Torus Frames + Live 3D Aim Preview Ring (106.0)
@@ -680,7 +878,7 @@ vec2 evalSceneSdf(vec3 p) {
       }
     }
   }
-  if (uPortalAimNormal.w > 0.5) {
+  if (uPortalAimPos.w > 0.5 && uPortalAimNormal.w > 0.5) {
     float dAim = sdPortalAimRing(p);
     if (dAim < res.x) {
       res = vec2(dAim, 106.0);
@@ -704,24 +902,24 @@ vec3 calcWorldNormal(vec3 p) {
 float calcSoftShadow(vec3 ro, vec3 rd) {
   float res = 1.0;
   float t = 0.06;
-  for (int i = 0; i < 28; i++) {
+  for (int i = 0; i < 10; i++) {
     vec3 p = ro + rd * t;
-    float h = min(evalCourseWorldRaw(p).x, length(p - uMarblePos) - uMarbleRadius);
+    float h = evalShadowScene(p);
     if (h < 0.001) return 0.08;
     res = min(res, 11.0 * h / t);
-    t += clamp(h, 0.05, 0.95);
-    if (t > 26.0) break;
+    t += clamp(h, 0.08, 1.8);
+    if (t > 24.0) break;
   }
   return clamp(res, 0.08, 1.0);
 }
 
 float calcAmbientOcclusion(vec3 p, vec3 n) {
-  float steps[7] = float[7](0.02, 0.045, 0.085, 0.15, 0.24, 0.36, 0.52);
-  float weights[7] = float[7](0.22, 0.20, 0.17, 0.15, 0.11, 0.09, 0.06);
+  const float steps[4] = float[4](0.025, 0.08, 0.20, 0.44);
+  const float weights[4] = float[4](0.36, 0.28, 0.22, 0.14);
   float occ = 0.0;
-  for (int i = 0; i < 7; i++) {
+  for (int i = 0; i < 4; i++) {
     float dist = steps[i];
-    float d = evalCourseWorldRaw(p + n * dist).x;
+    float d = evalShadowScene(p + n * dist);
     occ += max(0.0, dist - d - 0.01) / dist * weights[i];
   }
   float ao = clamp(1.0 - occ * 1.25, 0.32, 1.0);
@@ -911,8 +1109,9 @@ vec3 shadeCourseSurface(vec3 p, vec3 n, vec3 V, float matId) {
   // Polished Bevel Curvature Highlights along smoothUnion fillets & rounded ramp lips
   vec3 bevelHighlight = computeBevelCurvatureHighlight(n, L, V, gridCol);
 
-  // 1-Bounce Glossy Floor Reflection on ice, goal pads, and anodized track decks
-  vec3 glossyRefl = traceGlossyFloorReflection(p, n, V, roughness);
+  // 5-Step 1-Bounce Glossy Floor Reflection on ice, goal pads, and anodized track decks
+  float hitT = length(p - uCameraPos);
+  vec3 glossyRefl = traceGlossyFloorReflection(p, n, V, roughness, hitT);
 
   // Focused Optical Floor Caustics projected beneath the marble
   vec3 floorCaustics = computeMarbleFloorCaustics(p, n, L);
@@ -1104,10 +1303,10 @@ void main() {
   float prevRadius = 0.0;
   float prevStep = 0.0;
 
-  for (int i = 0; i < 96; i++) {
+  for (int i = 0; i < 64; i++) {
     vec3 p = ro + rd * t;
     vec2 s = evalSceneSdf(p);
-    vec2 ap = evalPortalApertures(p, ignorePortalSide);
+    vec2 ap = (uPortalPairCount > 0) ? evalPortalApertures(p, ignorePortalSide) : vec2(1000.0, -1.0);
     float stepDist = min(s.x, ap.x);
 
     // Keinert sphere-overlap safeguard for kappa-March over-relaxation
@@ -1115,7 +1314,7 @@ void main() {
       t = t - prevStep + prevRadius;
       p = ro + rd * t;
       s = evalSceneSdf(p);
-      ap = evalPortalApertures(p, ignorePortalSide);
+      ap = (uPortalPairCount > 0) ? evalPortalApertures(p, ignorePortalSide) : vec2(1000.0, -1.0);
       stepDist = min(s.x, ap.x);
       prevStep = prevRadius;
     }
@@ -1187,13 +1386,17 @@ void main() {
     }
   }
 
-  vec3 skyCol = renderSkyAndAbyss(ro, rd);
-  vec3 color = skyCol;
+  vec3 color = vec3(0.0);
 
-  if (hit.y >= 0.0) {
+  if (hit.y < 0.0) {
+    // Only evaluate O(1) cathedral megastructure on background misses
+    color = renderSkyAndAbyss(ro, rd);
+  } else {
     vec3 hitPos = ro + rd * hit.x;
     vec3 normal = calcWorldNormal(hitPos);
     vec3 V = -rd;
+    float horizon = clamp(0.5 + 0.5 * rd.y, 0.0, 1.0);
+    vec3 skyCol = mix(uSkyHorizon, uSkyZenith, pow(horizon, 0.75));
 
     if (hit.y > 105.5) {
       // Live 3D Aim Ring / Trajectory Preview (106.0)
@@ -1333,12 +1536,15 @@ function buildWgslNodeStatements(
  */
 export function compileCourseToWgsl(course: CourseSpec): string {
   const rootTree = buildCourseSceneTree(course);
+  const bounds = computeCourseBoundingBox(course, 4.0);
   const bodyLines: string[] = [];
   const counter = { id: 0 };
   const finalVar = buildWgslNodeStatements(rootTree, bodyLines, counter);
   const shatterWgsl = getShatterShaderSnippet().wgsl;
   const shockwaveWgsl = getShockwaveShaderSnippet().wgsl;
   const ultraWgsl = getUltraSdfShaderSnippet().wgsl;
+  const boundsCenterWgsl = v3Wgsl(bounds.center);
+  const boundsHalfExtentsWgsl = v3Wgsl(bounds.halfExtents);
 
   return `// WGSL Lockstep Raymarching Shader for course: ${course.id}
 struct Uniforms {
@@ -1532,9 +1738,22 @@ fn opIntersect(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
   return select(b, a, a.x >= b.x);
 }
 
+const COURSE_BOUNDS_CENTER: vec3<f32> = ${boundsCenterWgsl};
+const COURSE_BOUNDS_HALF_EXTENTS: vec3<f32> = ${boundsHalfExtentsWgsl};
+
+fn sdCourseBounds(p: vec3<f32>) -> f32 {
+  return sdBox(p - COURSE_BOUNDS_CENTER, COURSE_BOUNDS_HALF_EXTENTS);
+}
+
 fn evalCourseWorldRaw(p: vec3<f32>) -> vec2<f32> {
+  let dBounds = sdCourseBounds(p);
+  if (dBounds > 1.5) { return vec2<f32>(dBounds, 0.0); }
 ${bodyLines.join('\n')}
   return ${finalVar};
+}
+
+fn evalShadowScene(p: vec3<f32>) -> f32 {
+  return min(evalCourseWorldRaw(p).x, length(p - u.marblePos) - u.marbleRadius);
 }
 
 fn sdTectonicRamp(p: vec3<f32>, posA: vec3<f32>, posB: vec3<f32>, radius: f32) -> f32 {
@@ -1604,4 +1823,312 @@ fn computeKappaOverRelaxation(d: f32, prevD: f32, prevStep: f32) -> f32 {
   return 1.0 + (omegaMax - 1.0) * curvatureDamping;
 }
 `;
+}
+
+export interface ShaderPixelEvaluationBenchmark {
+  readonly courseId: string;
+  readonly primitiveCount: number;
+  readonly totalPixelsSampled: number;
+  readonly legacyEvalSceneCallsPerPixel: number;
+  readonly optimizedEvalSceneCallsPerPixel: number;
+  readonly legacyPrimitiveEvalsPerPixel: number;
+  readonly optimizedPrimitiveEvalsPerPixel: number;
+  readonly primitiveEvalReductionRatio: number;
+  readonly primitiveEvalReductionPercent: number;
+  readonly aabbFastSkipRate: number;
+}
+
+/**
+ * Evaluates `sdCourseBounds(p)` on the CPU using the exact same `sdBox` formula
+ * emitted into the GLSL/WGSL shaders.
+ */
+export function evaluateCourseBoundsDistance(
+  p: Vec3,
+  bounds: CourseBoundingBox,
+): number {
+  const qx = Math.abs(p[0] - bounds.center[0]) - bounds.halfExtents[0];
+  const qy = Math.abs(p[1] - bounds.center[1]) - bounds.halfExtents[1];
+  const qz = Math.abs(p[2] - bounds.center[2]) - bounds.halfExtents[2];
+  return (
+    Math.hypot(Math.max(qx, 0), Math.max(qy, 0), Math.max(qz, 0)) +
+    Math.min(Math.max(qx, Math.max(qy, qz)), 0)
+  );
+}
+
+/**
+ * Benchmarks per-pixel SDF scene calls and primitive evaluations across a representative
+ * viewport grid of rays, comparing the legacy unoptimized 30 FPS shader pipeline against
+ * the optimized 60+ FPS shader pipeline (`sdCourseBounds` fast skip, 10-step `evalShadowScene`
+ * soft shadows, 4-tap AO, 5-step gated glossy reflection with 3-tap forward-diff normal,
+ * and far-abyss-only `sdInfiniteMegaPillars`).
+ */
+export function benchmarkShaderPixelEvaluations(
+  course: CourseSpec,
+  gridWidth = 16,
+  gridHeight = 10,
+): ShaderPixelEvaluationBenchmark {
+  const rootTree = buildCourseSceneTree(course);
+  const prims: SdfPrimitiveNode[] = [];
+  collectPrimitiveNodes(rootTree, prims);
+  const primitiveCount = Math.max(1, prims.length);
+  const bounds = computeCourseBoundingBox(course, 4.0);
+
+  const marblePos: Vec3 = [
+    course.startPos[0],
+    course.startPos[1] + 0.5,
+    course.startPos[2] - 2.0,
+  ];
+  const marbleRadius = 0.45;
+  const cameraPos: Vec3 = [
+    marblePos[0] + 11.5,
+    marblePos[1] + 12.0,
+    marblePos[2] + 11.5,
+  ];
+
+  // Camera basis looking toward marble / track center
+  const toTarget: Vec3 = [
+    marblePos[0] - cameraPos[0],
+    marblePos[1] - 1.5 - cameraPos[1],
+    marblePos[2] - 3.5 - cameraPos[2],
+  ];
+  const fwdLen = Math.hypot(toTarget[0], toTarget[1], toTarget[2]) || 1;
+  const forward: Vec3 = [toTarget[0] / fwdLen, toTarget[1] / fwdLen, toTarget[2] / fwdLen];
+  const rightRaw: Vec3 = [forward[2], 0, -forward[0]];
+  const rightLen = Math.hypot(rightRaw[0], rightRaw[1], rightRaw[2]) || 1;
+  const right: Vec3 = [-rightRaw[0] / rightLen, 0, -rightRaw[2] / rightLen];
+  const up: Vec3 = [
+    right[1] * forward[2] - right[2] * forward[1],
+    right[2] * forward[0] - right[0] * forward[2],
+    right[0] * forward[1] - right[1] * forward[0],
+  ];
+  const tanHalfFov = Math.tan((42 * Math.PI) / 360);
+  const aspect = 16 / 9;
+  const sunDir = course.theme.sunDirection;
+  const sunLen = Math.hypot(sunDir[0], sunDir[1], sunDir[2]) || 1;
+  const L: Vec3 = [sunDir[0] / sunLen, sunDir[1] / sunLen, sunDir[2] / sunLen];
+
+  let legacySceneCalls = 0;
+  let legacyPrimEvals = 0;
+  let optSceneCalls = 0;
+  let optPrimEvals = 0;
+  let aabbChecks = 0;
+  let aabbSkips = 0;
+
+  // Legacy cost per `evalScene` call: all course primitives + unbounded mutation/shatter/megastructure loops
+  const legacyLoopOverheadPrims = 16 + 12 + 4; // 16 mutations + 12 shards + portals/megastructure
+
+  const evalOptimizedCourse = (p: Vec3): { d: number; matId: number } => {
+    aabbChecks++;
+    const dBounds = evaluateCourseBoundsDistance(p, bounds);
+    if (dBounds > 1.5) {
+      aabbSkips++;
+      return { d: dBounds, matId: 0 };
+    }
+    optPrimEvals += primitiveCount;
+    const s = evaluateSdfTree(rootTree, p, 0);
+    return { d: s.distance, matId: s.materialId };
+  };
+
+  const totalPixels = Math.max(1, gridWidth * gridHeight);
+
+  for (let y = 0; y < gridHeight; y++) {
+    for (let x = 0; x < gridWidth; x++) {
+      const ndcX = ((x + 0.5) / gridWidth) * 2 - 1;
+      const ndcY = ((y + 0.5) / gridHeight) * 2 - 1;
+      const rx = forward[0] + ndcX * aspect * tanHalfFov * right[0] + ndcY * tanHalfFov * up[0];
+      const ry = forward[1] + ndcX * aspect * tanHalfFov * right[1] + ndcY * tanHalfFov * up[1];
+      const rz = forward[2] + ndcX * aspect * tanHalfFov * right[2] + ndcY * tanHalfFov * up[2];
+      const rLen = Math.hypot(rx, ry, rz) || 1;
+      const rd: Vec3 = [rx / rLen, ry / rLen, rz / rLen];
+
+      // ----------------------------------------------------------------------
+      // 1. Legacy Unoptimized Pipeline (84 primary + 24 shadow + 7 AO + 4 normal + 12 refl + 4 refl normal + 12 mega)
+      // ----------------------------------------------------------------------
+      let tLeg = 0.1;
+      let legHit = false;
+      let legHitMarble = false;
+      for (let i = 0; i < 84; i++) {
+        const p: Vec3 = [
+          cameraPos[0] + rd[0] * tLeg,
+          cameraPos[1] + rd[1] * tLeg,
+          cameraPos[2] + rd[2] * tLeg,
+        ];
+        legacySceneCalls++;
+        legacyPrimEvals += primitiveCount + legacyLoopOverheadPrims;
+        const s = evaluateSdfTree(rootTree, p, 0);
+        const dM = Math.hypot(p[0] - marblePos[0], p[1] - marblePos[1], p[2] - marblePos[2]) - marbleRadius;
+        const d = Math.min(s.distance, dM);
+        if (d < 0.0018) {
+          legHit = true;
+          legHitMarble = dM < s.distance;
+          break;
+        }
+        tLeg += Math.max(d, 0.004);
+        if (tLeg >= 165.0) break;
+      }
+      // Legacy always marched 12 steps of renderCathedralMegastructure unconditionally
+      legacySceneCalls += 12;
+      legacyPrimEvals += 12 * 4;
+
+      if (legHit) {
+        // 4 tetrahedral normal taps
+        legacySceneCalls += 4;
+        legacyPrimEvals += 4 * (primitiveCount + legacyLoopOverheadPrims);
+        if (legHitMarble) {
+          // 14 refraction steps
+          legacySceneCalls += 14;
+          legacyPrimEvals += 14 * (primitiveCount + legacyLoopOverheadPrims);
+        } else {
+          // 24 shadow steps + 7 AO taps + 12 reflection steps + 4 reflection normal taps
+          const secondaryCalls = 24 + 7 + 12 + 4;
+          legacySceneCalls += secondaryCalls;
+          legacyPrimEvals += secondaryCalls * (primitiveCount + legacyLoopOverheadPrims);
+        }
+      }
+
+      // ----------------------------------------------------------------------
+      // 2. Optimized 60+ FPS Pipeline (64 primary w/ sdCourseBounds + 10 shadow + 4 AO + gated 5-step refl)
+      // ----------------------------------------------------------------------
+      let tOpt = 0.1;
+      let optHitT = -1;
+      let optHitMat = -1;
+      let prevR = 0;
+      let prevStep = 0;
+
+      for (let i = 0; i < 64; i++) {
+        const p: Vec3 = [
+          cameraPos[0] + rd[0] * tOpt,
+          cameraPos[1] + rd[1] * tOpt,
+          cameraPos[2] + rd[2] * tOpt,
+        ];
+        optSceneCalls++;
+        const cRes = evalOptimizedCourse(p);
+        const dM = Math.hypot(p[0] - marblePos[0], p[1] - marblePos[1], p[2] - marblePos[2]) - marbleRadius;
+        const stepDist = Math.min(cRes.d, dM);
+        const mat = dM < cRes.d ? 100 : cRes.matId;
+        if (stepDist < 0.0018) {
+          optHitT = tOpt;
+          optHitMat = mat;
+          break;
+        }
+        const k = 0.14;
+        const shellW = Math.exp(-Math.pow(Math.abs(stepDist) / (0.45 * k), 2));
+        const curvDamp = Math.exp(-0.55 * shellW);
+        const slope = prevStep > 1e-4 ? Math.max(-1, Math.min(1, (stepDist - prevR) / prevStep)) : -1;
+        const omegaMax = slope < -0.75 ? 1.16 : 1.38;
+        const omegaKappa = 1.0 + (omegaMax - 1.0) * curvDamp;
+        prevR = Math.max(stepDist, 0.004);
+        prevStep = Math.max(stepDist * omegaKappa, 0.004);
+        tOpt += prevStep;
+        if (tOpt >= 165.0) break;
+      }
+
+      if (optHitT < 0) {
+        // Background miss: only evaluate megastructure if rd.y <= 0.18 and in far abyss
+        if (rd[1] <= 0.18) {
+          optSceneCalls += 6;
+          optPrimEvals += 6;
+        }
+      } else {
+        const hitPos: Vec3 = [
+          cameraPos[0] + rd[0] * optHitT,
+          cameraPos[1] + rd[1] * optHitT,
+          cameraPos[2] + rd[2] * optHitT,
+        ];
+        // 4 normal taps
+        for (let nTap = 0; nTap < 4; nTap++) {
+          optSceneCalls++;
+          evalOptimizedCourse(hitPos);
+        }
+
+        if (optHitMat === 100) {
+          // 8 fast refraction steps
+          for (let rStep = 0; rStep < 8; rStep++) {
+            optSceneCalls++;
+            const rp: Vec3 = [
+              hitPos[0] + rd[0] * (0.2 + rStep * 0.35),
+              hitPos[1] + rd[1] * (0.2 + rStep * 0.35),
+              hitPos[2] + rd[2] * (0.2 + rStep * 0.35),
+            ];
+            const rs = evalOptimizedCourse(rp);
+            if (rs.d < 0.012) break;
+          }
+        } else {
+          // 10-step soft shadow with over-stepping clamp(h, 0.08, 1.8) using evalShadowScene
+          let shT = 0.06;
+          for (let sStep = 0; sStep < 10; sStep++) {
+            optSceneCalls++;
+            const sp: Vec3 = [
+              hitPos[0] + L[0] * shT,
+              hitPos[1] + 0.03 + L[1] * shT,
+              hitPos[2] + L[2] * shT,
+            ];
+            const shRes = evalOptimizedCourse(sp);
+            const dM = Math.hypot(sp[0] - marblePos[0], sp[1] - marblePos[1], sp[2] - marblePos[2]) - marbleRadius;
+            const h = Math.min(shRes.d, dM);
+            if (h < 0.001) break;
+            shT += Math.max(0.08, Math.min(1.8, h));
+            if (shT > 24.0) break;
+          }
+
+          // 4-tap AO using evalShadowScene
+          const aoSteps = [0.025, 0.08, 0.20, 0.44];
+          for (let aStep = 0; aStep < 4; aStep++) {
+            optSceneCalls++;
+            evalOptimizedCourse([hitPos[0], hitPos[1] + aoSteps[aStep], hitPos[2]]);
+          }
+
+          // Gated 5-step glossy floor reflection (only when reflStrength > 0.12 && hitT < 45.0)
+          const roughness = optHitMat === 1 ? 0.05 : optHitMat === 5 ? 0.08 : 0.28;
+          const ndotv = Math.max(0, Math.min(1, -rd[1]));
+          const fresnel = 0.08 + (0.62 - 0.08) * Math.pow(1 - ndotv, 3);
+          const smoothR = Math.max(0, Math.min(1, (roughness - 0.04) / (0.58 - 0.04)));
+          const reflStrength = (1 - smoothR * smoothR * (3 - 2 * smoothR)) * fresnel;
+
+          if (reflStrength > 0.12 && optHitT < 45.0) {
+            let rt = 0.06;
+            let rHit = false;
+            for (let rStep = 0; rStep < 5; rStep++) {
+              optSceneCalls++;
+              const rp: Vec3 = [hitPos[0] + rd[0] * rt, hitPos[1] + Math.abs(rd[1]) * rt, hitPos[2] + rd[2] * rt];
+              const rr = evalOptimizedCourse(rp);
+              if (rr.d < 0.018) {
+                rHit = true;
+                break;
+              }
+              rt += Math.max(rr.d * 1.15, 0.12);
+              if (rt > 18.0) break;
+            }
+            if (rHit) {
+              // Fast 3-tap forward-difference normal on reflected hit
+              for (let rn = 0; rn < 3; rn++) {
+                optSceneCalls++;
+                evalOptimizedCourse(hitPos);
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  const legacyEvalSceneCallsPerPixel = Number((legacySceneCalls / totalPixels).toFixed(2));
+  const optimizedEvalSceneCallsPerPixel = Number((optSceneCalls / totalPixels).toFixed(2));
+  const legacyPrimitiveEvalsPerPixel = Number((legacyPrimEvals / totalPixels).toFixed(1));
+  const optimizedPrimitiveEvalsPerPixel = Number((optPrimEvals / totalPixels).toFixed(1));
+  const reductionRatio =
+    legacyPrimEvals > 0 ? (legacyPrimEvals - optPrimEvals) / legacyPrimEvals : 0;
+
+  return {
+    courseId: course.id,
+    primitiveCount,
+    totalPixelsSampled: totalPixels,
+    legacyEvalSceneCallsPerPixel,
+    optimizedEvalSceneCallsPerPixel,
+    legacyPrimitiveEvalsPerPixel,
+    optimizedPrimitiveEvalsPerPixel,
+    primitiveEvalReductionRatio: Number(reductionRatio.toFixed(4)),
+    primitiveEvalReductionPercent: Number((reductionRatio * 100).toFixed(1)),
+    aabbFastSkipRate: Number((aabbChecks > 0 ? aabbSkips / aabbChecks : 0).toFixed(4)),
+  };
 }

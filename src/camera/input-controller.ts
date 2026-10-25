@@ -35,7 +35,7 @@ export interface ArcadeInputCallbacks {
   onToggleAudioMute?: () => void;
   onUserGesture?: () => void;
   onFirePortal?: (end: 'blue' | 'orange', pointerNdc?: readonly [number, number]) => void;
-  onPointerHoverNdc?: (pointerNdc: readonly [number, number]) => void;
+  onPointerHoverNdc?: (pointerNdc: readonly [number, number], altKey?: boolean) => void;
   onTriggerWeapon?: (ability: WeaponAbilityId) => void;
   onToggleParty?: () => void;
   onToggleViewMode?: () => void;
@@ -147,6 +147,12 @@ export function createArcadeInputController(
 
   function onKeyUp(ev: KeyboardEvent) {
     keysDown.delete(ev.code);
+    if (
+      lastPointerNdc &&
+      (ev.key === 'Alt' || ev.code === 'AltLeft' || ev.code === 'AltRight')
+    ) {
+      callbacks.onPointerHoverNdc?.(lastPointerNdc, false);
+    }
   }
 
   function onPointerDown(ev: PointerEvent) {
@@ -157,7 +163,7 @@ export function createArcadeInputController(
       return;
     }
     lastPointerNdc = computeNdc(ev.clientX, ev.clientY);
-    callbacks.onPointerHoverNdc?.(lastPointerNdc);
+    callbacks.onPointerHoverNdc?.(lastPointerNdc, ev.altKey);
     if (ev.button === 0 && ev.altKey) {
       ev.preventDefault();
       callbacks.onFirePortal?.('orange', lastPointerNdc);
@@ -177,7 +183,7 @@ export function createArcadeInputController(
 
   function onPointerMove(ev: PointerEvent) {
     lastPointerNdc = computeNdc(ev.clientX, ev.clientY);
-    callbacks.onPointerHoverNdc?.(lastPointerNdc);
+    callbacks.onPointerHoverNdc?.(lastPointerNdc, ev.altKey);
     if (!pointerDragging && !orbitDragging) return;
     if (orbitDragging) {
       const dx = ev.clientX - pointerCurrent[0];
