@@ -20,6 +20,7 @@ import {
 } from '../contracts';
 import { buildCourseSceneTree } from '../sdf/eval-cpu';
 import { getShatterShaderSnippet, getShockwaveShaderSnippet } from '../vfx';
+import { getUltraSdfShaderSnippet } from './ultra-sdf-shader';
 
 function f(n: number): string {
   if (!Number.isFinite(n)) return '0.0';
@@ -208,6 +209,7 @@ export function compileCourseToGlsl(course: CourseSpec): string {
   const finalVar = buildGlslNodeStatements(rootTree, bodyLines, counter);
   const shatterSnippet = getShatterShaderSnippet().glsl;
   const shockwaveSnippet = getShockwaveShaderSnippet().glsl;
+  const ultraSdfSnippet = getUltraSdfShaderSnippet().glsl;
 
   return `#version 300 es
 precision highp float;
@@ -283,13 +285,16 @@ vec3 rotateByQuatInverse(vec3 d, vec4 q) {
   return d - q.w * t + cross(q.xyz, t);
 }
 
+${ultraSdfSnippet}
+
 float sdBox(vec3 p, vec3 b) {
   vec3 q = abs(p) - b;
   return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0);
 }
 
 float sdRoundedBox(vec3 p, vec3 b, float r) {
-  float cr = min(r, min(b.x, min(b.y, b.z)) * 0.95);
+  float effR = isBasicPolygonPixel() ? 0.0 : r;
+  float cr = min(effR, min(b.x, min(b.y, b.z)) * 0.95);
   vec3 core = max(vec3(0.001), b - vec3(cr));
   return sdBox(p, core) - cr;
 }
@@ -420,6 +425,7 @@ vec2 opUnion(vec2 a, vec2 b) {
 }
 
 vec2 opSmoothUnion(vec2 a, vec2 b, float k) {
+  if (isBasicPolygonPixel()) return opUnion(a, b);
   float h = clamp(0.5 + 0.5 * (b.x - a.x) / max(k, 1e-4), 0.0, 1.0);
   float d = mix(b.x, a.x, h) - k * h * (1.0 - h);
   return vec2(d, (a.x <= b.x) ? a.y : b.y);
@@ -430,6 +436,7 @@ vec2 opSubtract(vec2 a, vec2 b) {
 }
 
 vec2 opSmoothSubtract(vec2 a, vec2 b, float k) {
+  if (isBasicPolygonPixel()) return opSubtract(a, b);
   float h = clamp(0.5 - 0.5 * (a.x + b.x) / max(k, 1e-4), 0.0, 1.0);
   float d = mix(a.x, -b.x, h) + k * h * (1.0 - h);
   return vec2(d, a.y);
@@ -727,11 +734,20 @@ float calcAmbientOcclusion(vec3 p, vec3 n) {
  * Iconic Marble Madness anti-aliased isometric gridlines etched onto world X/Z & Y surfaces.
  * Uses screen-space partial derivatives (fwidth) so slopes, ramps, chutes, and vertical cliffs
  * remain crisp and free of aliasing at every camera zoom stop.
+ * In Basic Polygon Mode (uEngineMode == 1 or Left Half of Split-Screen A/B), delegates to
+ * shadeBasicPolygonCourseSurface for flat-shaded triangle facets + diagonal wireframe seams.
  */
 vec3 shadeCourseSurface(vec3 p, vec3 n, vec3 V, float matId) {
-  // 1. Isometric tile coordinates (1.0m minor grid, 2.0m major grid)
+  if (isBasicPolygonPixel()) {
+    return shadeBasicPolygonCourseSurface(p, n, V, matId);
+  }
+
+  // 1. Dual-Scale Isometric tile coordinates (0.5m sub-minor, 1.0m minor, 2.0m major grid)
   vec2 xz = p.xz;
   vec2 fwXZ = max(fwidth(xz), vec2(0.001));
+  vec2 grid05 = abs(fract(xz * 2.0 - 0.5) - 0.5) / (fwXZ * 2.0);
+  float lineSubMinorXZ = 1.0 - smoothstep(0.0, 1.35, min(grid05.x, grid05.y));
+
   vec2 grid1 = abs(fract(xz - 0.5) - 0.5) / fwXZ;
   float lineMinorXZ = 1.0 - smoothstep(0.0, 1.45, min(grid1.x, grid1.y));
 
@@ -743,14 +759,18 @@ vec3 shadeCourseSurface(vec3 p, vec3 n, vec3 V, float matId) {
   float gridY = abs(fract(p.y - 0.5) - 0.5) / fwY;
   float lineContourY = (1.0 - smoothstep(0.0, 1.4, gridY)) * smoothstep(0.92, 0.35, abs(n.y));
 
-  float gridMask = clamp(max(lineMinorXZ * 0.65, max(lineMajorXZ * 0.95, lineContourY * 0.7)), 0.0, 1.0);
+  float gridMask = clamp(
+    max(lineSubMinorXZ * 0.34, max(lineMinorXZ * 0.68, max(lineMajorXZ * 0.96, lineContourY * 0.72))),
+    0.0,
+    1.0
+  );
 
-  // Classic Atari checkerboard tile alternation
+  // Classic Atari checkerboard tile alternation with subtle anodized micro-grain
   vec2 cell = floor(xz);
   float checker = mod(cell.x + cell.y, 2.0);
   bool isWall = abs(n.y) < 0.48;
 
-  vec3 baseCol = mix(uTrackPrimary, uTrackSecondary, checker * 0.38);
+  vec3 baseCol = mix(uTrackPrimary, uTrackSecondary, checker * 0.42);
   if (isWall) {
     baseCol = mix(uWallColor, uTrackPrimary * 0.55, 0.35);
   }
@@ -763,34 +783,41 @@ vec3 shadeCourseSurface(vec3 p, vec3 n, vec3 V, float matId) {
   }
 
   vec3 gridCol = uGridLineColor;
-  float roughness = 0.45;
+  float roughness = 0.28;
   float emissive = 0.0;
 
   int m = int(round(matId));
   if (m == 1) {
-    // ICE: Crystalline cyan-white specular surface
-    baseCol = mix(vec3(0.55, 0.88, 1.0), vec3(0.76, 0.95, 1.0), checker * 0.5);
-    gridCol = vec3(0.92, 0.99, 1.0);
-    roughness = 0.08;
-    float frost = 0.5 + 0.5 * sin(p.x * 9.0 + p.z * 7.0);
-    baseCol += vec3(0.08, 0.14, 0.2) * frost;
+    // ICE: Iridescent crystalline cyan-white specular surface with Voronoi frost facets
+    vec2 vIce = voronoi2D(p.xz * 2.4, 0.0);
+    float ndotvIce = clamp(dot(n, V), 0.0, 1.0);
+    vec3 iceIrid = 0.5 + 0.5 * cos(6.28318 * (vec3(0.05, 0.38, 0.72) + ndotvIce * 1.2 + vIce.x * 0.35));
+    baseCol = mix(vec3(0.55, 0.88, 1.0), vec3(0.78, 0.96, 1.0), checker * 0.5);
+    baseCol = mix(baseCol, iceIrid, 0.24) + vec3(0.12, 0.2, 0.28) * (1.0 - smoothstep(0.0, 0.12, vIce.y));
+    gridCol = vec3(0.94, 0.99, 1.0);
+    roughness = 0.05;
   } else if (m == 2) {
     // STICKY: High-friction amber honeycomb
     baseCol = mix(vec3(0.78, 0.46, 0.08), vec3(0.58, 0.32, 0.05), checker);
     gridCol = vec3(1.0, 0.78, 0.22);
-    roughness = 0.75;
+    roughness = 0.68;
   } else if (m == 3) {
     // BOUNCE PAD: High-energy magenta/orange spring pad with pulsing rings
     float ring = 0.5 + 0.5 * sin(length(fract(p.xz * 0.5) - 0.5) * 28.0 - uTime * 9.0);
     baseCol = mix(vec3(0.88, 0.14, 0.58), vec3(1.0, 0.55, 0.12), ring);
     gridCol = vec3(1.0, 0.92, 0.35);
-    emissive = 0.42;
+    roughness = 0.18;
+    emissive = 0.45;
   } else if (m == 4) {
-    // ACID POOL: Bubbling emissive toxic green hazard
-    float bubble = sin(p.x * 5.5 + uTime * 3.4) * cos(p.z * 5.5 - uTime * 2.8);
-    baseCol = mix(vec3(0.08, 0.65, 0.16), vec3(0.45, 1.0, 0.22), 0.5 + 0.5 * bubble);
-    gridCol = vec3(0.68, 1.0, 0.35);
-    emissive = 0.65;
+    // ACID / LAVA POOL: Bubbling Voronoi cellular hazard with glowing fissures
+    vec2 vAcid = voronoi2D(p.xz * 1.85, uTime * 2.6);
+    float fissure = 1.0 - smoothstep(0.0, 0.14, vAcid.y);
+    float bubble = 0.5 + 0.5 * sin(vAcid.x * 6.0 - uTime * 4.2);
+    baseCol = mix(vec3(0.06, 0.58, 0.14), vec3(0.48, 1.0, 0.22), bubble);
+    baseCol = mix(baseCol, vec3(0.85, 1.0, 0.38), fissure * 0.75);
+    gridCol = vec3(0.72, 1.0, 0.38);
+    roughness = 0.14;
+    emissive = 0.68 + 0.25 * fissure;
   } else if (m == 5) {
     // GOAL PAD: Iconic high-contrast gold & emerald finish checkerboard
     vec2 fineCell = floor(p.xz * 2.0);
@@ -798,27 +825,30 @@ vec3 shadeCourseSurface(vec3 p, vec3 n, vec3 V, float matId) {
     float pulse = 0.5 + 0.5 * sin(uTime * 5.0);
     baseCol = mix(vec3(0.06, 0.78, 0.42), vec3(1.0, 0.84, 0.18), goalChecker);
     gridCol = mix(vec3(1.0, 0.95, 0.55), vec3(0.35, 1.0, 0.75), pulse);
-    emissive = 0.45 + 0.2 * pulse;
+    roughness = 0.08;
+    emissive = 0.48 + 0.22 * pulse;
   } else if (m == 6) {
     // START PAD: Arcade cyan/gold launch platform
     vec2 fineCell = floor(p.xz * 2.0);
     float startChecker = mod(fineCell.x + fineCell.y, 2.0);
     baseCol = mix(vec3(0.12, 0.55, 0.95), vec3(0.95, 0.78, 0.22), startChecker * 0.7);
     gridCol = vec3(0.55, 0.95, 1.0);
-    emissive = 0.25;
+    roughness = 0.15;
+    emissive = 0.26;
   } else if (m == 7) {
-    // BUMPER / PISTON: Chrome-red arcade kinetic hazard
-    baseCol = mix(vec3(0.85, 0.16, 0.22), vec3(0.22, 0.25, 0.32), checker * 0.6);
-    gridCol = vec3(1.0, 0.62, 0.18);
-    roughness = 0.18;
-    emissive = 0.22;
+    // BUMPER / PISTON: Brushed gold & chrome-red arcade kinetic hazard
+    baseCol = mix(vec3(0.88, 0.18, 0.22), vec3(0.92, 0.72, 0.28), checker * 0.55);
+    gridCol = vec3(1.0, 0.78, 0.28);
+    roughness = 0.12;
+    emissive = 0.24;
   } else if (m == 8) {
-    // CONVEYOR BELT: Scrolling neon chevrons
-    float chev = fract((p.x + abs(fract(p.z) - 0.5) * 1.2) * 1.5 - uTime * 2.4);
-    float stripe = smoothstep(0.15, 0.25, chev) * (1.0 - smoothstep(0.55, 0.65, chev));
-    baseCol = mix(vec3(0.16, 0.22, 0.34), vec3(0.15, 0.85, 0.95), stripe);
-    gridCol = vec3(0.45, 0.95, 1.0);
-    emissive = 0.2 * stripe;
+    // CONVEYOR BELT: Pulsing neon chevron energy deck
+    float chev = fract((p.x + abs(fract(p.z) - 0.5) * 1.2) * 1.5 - uTime * 2.8);
+    float stripe = smoothstep(0.12, 0.24, chev) * (1.0 - smoothstep(0.55, 0.68, chev));
+    baseCol = mix(vec3(0.14, 0.20, 0.32), vec3(0.15, 0.88, 1.0), stripe);
+    gridCol = vec3(0.48, 0.96, 1.0);
+    roughness = 0.20;
+    emissive = 0.28 * stripe;
   }
 
   vec3 surfaceCol = mix(baseCol, gridCol, gridMask);
@@ -864,23 +894,40 @@ vec3 shadeCourseSurface(vec3 p, vec3 n, vec3 V, float matId) {
   float skyFill = 0.5 + 0.5 * n.y;
   vec3 ambient = mix(uAbyssFogColor * 0.45, uSkyHorizon * 0.85, skyFill) * ao;
 
-  float specPower = mix(96.0, 12.0, roughness);
-  float specStrength = mix(0.85, 0.15, roughness);
+  float specPower = mix(112.0, 14.0, roughness);
+  float specStrength = mix(0.95, 0.18, roughness);
   float spec = pow(max(dot(n, H), 0.0), specPower) * specStrength * shadow;
 
-  // Contact shadow directly under the player marble for crisp depth perception
+  // Contact shadow + Optical Floor Caustic Ring directly under the glass marble
   vec3 toMarble = p - uMarblePos;
   float horizDist = length(toMarble.xz);
   float vertDist = uMarblePos.y - p.y;
   if (vertDist > 0.0 && vertDist < 4.5 && n.y > 0.3) {
     float blob = exp(-horizDist * horizDist / (uMarbleRadius * uMarbleRadius * 1.45)) *
                  clamp(1.0 - vertDist / 4.5, 0.0, 1.0);
-    shadow *= (1.0 - 0.62 * blob);
+    shadow *= (1.0 - 0.52 * blob);
   }
+
+  // Polished Bevel Curvature Highlights along smoothUnion fillets & rounded ramp lips
+  vec3 bevelHighlight = computeBevelCurvatureHighlight(n, L, V, gridCol);
+
+  // 1-Bounce Glossy Floor Reflection on ice, goal pads, and anodized track decks
+  vec3 glossyRefl = traceGlossyFloorReflection(p, n, V, roughness);
+
+  // Focused Optical Floor Caustics projected beneath the marble
+  vec3 floorCaustics = computeMarbleFloorCaustics(p, n, L);
+
+  // Rim Fresnel edge sheen
+  float rimFresnel = pow(1.0 - clamp(dot(n, V), 0.0, 1.0), 3.0);
+  vec3 rimSheen = mix(uGridLineColor, vec3(0.45, 0.92, 1.0), 0.5) * rimFresnel * 0.22;
 
   vec3 lit = surfaceCol * (ambient + vec3(1.05, 0.98, 0.90) * ndotl * shadow * 0.88) +
              vec3(1.0, 0.98, 0.95) * spec +
-             surfaceCol * emissive;
+             surfaceCol * emissive +
+             bevelHighlight +
+             glossyRefl +
+             floorCaustics +
+             rimSheen;
 
   // Apply expanding neon cyan/magenta shockwave contour rings & cliff rim-danger pulse
   lit = applyShockwaveAndRimContours(p, gridMask, lit, uMarblePos);
@@ -889,20 +936,28 @@ vec3 shadeCourseSurface(vec3 p, vec3 n, vec3 V, float matId) {
 }
 
 /**
- * Refracting, iridescent subsurface-scattered player marble with internal veins
- * rotated in exact lockstep with the physics quaternion uMarbleQuat, plus
- * progressive Glass Stress internal fracture lines (uGlassStress / uCrackVisibility).
+ * True Optical Glass Marble with Chromatic Dispersion Refraction (IOR_R=1.50, IOR_G=1.52, IOR_B=1.55)
+ * that optically bends and magnifies the isometric grid and hazards underneath it, plus internal
+ * cat's-eye ribbons rotated in lockstep with uMarbleQuat and Glass Stress fracture veins.
  */
 vec3 shadePlayerMarble(vec3 p, vec3 n, vec3 V) {
+  if (isBasicPolygonPixel()) {
+    return shadeBasicPolygonMarble(p, n, V);
+  }
+
   vec3 localPos = rotateByQuatInverse((p - uMarblePos) / max(uMarbleRadius, 0.01), uMarbleQuat);
   vec3 localView = rotateByQuatInverse(-V, uMarbleQuat);
 
-  // Refracted internal ray sample for deep glass cat's-eye ribbons
+  // 1. Trace true optical refracted ray with R/G/B chromatic dispersion into the scene behind/underneath
+  vec3 refractedScene = traceMarbleOpticalRefraction(p, n, -V);
+
+  // 2. Refracted internal ray sample for deep glass cat's-eye ribbons
   vec3 internalP = localPos + localView * 0.38;
   float swirl1 = sin(internalP.x * 6.2 + sin(internalP.y * 5.0 + internalP.z * 4.2) * 1.8);
   float swirl2 = cos(internalP.z * 7.5 - sin(internalP.x * 4.8 - internalP.y * 6.0) * 1.6);
   float ribbon = smoothstep(0.15, 0.88, 0.5 + 0.5 * (swirl1 * swirl2));
   float equatorBand = exp(-abs(localPos.y) * 5.5);
+  float ribbonDensity = clamp(ribbon * 0.72 + equatorBand * 0.42, 0.0, 1.0);
 
   vec3 L = normalize(uSunDir);
   vec3 H = normalize(L + V);
@@ -918,9 +973,14 @@ vec3 shadePlayerMarble(vec3 p, vec3 n, vec3 V) {
   // Iridescent thin-film spectral shift on rim
   vec3 iridescenceTint = 0.5 + 0.5 * cos(6.28318 * (vec3(0.0, 0.33, 0.67) + ndotv * 1.4));
 
-  vec3 coreCol = mix(uMarbleBaseColor, uMarbleVeinColor, clamp(ribbon * 0.75 + equatorBand * 0.45, 0.0, 1.0));
-  coreCol += uMarbleGlowColor * sss * 0.65;
-  coreCol = mix(coreCol, iridescenceTint, fresnel * uMarbleIridescence * 0.55);
+  // Blend the magnified refracted world underneath with the translucent crown-glass tint & ribbons
+  vec3 glassAbsorption = mix(vec3(0.92, 0.97, 1.0), uMarbleBaseColor * 1.25, 0.38);
+  vec3 transmittedCol = refractedScene * glassAbsorption;
+  vec3 ribbonCol = mix(uMarbleBaseColor, uMarbleVeinColor, ribbonDensity) * (0.45 + 0.75 * ndotl);
+
+  vec3 coreCol = mix(transmittedCol, ribbonCol, 0.36 + 0.32 * ribbonDensity);
+  coreCol += uMarbleGlowColor * sss * 0.58;
+  coreCol = mix(coreCol, iridescenceTint, fresnel * uMarbleIridescence * 0.58);
 
   // Internal Glass Stress Fracture Veins (Voronoi / Crystalline Cleavage Planes)
   if (uCrackVisibility > 0.01 || uGlassStress > 0.05) {
@@ -936,19 +996,18 @@ vec3 shadePlayerMarble(vec3 p, vec3 n, vec3 V) {
     coreCol += vec3(1.0, 0.28, 0.08) * uStressGlow * (0.35 + 0.65 * fresnel);
   }
 
-  float specPrimary = pow(max(dot(n, H), 0.0), 128.0) * 1.35;
+  // Dual coat specular reflections on the outer polished glass shell
+  float specPrimary = pow(max(dot(n, H), 0.0), 148.0) * 1.55;
   vec3 H2 = normalize(normalize(vec3(-0.6, 0.8, -0.5)) + V);
-  float specSecondary = pow(max(dot(n, H2), 0.0), 48.0) * 0.45;
+  float specSecondary = pow(max(dot(n, H2), 0.0), 56.0) * 0.52;
 
-  vec3 col = coreCol * (0.38 + 0.78 * ndotl) +
+  vec3 col = coreCol +
              vec3(1.0, 0.99, 0.96) * (specPrimary + specSecondary) +
-             uMarbleVeinColor * fresnel * 0.45;
+             mix(uMarbleVeinColor, iridescenceTint, 0.5) * fresnel * 0.62;
 
   if (uMarbleStatus == 2) {
-    // Shattered flash
     col = mix(col, vec3(1.0, 0.45, 0.15), 0.65);
   } else if (uMarbleStatus == 3) {
-    // Acid dissolve glow
     col = mix(col, vec3(0.45, 1.0, 0.2), 0.7);
   }
 
@@ -986,6 +1045,14 @@ vec3 renderSkyAndAbyss(vec3 ro, vec3 rd) {
   float horizon = clamp(0.5 + 0.5 * rd.y, 0.0, 1.0);
   vec3 sky = mix(uSkyHorizon, uSkyZenith, pow(horizon, 0.75));
 
+  if (isBasicPolygonPixel()) {
+    // Basic Polygon Mode: plain flat-shaded horizon without O(1) cathedral megastructure
+    return sky * 0.85;
+  }
+
+  // O(1) Domain-Repeated Brutalist/Atari Cathedral Megastructure in the distant abyss
+  sky = renderCathedralMegastructure(ro, rd, sky);
+
   // Distant synth-arcade abyss floor grid plane at y = -18.0
   if (rd.y < -0.01) {
     float tFloor = (-18.0 - ro.y) / rd.y;
@@ -995,7 +1062,7 @@ vec3 renderSkyAndAbyss(vec3 ro, vec3 rd) {
       vec2 g = abs(fract(fp.xz * 0.25 - 0.5) - 0.5) / fw;
       float line = 1.0 - smoothstep(0.0, 1.5, min(g.x, g.y));
       float fade = exp(-tFloor * 0.022);
-      sky = mix(sky, uAbyssFogColor + uGridLineColor * line * 0.32, fade * 0.75);
+      sky = mix(sky, uAbyssFogColor + uGridLineColor * line * 0.38, fade * 0.68);
     }
   }
   return sky;
@@ -1186,6 +1253,16 @@ void main() {
   color += portalEdgeGlow;
   color += vec3(0.25, 1.0, 0.72) * volumetricGlow;
 
+  // Split-Screen A/B Mode (uEngineMode == 2): Glowing vertical comparison laser divider
+  if (uEngineMode == 2) {
+    float splitDist = abs(gl_FragCoord.x - uResolution.x * 0.5);
+    float coreLine = 1.0 - smoothstep(0.0, 1.6, splitDist);
+    float haloGlow = exp(-splitDist * 0.22);
+    float tick = step(0.65, fract(gl_FragCoord.y * 0.045 - uTime * 1.5));
+    vec3 dividerCol = mix(vec3(0.25, 0.95, 1.0), vec3(1.0, 0.85, 0.28), 0.5 + 0.5 * tick);
+    color = mix(color, dividerCol * 1.45, clamp(coreLine + haloGlow * 0.45, 0.0, 1.0));
+  }
+
   // ACES Filmic Tone Mapping + sRGB gamma
   vec3 x = color * 1.08;
   vec3 aces = clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
@@ -1261,6 +1338,7 @@ export function compileCourseToWgsl(course: CourseSpec): string {
   const finalVar = buildWgslNodeStatements(rootTree, bodyLines, counter);
   const shatterWgsl = getShatterShaderSnippet().wgsl;
   const shockwaveWgsl = getShockwaveShaderSnippet().wgsl;
+  const ultraWgsl = getUltraSdfShaderSnippet().wgsl;
 
   return `// WGSL Lockstep Raymarching Shader for course: ${course.id}
 struct Uniforms {
@@ -1295,7 +1373,7 @@ struct Uniforms {
   gridLineColor: vec3<f32>,
   pad2: f32,
   wallColor: vec3<f32>,
-  pad3: f32,
+  engineMode: f32,
   sunDir: vec3<f32>,
   mutationCount: f32,
   uMutationsPosA: array<vec4<f32>, 16>,
@@ -1314,6 +1392,7 @@ struct Uniforms {
 
 ${shatterWgsl}
 ${shockwaveWgsl}
+${ultraWgsl}
 
 fn rotateByQuatInverse(d: vec3<f32>, q: vec4<f32>) -> vec3<f32> {
   let t = 2.0 * cross(q.xyz, d);

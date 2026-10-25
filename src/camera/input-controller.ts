@@ -40,6 +40,7 @@ export interface ArcadeInputCallbacks {
   onToggleParty?: () => void;
   onToggleViewMode?: () => void;
   onToggleDebugDrawer?: () => void;
+  onCycleEngineMode?: () => void;
 }
 
 export interface ArcadeInputController {
@@ -125,6 +126,8 @@ export function createArcadeInputController(
       callbacks.onTriggerWeapon?.('cryoFreeze');
     } else if (code === 'KeyY' && !isRepeat) {
       callbacks.onToggleParty?.();
+    } else if (code === 'KeyK' && !isRepeat) {
+      callbacks.onCycleEngineMode?.();
     } else if (code === 'Digit1') {
       callbacks.onSelectCourse?.(0);
     } else if (code === 'Digit2') {
@@ -137,6 +140,8 @@ export function createArcadeInputController(
       callbacks.onSelectCourse?.(4);
     } else if (code === 'Digit6') {
       callbacks.onSelectCourse?.(5);
+    } else if (code === 'Digit7') {
+      callbacks.onSelectCourse?.(6);
     }
   }
 
