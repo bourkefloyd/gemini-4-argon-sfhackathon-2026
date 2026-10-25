@@ -341,10 +341,10 @@ export function createMarbleSimulation(
       vz += inZ * config.rollAcceleration * config.airControl * dt;
     }
 
-    // 3. Consume buffered jump if within coyote time
+    // 3. Consume buffered jump if within coyote time (with wave-crest vertical launch lift)
     let grounded = state.contact.grounded;
     if (jumpBufferTimer > 0 && coyoteTimer > 0 && jumpCooldown <= 0) {
-      vy = Math.max(vy, config.jumpImpulse) + Math.max(0, state.contact.surfaceVelocity[1] * 0.5);
+      vy = Math.max(vy, config.jumpImpulse) + Math.max(0, state.contact.surfaceVelocity[1] * 0.85);
       grounded = false;
       coyoteTimer = 0;
       jumpBufferTimer = 0;

@@ -676,6 +676,240 @@ export function buildCourseWaypoints(
     return finalizeWaypointChain(raw, style);
   }
 
+  if (
+    course.id === 'riptide-surf-break' ||
+    course.id === 'sahara-dune-surge'
+  ) {
+    const isSpeedrun = style === 'speedrunner';
+    const raw: RawWaypointNode[] = [
+      {
+        id: `${course.id}-wp-shore-ramp`,
+        label: 'Zone 1: Shoreline Ramp Drop',
+        position: [0, 6.8, -5.8],
+        captureRadius: 2.2,
+        targetSpeed: isSpeedrun ? 13.5 : 10.5,
+      },
+      {
+        id: `${course.id}-wp-swash-waves`,
+        label: 'Zone 1: Ankle-Biter Swells',
+        position: [-1.4, 5.6, -11.5],
+        captureRadius: 2.4,
+        targetSpeed: isSpeedrun ? 13.5 : 10.2,
+      },
+      {
+        id: `${course.id}-wp-rip-channel-entry`,
+        label: 'Zone 2: West Sandbar Rip-Current Channel Entry',
+        position: [-3.6, 5.6, -16.8],
+        captureRadius: 2.0,
+        targetSpeed: isSpeedrun ? 14.0 : 10.5,
+        routeKind: isSpeedrun ? 'shortcut' : 'main',
+      },
+      {
+        id: `${course.id}-wp-rip-channel-exit`,
+        label: 'Zone 2: West Rip-Current Channel Exit',
+        position: [-3.6, 5.6, -28.6],
+        captureRadius: 2.2,
+        targetSpeed: isSpeedrun ? 13.5 : 9.8,
+        routeKind: isSpeedrun ? 'shortcut' : 'main',
+      },
+      {
+        id: `${course.id}-wp-midbreak-lineup`,
+        label: 'Zone 2: Mid-Break Lineup Deck',
+        position: [0, 5.6, -32.2],
+        captureRadius: 2.2,
+        targetSpeed: isSpeedrun ? 12.5 : 9.5,
+      },
+      {
+        id: `${course.id}-wp-pier-channel`,
+        label: 'Zone 3: Center Pier Pilings Swell Channel',
+        position: [0, 5.6, -40.4],
+        captureRadius: 2.2,
+        targetSpeed: isSpeedrun ? 13.5 : 10.0,
+      },
+      {
+        id: `${course.id}-wp-outer-reef-deck`,
+        label: 'Zone 3: Outer Reef Bomb Lineup',
+        position: [0, 5.6, -49.2],
+        captureRadius: 2.2,
+        targetSpeed: isSpeedrun ? 14.0 : 10.5,
+      },
+      {
+        id: `${course.id}-wp-reef-bomb-ramp`,
+        label: 'Zone 4: Outer Reef Bomb Launch Ramp',
+        position: [0, 4.8, -55.0],
+        captureRadius: 2.2,
+        targetSpeed: isSpeedrun ? 15.0 : 11.5,
+      },
+      {
+        id: `${course.id}-wp-goal`,
+        label: 'Zone 4: Outer Reef Goal Podium',
+        position: [...course.goalPos],
+        captureRadius: course.goalRadius,
+        targetSpeed: isSpeedrun ? 14.0 : 10.5,
+      },
+    ];
+    return finalizeWaypointChain(raw, style);
+  }
+
+  if (course.id === 'neon-sky-obby') {
+    const isSpeedrun = style === 'speedrunner';
+    const raw: RawWaypointNode[] = isSpeedrun
+      ? [
+          {
+            id: 'obby-wp-speedrun-rail-entry',
+            label: 'Stage 1: East Speedrun Rail Entry',
+            position: [2.6, 10.0, -4.0],
+            captureRadius: 1.8,
+            targetSpeed: 13.5,
+            routeKind: 'shortcut',
+          },
+          {
+            id: 'obby-wp-speedrun-rail-exit',
+            label: 'Stage 1: East Speedrun Rail Exit',
+            position: [2.6, 10.0, -14.2],
+            captureRadius: 2.0,
+            targetSpeed: 14.0,
+            routeKind: 'shortcut',
+          },
+          {
+            id: 'obby-wp-cp1',
+            label: 'Stage 1 Checkpoint Deck',
+            position: [0, 10.0, -16.8],
+            captureRadius: 2.2,
+            targetSpeed: 12.0,
+          },
+          {
+            id: 'obby-wp-spinner-1-bypass',
+            label: 'Stage 2: East Lane Past Spinner 1',
+            position: [1.8, 10.0, -21.8],
+            captureRadius: 1.8,
+            targetSpeed: 11.5,
+          },
+          {
+            id: 'obby-wp-spinner-2-bypass',
+            label: 'Stage 2: West Lane Past Spinner 2',
+            position: [-1.8, 10.0, -27.2],
+            captureRadius: 1.8,
+            targetSpeed: 11.5,
+          },
+          {
+            id: 'obby-wp-cp2',
+            label: 'Stage 2 Checkpoint Deck',
+            position: [0, 10.0, -32.8],
+            captureRadius: 2.2,
+            targetSpeed: 12.5,
+          },
+          {
+            id: 'obby-wp-staircase-mid',
+            label: 'Stage 3: Trampoline Staircase Spine',
+            position: [0, 11.5, -39.5],
+            captureRadius: 2.2,
+            targetSpeed: 13.5,
+          },
+          {
+            id: 'obby-wp-cp3',
+            label: 'Stage 3: Catch-Funnel & Checkpoint 4',
+            position: [0, 13.0, -48.5],
+            captureRadius: 2.4,
+            targetSpeed: 12.5,
+          },
+          {
+            id: 'obby-wp-wave-beam',
+            label: 'Stage 4: Undulating Wave-Bridge Beam',
+            position: [0, 13.0, -55.0],
+            captureRadius: 2.2,
+            targetSpeed: 13.5,
+          },
+          {
+            id: 'obby-wp-goal',
+            label: 'Stage 4: Obby Winner Podium',
+            position: [...course.goalPos],
+            captureRadius: course.goalRadius,
+            targetSpeed: 14.0,
+          },
+        ]
+      : [
+          {
+            id: 'obby-wp-stone-1',
+            label: 'Stage 1: Rainbow Stepping Stone 1',
+            position: [-0.2, 10.0, -5.0],
+            captureRadius: 1.8,
+            targetSpeed: 9.5,
+          },
+          {
+            id: 'obby-wp-stone-2',
+            label: 'Stage 1: Rainbow Stepping Stone 2',
+            position: [0.2, 10.0, -8.2],
+            captureRadius: 1.8,
+            targetSpeed: 9.5,
+          },
+          {
+            id: 'obby-wp-stone-3',
+            label: 'Stage 1: Rainbow Stepping Stone 3',
+            position: [-0.2, 10.0, -11.4],
+            captureRadius: 1.8,
+            targetSpeed: 9.5,
+          },
+          {
+            id: 'obby-wp-cp1',
+            label: 'Stage 1 Checkpoint Deck',
+            position: [0, 10.0, -16.5],
+            captureRadius: 2.2,
+            targetSpeed: 9.5,
+          },
+          {
+            id: 'obby-wp-spinner-1-bypass',
+            label: 'Stage 2: East Lane Past Spinner 1',
+            position: [1.8, 10.0, -21.8],
+            captureRadius: 1.8,
+            targetSpeed: 9.2,
+          },
+          {
+            id: 'obby-wp-spinner-2-bypass',
+            label: 'Stage 2: West Lane Past Spinner 2',
+            position: [-1.8, 10.0, -27.2],
+            captureRadius: 1.8,
+            targetSpeed: 9.2,
+          },
+          {
+            id: 'obby-wp-cp2',
+            label: 'Stage 2 Checkpoint Deck',
+            position: [0, 10.0, -32.5],
+            captureRadius: 2.2,
+            targetSpeed: 9.5,
+          },
+          {
+            id: 'obby-wp-staircase-mid',
+            label: 'Stage 3: Trampoline Staircase Spine',
+            position: [0, 11.5, -39.5],
+            captureRadius: 2.2,
+            targetSpeed: 10.5,
+          },
+          {
+            id: 'obby-wp-cp3',
+            label: 'Stage 3: Catch-Funnel & Checkpoint 4',
+            position: [0, 13.0, -48.5],
+            captureRadius: 2.4,
+            targetSpeed: 9.8,
+          },
+          {
+            id: 'obby-wp-wave-beam',
+            label: 'Stage 4: Undulating Wave-Bridge Beam',
+            position: [0, 13.0, -55.0],
+            captureRadius: 2.2,
+            targetSpeed: 10.0,
+          },
+          {
+            id: 'obby-wp-goal',
+            label: 'Stage 4: Obby Winner Podium',
+            position: [...course.goalPos],
+            captureRadius: course.goalRadius,
+            targetSpeed: 10.5,
+          },
+        ];
+    return finalizeWaypointChain(raw, style);
+  }
+
   // General procedural waypoint synthesis from `course.nodes` + `course.checkpoints` + `course.goalPos`
   const synthesized: RawWaypointNode[] = [];
 

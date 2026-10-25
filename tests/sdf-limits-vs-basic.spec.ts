@@ -23,7 +23,7 @@ import { evalDynamicSphereClusterJet } from '../src/sdf/jet-sdf';
 
 describe('SDF Physics & Graphics Limit-Test Suite vs Basic Polygon Remake', () => {
   it('validates Course 7 (SDF Singularity Lab) structure: Ferrofluid Metaballs, Corkscrew S-Halfpipe & Multi-Portal Loop', () => {
-    expect(ALL_PLAYABLE_COURSES).toHaveLength(7);
+    expect(ALL_PLAYABLE_COURSES).toHaveLength(10);
     expect(COURSE_7_SDF_SINGULARITY_LAB.id).toBe('sdf-singularity-lab');
     expect(COURSE_7_SDF_SINGULARITY_LAB.name).toBe('SDF SINGULARITY LAB');
 

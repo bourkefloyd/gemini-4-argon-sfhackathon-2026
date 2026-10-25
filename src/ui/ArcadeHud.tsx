@@ -188,11 +188,34 @@ export const ArcadeHud: React.FC<ArcadeHudProps> = ({
         <div className="hud-compact-arcade-bar" data-hud-interactive="true">
           <div className="hud-compact-course-block">
             <span className="hud-course-index">
-              COURSE 0{currentCourse.index}:
+              COURSE {currentCourse.index.toString().padStart(2, '0')}:
             </span>
             <span className="hud-course-name">
               {currentCourse.name.toUpperCase()}
             </span>
+            {(currentCourse.id === 'riptide-surf-break' ||
+              currentCourse.id === 'sahara-dune-surge') && (
+              <button
+                type="button"
+                className="hud-focused-pov-pill"
+                data-testid="hud-surf-variant-toggle"
+                onClick={() => {
+                  const targetId =
+                    currentCourse.id === 'riptide-surf-break'
+                      ? 'sahara-dune-surge'
+                      : 'riptide-surf-break';
+                  const targetIdx = courses.findIndex((c) => c.id === targetId);
+                  if (targetIdx >= 0) {
+                    onSelectCourse(targetIdx);
+                  }
+                }}
+                title="Switch between Ocean Riptide Surf Break and Sahara Sand Dunes Variant"
+              >
+                {currentCourse.id === 'riptide-surf-break'
+                  ? '🏜️ SAND DUNE MODE [0]'
+                  : '🌊 OCEAN SURF MODE [8]'}
+              </button>
+            )}
             {focusedPlayerIndex > 0 && focusedCell && viewMode === 'fullscreen' && (
               <button
                 type="button"
@@ -651,9 +674,9 @@ export const ArcadeHud: React.FC<ArcadeHudProps> = ({
             )}
           </div>
 
-          {/* Course Switcher 1-7 */}
+          {/* Course Switcher 1-0 */}
           <div className="hud-debug-section">
-            <div className="hud-eyebrow">SELECT COURSE [1–7]</div>
+            <div className="hud-eyebrow">SELECT COURSE [1–9, 0]</div>
             <div className="hud-course-tabs">
               {courses.map((c, idx) => (
                 <button
@@ -663,7 +686,7 @@ export const ArcadeHud: React.FC<ArcadeHudProps> = ({
                   title={c.name}
                   onClick={() => onSelectCourse(idx)}
                 >
-                  [{idx + 1}] {c.name}
+                  [{(idx + 1) % 10}] {c.name}
                 </button>
               ))}
             </div>

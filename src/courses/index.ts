@@ -12,6 +12,9 @@ import { COURSE_4_AERIAL_CATWALKS } from './course-4-aerial';
 import { COURSE_5_SILLY_RACE } from './course-5-silly';
 import { COURSE_6_ULTIMATE_ARGON_CORE } from './course-6-ultimate';
 import { COURSE_7_SDF_SINGULARITY_LAB } from './course-7-singularity';
+import { COURSE_8_RIPTIDE_SURF } from './course-8-riptide-surf';
+import { COURSE_9_NEON_OBBY } from './course-9-neon-obby';
+import { COURSE_10_SAHARA_DUNES } from './course-10-sahara-dunes';
 
 export {
   COURSE_1_PRACTICE_RACE,
@@ -23,9 +26,12 @@ export {
   COURSE_5_SILLY_RACE,
   COURSE_6_ULTIMATE_ARGON_CORE,
   COURSE_7_SDF_SINGULARITY_LAB,
+  COURSE_8_RIPTIDE_SURF,
+  COURSE_9_NEON_OBBY,
+  COURSE_10_SAHARA_DUNES,
 };
 
-export const BUILT_IN_COURSES: readonly CourseSpec[] = [
+export const CLASSIC_COURSES: readonly CourseSpec[] = [
   COURSE_1_PRACTICE_RACE,
   COURSE_2_BEGINNER_CHUTES,
   COURSE_3_INTERMEDIATE_MADNESS,
@@ -34,11 +40,19 @@ export const BUILT_IN_COURSES: readonly CourseSpec[] = [
   COURSE_6_ULTIMATE_ARGON_CORE,
 ];
 
-export const CLASSIC_COURSES: readonly CourseSpec[] = BUILT_IN_COURSES;
+export const BUILT_IN_COURSES: readonly CourseSpec[] = [
+  ...CLASSIC_COURSES,
+  COURSE_8_RIPTIDE_SURF,
+  COURSE_9_NEON_OBBY,
+  COURSE_10_SAHARA_DUNES,
+];
 
 export const ALL_PLAYABLE_COURSES: readonly CourseSpec[] = [
-  ...BUILT_IN_COURSES,
+  ...CLASSIC_COURSES,
   COURSE_7_SDF_SINGULARITY_LAB,
+  COURSE_8_RIPTIDE_SURF,
+  COURSE_9_NEON_OBBY,
+  COURSE_10_SAHARA_DUNES,
 ];
 
 /**

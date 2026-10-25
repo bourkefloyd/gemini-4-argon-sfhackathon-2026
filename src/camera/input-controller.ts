@@ -142,6 +142,12 @@ export function createArcadeInputController(
       callbacks.onSelectCourse?.(5);
     } else if (code === 'Digit7') {
       callbacks.onSelectCourse?.(6);
+    } else if (code === 'Digit8') {
+      callbacks.onSelectCourse?.(7);
+    } else if (code === 'Digit9') {
+      callbacks.onSelectCourse?.(8);
+    } else if (code === 'Digit0') {
+      callbacks.onSelectCourse?.(9);
     }
   }
 
