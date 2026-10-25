@@ -1,13 +1,34 @@
 import type { CourseSpec } from '../contracts';
 import { COURSE_1_PRACTICE_RACE } from './course-1-practice';
-import { COURSE_2_INTERMEDIATE_MADNESS } from './course-2-intermediate';
+import { COURSE_2_BEGINNER_CHUTES } from './course-2-beginner';
+import {
+  COURSE_2_INTERMEDIATE_MADNESS,
+  COURSE_3_INTERMEDIATE_MADNESS,
+} from './course-3-intermediate';
+import { COURSE_4_AERIAL_CATWALKS } from './course-4-aerial';
+import { COURSE_5_SILLY_RACE } from './course-5-silly';
+import { COURSE_6_ULTIMATE_ARGON_CORE } from './course-6-ultimate';
 
-export { COURSE_1_PRACTICE_RACE, COURSE_2_INTERMEDIATE_MADNESS };
+export {
+  COURSE_1_PRACTICE_RACE,
+  COURSE_2_BEGINNER_CHUTES,
+  COURSE_2_INTERMEDIATE_MADNESS,
+  COURSE_3_INTERMEDIATE_MADNESS,
+  COURSE_4_AERIAL_CATWALKS,
+  COURSE_5_SILLY_RACE,
+  COURSE_6_ULTIMATE_ARGON_CORE,
+};
 
 export const BUILT_IN_COURSES: readonly CourseSpec[] = [
   COURSE_1_PRACTICE_RACE,
-  COURSE_2_INTERMEDIATE_MADNESS,
+  COURSE_2_BEGINNER_CHUTES,
+  COURSE_3_INTERMEDIATE_MADNESS,
+  COURSE_4_AERIAL_CATWALKS,
+  COURSE_5_SILLY_RACE,
+  COURSE_6_ULTIMATE_ARGON_CORE,
 ];
+
+export const CLASSIC_COURSES: readonly CourseSpec[] = BUILT_IN_COURSES;
 
 /**
  * Procedurally synthesize a custom `CourseSpec` for the Gemini 4 Argon 1M-Token
@@ -19,14 +40,14 @@ export function generateArchitectCoursePreset(
   if (presetKind === 'spiral-citadel') {
     return {
       id: 'argon-spiral-citadel',
-      index: 3,
+      index: 7,
       name: 'ARGON SPIRAL CITADEL',
       subtitle: 'AI ARCHITECT // 4-TIER HELIX // DUAL STEELIE ORBIT',
       difficulty: 'ARCHITECT',
       parTimeSec: 80,
       bonusTimeSec: 50,
-      startPos: [0, 12.78, 0],
-      goalPos: [0, 1.08, -28.0],
+      startPos: [0, 12.75, 0],
+      goalPos: [0, 1.87, -28.0],
       goalRadius: 2.7,
       killPlaneY: -12.0,
       overviewCenter: [4.0, 5.0, -14.0],
@@ -65,6 +86,7 @@ export function generateArchitectCoursePreset(
           center: [0, 11.6, 0],
           halfExtents: [3.5, 0.6, 3.5],
           radius: 0.14,
+          supportBias: true,
         },
         {
           id: 'sp-ramp-1',
@@ -77,6 +99,7 @@ export function generateArchitectCoursePreset(
           halfWidth: 2.8,
           thickness: 1.0,
           railHeight: 0.8,
+          supportBias: true,
         },
         {
           id: 'sp-ice-corner',
@@ -85,6 +108,7 @@ export function generateArchitectCoursePreset(
           center: [4.5, 6.8, -15.5],
           halfExtents: [5.5, 0.6, 3.5],
           radius: 0.14,
+          supportBias: true,
         },
         {
           id: 'sp-ramp-2',
@@ -97,6 +121,7 @@ export function generateArchitectCoursePreset(
           halfWidth: 2.6,
           thickness: 1.0,
           railHeight: 0.85,
+          supportBias: true,
         },
         {
           id: 'sp-wave-bridge',
@@ -108,6 +133,7 @@ export function generateArchitectCoursePreset(
           waveFrequencyX: 0.85,
           waveFrequencyZ: 0.85,
           waveSpeed: 3.0,
+          supportBias: true,
         },
         {
           id: 'sp-goal-pad',
@@ -115,7 +141,8 @@ export function generateArchitectCoursePreset(
           material: 'goal',
           center: [0, 1.35, -28.0],
           radius: 2.6,
-          halfHeight: 0.5,
+          halfHeight: 0.52,
+          supportBias: true,
         },
       ],
       hazards: [
@@ -138,5 +165,9 @@ export function generateArchitectCoursePreset(
     };
   }
 
-  return COURSE_2_INTERMEDIATE_MADNESS;
+  if (presetKind === 'hyper-chute') {
+    return COURSE_4_AERIAL_CATWALKS;
+  }
+
+  return COURSE_6_ULTIMATE_ARGON_CORE;
 }
